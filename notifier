@@ -1,0 +1,44 @@
+“””
+notifier.py — Pushes the report to your phone via ntfy.sh.
+ntfy.sh is free, no account needed. Install the ntfy app on your iPhone
+and subscribe to your chosen topic name.
+“””
+
+import requests
+import config
+
+def send_to_phone(report: str):
+“””
+Sends the report as a notification via ntfy.sh.
+The report is chunked if over 4000 chars (ntfy message limit).
+“””
+topic_url = f”https://ntfy.sh/{config.NTFY_TOPIC}”
+
+```
+# ntfy has a ~4KB body limit; chunk if needed
+chunks = [report[i:i+3900] for i in range(0, len(report), 3900)]
+
+for i, chunk in enumerate(chunks):
+    title = "📈 Daily Stock Report"
+    if len(chunks) > 1:
+        title += f" ({i+1}/{len(chunks)})"
+
+    try:
+        resp = requests.post(
+            topic_url,
+            data=chunk.encode("utf-8"),
+            headers={
+                "Title": title,
+                "Priority": "default",
+                "Tags": "chart_with_upwards_trend",
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            print(f"Notification sent ({i+1}/{len(chunks)})")
+        else:
+            print(f"ntfy error: {resp.status_code} {resp.text}")
+
+    except Exception as e:
+        print(f"Notification error: {e}")
+```
