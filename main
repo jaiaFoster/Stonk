@@ -1,77 +1,76 @@
-“””
+"""
 main.py — Daily stock data orchestrator.
 Fetches positions + news, formats a prompt payload, pushes to ntfy.
-Shortcuts picks it up and passes it to “Ask Claude”.
-“””
+Shortcuts picks it up and passes it to "Ask Claude".
+"""
 
 from robinhood import get_positions
 from news import get_news_for_tickers
 from notifier import send_to_phone
 from datetime import date
 
+
 def format_payload(positions, news_map):
-today = date.today().strftime(”%B %d, %Y”)
+    today = date.today().strftime("%B %d, %Y")
 
-```
-lines = [
-    f"Date: {today}",
-    "",
-    "=== MY STOCK POSITIONS ===",
-]
+    lines = [
+        f"Date: {today}",
+        "",
+        "=== MY STOCK POSITIONS ===",
+    ]
 
-for p in positions:
-    gl = (
-        f"{p['gain_loss']:+.2f} ({p['gain_loss_pct']:+.1f}%)"
-        if p["gain_loss"] is not None
-        else "N/A"
-    )
-    lines.append(
-        f"{p['ticker']}: {p['quantity']:.4f} shares | "
-        f"Avg cost ${p['avg_buy_price']:.2f} | "
-        f"Current ${p['current_price']:.2f} | "
-        f"G/L: {gl} | "
-        f"Value: ${p['market_value']:.2f}"
-    )
+    for p in positions:
+        gl = (
+            f"{p['gain_loss']:+.2f} ({p['gain_loss_pct']:+.1f}%)"
+            if p["gain_loss"] is not None
+            else "N/A"
+        )
+        lines.append(
+            f"{p['ticker']}: {p['quantity']:.4f} shares | "
+            f"Avg cost ${p['avg_buy_price']:.2f} | "
+            f"Current ${p['current_price']:.2f} | "
+            f"G/L: {gl} | "
+            f"Value: ${p['market_value']:.2f}"
+        )
 
-lines += ["", "=== TODAY'S NEWS ==="]
-for ticker, headlines in news_map.items():
-    lines.append(f"{ticker}:")
-    for h in headlines:
-        lines.append(f"  - {h}")
+    lines += ["", "=== TODAY'S NEWS ==="]
+    for ticker, headlines in news_map.items():
+        lines.append(f"{ticker}:")
+        for h in headlines:
+            lines.append(f"  - {h}")
 
-lines += [
-    "",
-    "=== INSTRUCTIONS FOR CLAUDE ===",
-    "Please give me a brief daily briefing on my portfolio based on the above.",
-    "Include: overall portfolio summary, what today's news means for each position,",
-    "and any practical things to watch. Keep it under 400 words, plain text.",
-]
+    lines += [
+        "",
+        "=== INSTRUCTIONS FOR CLAUDE ===",
+        "Please give me a brief daily briefing on my portfolio based on the above.",
+        "Include: overall portfolio summary, what today's news means for each position,",
+        "and any practical things to watch. Keep it under 400 words, plain text.",
+    ]
 
-return "\n".join(lines)
-```
+    return "\n".join(lines)
+
 
 def run():
-print(“📈 Fetching Robinhood positions…”)
-positions = get_positions()
-if not positions:
-print(“No positions found or login failed.”)
-return
+    print("📈 Fetching Robinhood positions…")
+    positions = get_positions()
+    if not positions:
+        print("No positions found or login failed.")
+        return
 
-```
-tickers = [p["ticker"] for p in positions]
-print(f"Positions: {tickers}")
+    tickers = [p["ticker"] for p in positions]
+    print(f"Positions: {tickers}")
 
-print("📰 Fetching news...")
-news = get_news_for_tickers(tickers)
+    print("📰 Fetching news...")
+    news = get_news_for_tickers(tickers)
 
-print("📦 Formatting payload...")
-payload = format_payload(positions, news)
+    print("📦 Formatting payload...")
+    payload = format_payload(positions, news)
 
-print("📲 Sending to phone...")
-send_to_phone(payload)
+    print("📲 Sending to phone...")
+    send_to_phone(payload)
 
-print("✅ Done.")
-```
+    print("✅ Done.")
 
-if **name** == “**main**”:
-run()
+
+if __name__ == "__main__":
+    run()
