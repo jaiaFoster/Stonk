@@ -1,55 +1,54 @@
-“””
+"""
 robinhood.py — Fetches current stock positions from Robinhood.
 Uses the unofficial robin_stocks library.
-“””
+"""
 
 import robin_stocks.robinhood as r
 import config
 
+
 def get_positions():
-try:
-r.login(
-username=config.ROBINHOOD_USERNAME,
-password=config.ROBINHOOD_PASSWORD,
-store_session=False,   # Don’t persist on server
-by_sms=True            # MFA via SMS — change to by_email=True if needed
-)
+    try:
+        r.login(
+            username=config.ROBINHOOD_USERNAME,
+            password=config.ROBINHOOD_PASSWORD,
+            store_session=False,  # Don't persist on server
+            by_sms=True           # MFA via SMS — change to by_email=True if needed
+        )
 
-```
-    raw_positions = r.get_open_stock_positions()
-    if not raw_positions:
+        raw_positions = r.get_open_stock_positions()
+        if not raw_positions:
+            return []
+
+        positions = []
+        for pos in raw_positions:
+            ticker = r.get_symbol_by_url(pos["instrument"])
+            quantity = float(pos["quantity"])
+            avg_buy_price = float(pos["average_buy_price"])
+
+            # Get current price
+            quote = r.get_latest_price(ticker)
+            current_price = float(quote[0]) if quote else None
+
+            gain_loss = None
+            gain_loss_pct = None
+            if current_price:
+                gain_loss = (current_price - avg_buy_price) * quantity
+                gain_loss_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100
+
+            positions.append({
+                "ticker": ticker,
+                "quantity": quantity,
+                "avg_buy_price": avg_buy_price,
+                "current_price": current_price,
+                "gain_loss": gain_loss,
+                "gain_loss_pct": gain_loss_pct,
+                "market_value": current_price * quantity if current_price else None,
+            })
+
+        r.logout()
+        return positions
+
+    except Exception as e:
+        print(f"Robinhood error: {e}")
         return []
-
-    positions = []
-    for pos in raw_positions:
-        ticker = r.get_symbol_by_url(pos["instrument"])
-        quantity = float(pos["quantity"])
-        avg_buy_price = float(pos["average_buy_price"])
-
-        # Get current price
-        quote = r.get_latest_price(ticker)
-        current_price = float(quote[0]) if quote else None
-
-        gain_loss = None
-        gain_loss_pct = None
-        if current_price:
-            gain_loss = (current_price - avg_buy_price) * quantity
-            gain_loss_pct = ((current_price - avg_buy_price) / avg_buy_price) * 100
-
-        positions.append({
-            "ticker": ticker,
-            "quantity": quantity,
-            "avg_buy_price": avg_buy_price,
-            "current_price": current_price,
-            "gain_loss": gain_loss,
-            "gain_loss_pct": gain_loss_pct,
-            "market_value": current_price * quantity if current_price else None,
-        })
-
-    r.logout()
-    return positions
-
-except Exception as e:
-    print(f"Robinhood error: {e}")
-    return []
-```
