@@ -1,9 +1,9 @@
-“””
+"""
 config.py — All credentials and settings.
 
 On Railway, set these as Environment Variables in your project dashboard
 (never commit real keys to GitHub). The os.environ.get() calls below
-read them from Railway’s environment at runtime."""
+read them from Railway’s environment at runtime.
 config.py — All credentials and settings.
 
 On Railway, set these as Environment Variables in your project dashboard
@@ -45,7 +45,7 @@ PLAID_ACCESS_TOKEN_ROBINHOOD = "access-production-7d125525-705f-4a23-99c9-79ff0e
 
 For local testing, you can temporarily hardcode values here,
 but switch back to env vars before pushing.
-“””
+"""
 
 import os
 
