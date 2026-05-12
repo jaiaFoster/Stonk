@@ -56,8 +56,9 @@ def run():
     if not positions:
         print("No positions found or login failed.")
         return
-
-    tickers = [p["ticker"] for p in positions]
+    
+    tickers = list(dict.fromkeys(p["ticker"] for p in positions))  # dedupe, preserve order
+    
     print(f"Positions: {tickers}")
 
     print("📰 Fetching news...")
