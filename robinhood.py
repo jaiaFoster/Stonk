@@ -64,7 +64,7 @@ def login_with_retry():
                 password=config.ROBINHOOD_PASSWORD,
                 mfa_code=mfa_code,
                 store_session=True,
-                pickle_name="robinhood_session",
+                pickle_name="/app/session/robinhood_session",
             )
             print("✅ Login successful.")
             return True
