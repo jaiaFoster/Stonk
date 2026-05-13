@@ -10,9 +10,14 @@ import config
 import requests
 import time
 import builtins
-builtins.input = lambda prompt="": ""
+import getpass
+
 # Set to True to print verbose debug info
 DEBUG = True
+
+builtins.input = lambda prompt="": ""
+getpass.getpass = lambda prompt="", stream=None: config.ROBINHOOD_PASSWORD
+builtins.input = lambda prompt="": ""
 
 # Account number -> friendly label mapping
 ACCOUNT_MAP = {
