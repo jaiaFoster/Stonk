@@ -7,14 +7,14 @@ Never commit real keys to GitHub.
 import os
 
 # --- Robinhood ---
-ROBINHOOD_USERNAME = os.environ.get("jaiafoster10@gmail.com")
-ROBINHOOD_PASSWORD = os.environ.get("Robinhoodp@s5")
+ROBINHOOD_USERNAME = os.environ.get("ROBINHOOD_USERNAME")
+ROBINHOOD_PASSWORD = os.environ.get("ROBINHOOD_PASSWORD")
 
 # --- NewsAPI ---
-NEWS_API_KEY = os.environ.get("292dde84bb564c4b8b808f374fb2637e")
+NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 
 # --- ntfy.sh ---
-NTFY_TOPIC = os.environ.get("jaa-stonks-2768")
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
 
 # --- Flask trigger endpoint ---
-RUN_TOKEN = os.environ.get("jaa-stonks")
+RUN_TOKEN = os.environ.get("RUN_TOKEN")
