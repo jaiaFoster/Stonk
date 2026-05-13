@@ -9,7 +9,8 @@ import robin_stocks.robinhood as r
 import config
 import requests
 import time
-
+import builtins
+builtins.input = lambda prompt="": ""
 # Set to True to print verbose debug info
 DEBUG = True
 
