@@ -2,24 +2,30 @@
 robinhood.py — Fetches current stock positions from Robinhood.
 Uses the unofficial robin_stocks library.
 Handles multiple account types: Roth IRA, Investing, Rollover IRA, Crypto.
-If login fails, sends an ntfy alert and retries every 60s.
 """
 
-import robin_stocks.robinhood as r
-import config
-import requests
-import time
 import builtins
 import getpass
+import traceback
+import requests
+import time
 
-# Set to True to print verbose debug info
+# Patch input() and getpass() before importing robin_stocks
+# so it never blocks waiting for terminal input
+_original_input = builtins.input
+builtins.input = lambda prompt="": (print(f"[PATCH] input() called with: {prompt}", flush=True) or "")
+
+import config
+
+# Patch getpass after config is loaded so we have the password
+getpass.getpass = lambda prompt="", stream=None: (
+    print(f"[PATCH] getpass() called with: {prompt}", flush=True) or config.ROBINHOOD_PASSWORD
+)
+
+import robin_stocks.robinhood as r
+
 DEBUG = True
 
-builtins.input = lambda prompt="": ""
-getpass.getpass = lambda prompt="", stream=None: config.ROBINHOOD_PASSWORD
-builtins.input = lambda prompt="": ""
-
-# Account number -> friendly label mapping
 ACCOUNT_MAP = {
     "973901945": "Roth IRA",
     "489284471": "Rollover IRA",
@@ -32,12 +38,12 @@ RETRY_INTERVAL_SECONDS = 60
 def dbg(msg, indent=0):
     if DEBUG:
         prefix = "   " * indent
-        print(f"{prefix}[DBG] {msg}")
+        print(f"{prefix}[DBG] {msg}", flush=True)
 
 
 def notify(message, title="Stonk Reporter Alert"):
-    """Send an ntfy notification — no emojis in headers (latin-1 limitation)."""
     try:
+        print(f"Sending ntfy to topic: {config.NTFY_TOPIC}", flush=True)
         resp = requests.post(
             f"https://ntfy.sh/{config.NTFY_TOPIC}",
             data=message.encode("utf-8"),
@@ -47,43 +53,44 @@ def notify(message, title="Stonk Reporter Alert"):
             },
             timeout=10,
         )
-        print(f"ntfy response: {resp.status_code}")
+        print(f"ntfy response: {resp.status_code} {resp.text}", flush=True)
     except Exception as e:
-        print(f"Failed to send ntfy alert: {e}")
+        print(f"Failed to send ntfy alert: {e}", flush=True)
 
 
 def login_with_retry():
-    """
-    Attempt Robinhood login using credentials from config.
-    On failure, send ntfy alert and retry every 60s up to MAX_LOGIN_RETRIES times.
-    """
+    print(f"login_with_retry() called", flush=True)
+    print(f"Username: {config.ROBINHOOD_USERNAME}", flush=True)
+    print(f"Password set: {bool(config.ROBINHOOD_PASSWORD)}", flush=True)
+
     for attempt in range(1, MAX_LOGIN_RETRIES + 1):
         try:
-            print(f"Login attempt {attempt}/{MAX_LOGIN_RETRIES}...")
+            print(f"Login attempt {attempt}/{MAX_LOGIN_RETRIES}...", flush=True)
             r.login(
                 username=config.ROBINHOOD_USERNAME,
                 password=config.ROBINHOOD_PASSWORD,
                 store_session=True,
                 pickle_name="robinhood_session",
             )
-            print("Login successful.")
+            print("Login successful.", flush=True)
             return True
 
         except Exception as e:
             error_msg = str(e)
-            print(f"Login failed (attempt {attempt}): {error_msg}")
+            print(f"Login failed (attempt {attempt}): {error_msg}", flush=True)
+            traceback.print_exc()
 
             if attempt == 1:
                 notify(
                     f"Robinhood login failed.\n"
                     f"Error: {error_msg}\n"
-                    f"Please approve the login request on your Robinhood app.\n"
-                    f"Will retry every {RETRY_INTERVAL_SECONDS}s for {MAX_LOGIN_RETRIES} attempts.",
+                    f"Please approve the login on your Robinhood app.\n"
+                    f"Retrying every {RETRY_INTERVAL_SECONDS}s.",
                     title="Stonk Reporter - Login Failed"
                 )
-                print(f"Alert sent to ntfy. Retrying every {RETRY_INTERVAL_SECONDS}s...")
+                print(f"ntfy alert sent. Retrying every {RETRY_INTERVAL_SECONDS}s...", flush=True)
             else:
-                print(f"Retrying in {RETRY_INTERVAL_SECONDS}s...")
+                print(f"Retrying in {RETRY_INTERVAL_SECONDS}s...", flush=True)
 
             if attempt < MAX_LOGIN_RETRIES:
                 time.sleep(RETRY_INTERVAL_SECONDS)
@@ -92,58 +99,55 @@ def login_with_retry():
         f"Robinhood login failed after {MAX_LOGIN_RETRIES} attempts. Manual intervention needed.",
         title="Stonk Reporter - Login Gave Up"
     )
-    print("Max retries reached. Giving up.")
+    print("Max retries reached. Giving up.", flush=True)
     return False
 
 
 def get_positions():
+    print("get_positions() called", flush=True)
     try:
         if not login_with_retry():
             return []
 
         all_positions = []
 
-        # --- STOCK POSITIONS (IRA accounts by account number) ---
-        print("\nFetching stock positions from IRA accounts...")
+        # --- STOCK POSITIONS ---
+        print("Fetching stock positions from IRA accounts...", flush=True)
         for acct_num, acct_label in ACCOUNT_MAP.items():
-            print(f"\n   Account: {acct_label} ({acct_num})")
+            print(f"Account: {acct_label} ({acct_num})", flush=True)
             try:
                 raw = r.account.get_open_stock_positions(account_number=acct_num) or []
-                dbg(f"Raw response: {len(raw)} record(s)", indent=1)
+                print(f"Raw response: {len(raw)} record(s)", flush=True)
 
                 if not raw:
-                    print(f"      No open positions returned for {acct_label}")
+                    print(f"No open positions for {acct_label}", flush=True)
                     continue
 
                 for pos in raw:
                     try:
                         quantity = float(pos.get("quantity", 0))
                         if quantity <= 0:
-                            dbg(f"Skipping — quantity is 0", indent=2)
                             continue
 
                         ticker = pos.get("symbol") or r.get_symbol_by_url(pos["instrument"])
-                        print(f"\n      Processing: {ticker}")
-                        dbg(f"quantity={quantity}, avg_buy_price={pos.get('average_buy_price')}", indent=3)
-
+                        print(f"Processing: {ticker}", flush=True)
                         position = _build_position_from_raw(ticker, pos, account=acct_label, quantity=quantity)
-                        print(f"        Built: {position}")
+                        print(f"Built: {position}", flush=True)
                         all_positions.append(position)
 
                     except Exception as e:
-                        print(f"        Failed to build position: {e}")
-                        dbg(f"Raw pos: {pos}", indent=3)
+                        print(f"Failed to build position: {e}", flush=True)
+                        traceback.print_exc()
 
             except Exception as e:
-                print(f"      Failed to fetch {acct_label}: {e}")
-                import traceback
+                print(f"Failed to fetch {acct_label}: {e}", flush=True)
                 traceback.print_exc()
 
         # --- CRYPTO ---
-        print("\nFetching crypto positions...")
+        print("Fetching crypto positions...", flush=True)
         try:
             crypto = r.crypto.get_crypto_positions()
-            print(f"   Found {len(crypto or [])} crypto position(s)")
+            print(f"Found {len(crypto or [])} crypto position(s)", flush=True)
 
             for pos in (crypto or []):
                 try:
@@ -166,28 +170,26 @@ def get_positions():
                         "market_value": current_price * quantity if current_price else None,
                         "account": "Crypto",
                     }
-                    print(f"   Crypto {ticker}: Built: {position}")
+                    print(f"Crypto {ticker}: Built: {position}", flush=True)
                     all_positions.append(position)
                 except Exception as e:
-                    print(f"   Failed to build crypto position: {e}")
+                    print(f"Failed to build crypto position: {e}", flush=True)
 
         except Exception as e:
-            print(f"   Crypto fetch failed: {e}")
+            print(f"Crypto fetch failed: {e}", flush=True)
 
-        print(f"\nTotal positions across all accounts: {len(all_positions)}")
+        print(f"Total positions: {len(all_positions)}", flush=True)
         r.logout()
-        print("Logged out.")
+        print("Logged out.", flush=True)
         return all_positions
 
     except Exception as e:
-        print(f"Robinhood error: {e}")
-        import traceback
+        print(f"Robinhood error: {e}", flush=True)
         traceback.print_exc()
         return []
 
 
 def _build_position_from_raw(ticker, pos, account, quantity):
-    """Build a position dict from raw position data."""
     avg_buy_price = float(pos["average_buy_price"])
     quote = r.get_latest_price(ticker)
     current_price = float(quote[0]) if quote else None
