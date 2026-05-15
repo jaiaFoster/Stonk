@@ -18,6 +18,14 @@ builtins.input = lambda prompt="": (print(f"[PATCH] input() called with: {prompt
 import config
 
 # Patch getpass after config is loaded so we have the password
+def _patched_input(prompt=""):
+    print(f"[PATCH] input() called with: {prompt}", flush=True)
+    if "code" in prompt.lower() or "validation" in prompt.lower():
+        print("Waiting 30s for you to approve on Robinhood app...", flush=True)
+        time.sleep(30)
+    return ""
+
+builtins.input = _patched_input
 getpass.getpass = lambda prompt="", stream=None: (
     print(f"[PATCH] getpass() called with: {prompt}", flush=True) or config.ROBINHOOD_PASSWORD
 )
