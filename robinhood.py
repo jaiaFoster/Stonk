@@ -10,14 +10,7 @@ import traceback
 import requests
 import time
 
-# Patch input() and getpass() before importing robin_stocks
-# so it never blocks waiting for terminal input
-_original_input = builtins.input
-builtins.input = lambda prompt="": (print(f"[PATCH] input() called with: {prompt}", flush=True) or "")
 
-import config
-
-# Patch getpass after config is loaded so we have the password
 def _patched_input(prompt=""):
     print(f"[PATCH] input() called with: {prompt}", flush=True)
     if "code" in prompt.lower() or "validation" in prompt.lower():
@@ -25,7 +18,13 @@ def _patched_input(prompt=""):
         time.sleep(30)
     return ""
 
+
+# Patch before any imports that might trigger input()
 builtins.input = _patched_input
+
+import config
+
+# Patch getpass after config is loaded so we have the password
 getpass.getpass = lambda prompt="", stream=None: (
     print(f"[PATCH] getpass() called with: {prompt}", flush=True) or config.ROBINHOOD_PASSWORD
 )
