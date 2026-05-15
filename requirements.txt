@@ -1,4 +1,4 @@
-robin_stocks==2.1.0
+robin_stocks @ git+https://github.com/jmfernandes/robin_stocks.git
 requests==2.31.0
 pyotp==2.9.0
 flask==3.0.3
