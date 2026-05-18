@@ -1,105 +1,169 @@
-# Daily Stock Reporter
+# 📈 Daily Stock Briefing
 
-Fetches your Robinhood positions every weekday morning, pulls relevant news,
-generates a Claude AI report, and pushes it to your iPhone via ntfy.
+A personal daily stock briefing tool. Hit an endpoint, get a full HTML report of your portfolio with positions, G/L, and news headlines — formatted as a ready-to-paste Claude prompt.
 
------
+---
+
+## How It Works
+
+1. You hit `https://your-railway-url/run?token=YOUR_TOKEN` (manually or via a scheduled ping)
+2. The server logs into Robinhood, fetches your crypto positions
+3. Pulls recent news headlines for each ticker via NewsAPI
+4. Formats everything into a Claude prompt
+5. Returns a full HTML page in your browser with:
+   - A positions table (ticker, account, quantity, avg cost, current price, G/L, market value)
+   - The full Claude prompt, ready to copy
+   - A run log for debugging
+6. You copy the prompt and paste it into Claude
+
+---
 
 ## File Structure
 
 ```
-stock-reporter/
-├── main.py           # Orchestrator — run this
-├── robinhood.py      # Fetches positions
-├── news.py           # Fetches news per ticker
-├── claude_report.py  # Calls Claude API
-├── notifier.py       # Pushes to ntfy.sh
-├── config.py         # Keys & settings (use env vars on Railway)
-├── requirements.txt
-└── railway.toml      # Cron schedule config
+stock-briefing/
+├── main.py           # Flask app — orchestrator + /run endpoint + HTML rendering
+├── robinhood.py      # Position fetching (robin_stocks for crypto, account map for IRAs)
+├── news.py           # NewsAPI headline fetching
+├── config.py         # Credentials loaded from environment variables
+├── requirements.txt  # Python dependencies
+└── Dockerfile        # Container config for Railway deployment
 ```
 
------
+---
 
-## Setup
+## Environment Variables
 
-### 1. Get your API keys
+Set these in Railway (never commit them to GitHub):
 
-|Service   |Where to get it                                 |
-|----------|------------------------------------------------|
-|Robinhood |Your own login credentials                      |
-|Anthropic |https://console.anthropic.com                   |
-|NewsAPI   |https://newsapi.org (free tier)                 |
-|ntfy topic|Just pick a unique name, e.g. `jaia-stocks-x7k2`|
+| Variable | Description |
+|----------|-------------|
+| `ROBINHOOD_USERNAME` | Your Robinhood email |
+| `ROBINHOOD_PASSWORD` | Your Robinhood password |
+| `NEWS_API_KEY` | From newsapi.org (free tier) |
+| `RUN_TOKEN` | Any secret string — protects the /run endpoint |
 
------
+---
 
-### 2. Handle Robinhood MFA (important)
+## Endpoints
 
-Robinhood requires MFA. On a server there’s no interactive terminal,
-so you need to pre-generate a session token locally:
+| Endpoint | Description |
+|----------|-------------|
+| `GET /run?token=YOUR_TOKEN` | Runs the full pipeline, returns HTML report |
+| `GET /health` | Returns `OK` — used by Railway to confirm the app is alive |
 
-1. Run `python main.py` locally once
-1. It will prompt for your MFA code — enter it
-1. robin_stocks saves a session token to `~/.tokens/robinhood.pickle`
-1. Upload that pickle file to Railway as a mounted file, OR
-1. Use a TOTP authenticator app secret (if you use an authenticator app, not SMS):
-- Get your TOTP secret from Robinhood’s 2FA setup
-- Add it to config.py as `ROBINHOOD_TOTP_SECRET`
-- In robinhood.py, replace `by_sms=True` with:
-  
-  ```python
-  import pyotp
-  totp = pyotp.TOTP(config.ROBINHOOD_TOTP_SECRET).now()
-  r.login(..., mfa_code=totp)
-  ```
+---
 
-The TOTP approach is cleaner for automated servers. Recommended.
+## Local Development
 
------
+**1. Clone and set up a virtual environment:**
+```bash
+git clone <your-repo-url>
+cd stock-briefing
+python -m venv venv
 
-### 3. Deploy to Railway
+# Mac/Linux
+source venv/bin/activate
 
-1. Push this folder to a GitHub repo (private)
-1. Go to https://railway.app → New Project → Deploy from GitHub
-1. Select your repo
-1. Go to Variables tab, add:
-- `ROBINHOOD_USERNAME`
-- `ROBINHOOD_PASSWORD`
-- `ROBINHOOD_TOTP_SECRET` (if using TOTP)
-- `ANTHROPIC_API_KEY`
-- `NEWS_API_KEY`
-- `NTFY_TOPIC`
-1. Railway reads `railway.toml` and sets up the cron automatically
-1. Adjust the cron time in `railway.toml` to your preferred morning time
+# Windows
+venv\Scripts\activate
+```
 
------
+**2. Install dependencies:**
+```bash
+pip install -r requirements.txt
+```
 
-### 4. Set up ntfy on iPhone
+**3. Set environment variables locally:**
 
-1. Download the **ntfy** app from the App Store (free)
-1. Tap + → Subscribe to topic
-1. Enter your `NTFY_TOPIC` name (e.g. `jaia-stocks-x7k2`)
-1. Done — reports will appear as push notifications
+Either export them in your terminal:
+```bash
+export ROBINHOOD_USERNAME="your@email.com"
+export ROBINHOOD_PASSWORD="yourpassword"
+export NEWS_API_KEY="your-newsapi-key"
+export RUN_TOKEN="any-secret-string"
+```
 
------
+Or temporarily hardcode them in `config.py` for local testing (switch back to `os.environ.get()` before pushing to GitHub).
 
-### 5. Optional: Apple Shortcuts integration
+**4. Run locally:**
+```bash
+python main.py
+```
 
-If you want Shortcuts to trigger on-demand (not just wait for the cron):
+Then open `http://localhost:5000/run?token=your-secret-string` in your browser.
 
-1. Create a new Shortcut
-1. Add action: **Get Contents of URL**
-- URL: `https://railway.app` (your Railway deployment webhook URL)
-- Method: POST
-1. Add action: **Show Notification** with the result
+---
 
-Or skip Shortcuts entirely — ntfy handles delivery natively.
+## Railway Deployment
 
------
+**1. Push to GitHub:**
+```bash
+git init
+git add .
+git commit -m "initial commit"
+git remote add origin <your-github-repo-url>
+git push -u origin main
+```
 
-## Adjusting the report
+**2. Create a Railway project:**
+- Go to [railway.app](https://railway.app)
+- New Project → Deploy from GitHub repo → select your repo
+- Railway auto-detects the Dockerfile and builds it
 
-Edit the prompt in `claude_report.py` to change tone, length, or focus.
-Edit the cron schedule in `railway.toml` to change the time.
-Edit `news.py` to change how many headlines per ticker.
+**3. Set environment variables in Railway:**
+- Go to your project → Variables tab
+- Add each variable from the table above
+
+**4. Get your public URL:**
+- Railway → Settings → Networking → Generate Domain
+- Your run endpoint will be `https://your-app.railway.app/run?token=YOUR_TOKEN`
+
+**5. Trigger it:**
+- Hit the URL in your browser whenever you want a briefing
+- Or set up a scheduled ping using Railway's cron feature or a free service like [cron-job.org](https://cron-job.org)
+
+---
+
+## Account Coverage
+
+| Account | Source | Status |
+|---------|--------|--------|
+| Crypto (BTC, SOL) | robin_stocks | ✅ Working |
+| Roth IRA | robin_stocks (account map) | ⚠️ Robinhood API returns empty — known limitation |
+| Rollover | robin_stocks (account map) | ⚠️ Robinhood API returns empty — known limitation |
+| Individual (margin) | robin_stocks | ✅ Returns positions if any exist |
+
+> **Note:** Robinhood deliberately restricts API access to retirement accounts through their unofficial API. The `ACCOUNT_MAP` in `robinhood.py` targets those account numbers directly but Robinhood's backend still returns empty. A Plaid integration is the long-term fix — see the roadmap below.
+
+---
+
+## Roadmap
+
+- [x] Crypto position fetching via robin_stocks
+- [x] NewsAPI headline integration
+- [x] Flask endpoint with HTML report rendering
+- [x] Railway deployment via Docker
+- [ ] Plaid integration for full IRA/Rollover position access
+- [ ] Scheduled automatic runs via Railway cron
+- [ ] Direct Claude API call (skip the copy-paste step entirely)
+
+---
+
+## Dependencies
+
+| Package | Purpose |
+|---------|---------|
+| `robin_stocks` | Unofficial Robinhood API wrapper |
+| `requests` | HTTP calls to NewsAPI and ntfy |
+| `flask` | Web server for the trigger endpoint |
+| `gunicorn` | Production WSGI server (used by Railway) |
+| `pyotp` | TOTP support for Robinhood MFA |
+
+---
+
+## Notes
+
+- **MFA:** On first run, Robinhood will send a device approval to your phone. Approve it in the Robinhood app. The session is cached in `robinhood_session.pickle` so subsequent runs don't require re-approval.
+- **NewsAPI free tier:** 100 requests/day. If you have 10 tickers and run twice a day that's 20 requests — well within limits.
+- **Session persistence on Railway:** The pickle file is written inside the container and lost on redeploy. If the app seems stuck on login, a redeploy forces a fresh auth cycle.
