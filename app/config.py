@@ -16,6 +16,11 @@ ROBINHOOD_PASSWORD = os.environ.get("ROBINHOOD_PASSWORD")
 # Free tier at newsapi.org — 100 requests/day.
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
 
+# --- Finnhub market data ---
+# Used for price-history-derived momentum/trend metrics.
+FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
+MARKET_BENCHMARK_TICKER = os.environ.get("MARKET_BENCHMARK_TICKER", "QQQ")
+
 # --- Endpoint security ---
 # A secret token to protect the /run endpoint from being triggered by anyone.
 RUN_TOKEN = os.environ.get("RUN_TOKEN")
