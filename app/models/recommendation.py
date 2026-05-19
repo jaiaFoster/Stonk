@@ -1,9 +1,9 @@
 """
 app/models/recommendation.py — Normalized advisor recommendation model.
 
-Portfolio Scoring v1 is intentionally data-limited: it uses the data the app
-already collects today, then leaves room for trend, fundamental, options, and
-earnings factors to be added later without changing the report interface.
+The recommendation model is strategy-agnostic. It can carry current position
+info, score breakdowns, reasons/risks, and optional market metrics used by the
+strategy.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ class Recommendation:
     position_value: float | None = None
     gain_loss_pct: float | None = None
     score_breakdown: dict[str, float] = field(default_factory=dict)
+    market_metrics: dict[str, Any] = field(default_factory=dict)
     reasons: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     next_check: str | None = None
@@ -41,6 +42,7 @@ class Recommendation:
         data["score_breakdown"] = {
             key: round(float(value), 1) for key, value in self.score_breakdown.items()
         }
+        data["market_metrics"] = dict(self.market_metrics or {})
         return data
 
     @classmethod
@@ -69,6 +71,7 @@ class Recommendation:
                 else None
             ),
             score_breakdown=dict(data.get("score_breakdown", {}) or {}),
+            market_metrics=dict(data.get("market_metrics", {}) or {}),
             reasons=list(data.get("reasons", []) or []),
             risks=list(data.get("risks", []) or []),
             next_check=(str(data["next_check"]) if data.get("next_check") else None),
