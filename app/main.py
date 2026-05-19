@@ -7,26 +7,32 @@ This file owns the web layer only:
 - converting pipeline results into HTTP responses
 - /health endpoint
 
-Portfolio fetching, news fetching, and report rendering live in services and
-providers so the app can grow into a modular advisor system.
+Important deployment note:
+This file can now be run directly with `python app/main.py` OR imported by
+Gunicorn/Railway through `main:app` or `app.main:app`.
+
+The heavy Robinhood/news pipeline imports are intentionally lazy. That keeps the
+web server able to boot and serve /health even if a provider has a runtime issue.
 """
 
 from __future__ import annotations
 
+import os
 import threading
+import traceback
 from html import escape
 from typing import Any
 
 from flask import Flask, abort, request
 
 from app import config
-from app.services.analysis_service import run_portfolio_pipeline
-from app.services.report_service import format_html
 
 app = Flask(__name__)
 
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()
+
+print("Algo Stock Advisor Flask app loaded.", flush=True)
 
 
 def run() -> tuple[str | None, list[dict[str, Any]], dict[str, list[dict[str, Any]]], list[str]]:
@@ -36,7 +42,17 @@ def run() -> tuple[str | None, list[dict[str, Any]], dict[str, list[dict[str, An
     Returns:
         tuple: payload, positions, structured news map, log lines.
     """
-    return run_portfolio_pipeline()
+    try:
+        from app.services.analysis_service import run_portfolio_pipeline
+
+        return run_portfolio_pipeline()
+    except Exception as e:
+        error_log = [
+            "=== RUN STARTED ===",
+            f"FATAL ERROR before pipeline could run: {e}",
+            traceback.format_exc(),
+        ]
+        return None, [], {}, error_log
 
 
 @app.route("/run")
@@ -69,7 +85,7 @@ def trigger():
 
     try:
         print("=== /run ENDPOINT HIT ===", flush=True)
-        payload, positions, news, log = run_portfolio_pipeline()
+        payload, positions, news, log = run()
 
         if payload is None:
             error_log = escape("\n".join(log))
@@ -99,7 +115,48 @@ def trigger():
 </body>
 </html>""", 500
 
-        return format_html(payload, positions, news, log), 200
+        try:
+            from app.services.report_service import format_html
+
+            return format_html(payload, positions, news, log), 200
+        except Exception as e:
+            error_log = escape(
+                "\n".join(
+                    [
+                        "=== REPORT RENDER FAILED ===",
+                        f"ERROR: {e}",
+                        traceback.format_exc(),
+                        "",
+                        "=== PIPELINE LOG BEFORE RENDER FAILURE ===",
+                        *log,
+                    ]
+                )
+            )
+            return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Stock Advisor — Render Error</title>
+    <style>
+        body {{
+            font-family: monospace;
+            background: #0f0f0f;
+            color: #ff8888;
+            padding: 2rem;
+        }}
+        pre {{
+            background: #1a0a0a;
+            padding: 1rem;
+            border-radius: 6px;
+            white-space: pre-wrap;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Report Render Failed</h1>
+    <pre>{error_log}</pre>
+</body>
+</html>""", 500
 
     finally:
         RUN_LOCK.release()
@@ -108,3 +165,9 @@ def trigger():
 @app.route("/health")
 def health():
     return "OK", 200
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Starting Algo Stock Advisor on 0.0.0.0:{port}", flush=True)
+    app.run(host="0.0.0.0", port=port)
