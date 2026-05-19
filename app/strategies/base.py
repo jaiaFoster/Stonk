@@ -1,11 +1,15 @@
 """
 app/strategies/base.py — Shared strategy result types.
 
-This is a placeholder foundation for later strategy modules. It is not used by
-/run yet, so the current app behavior remains unchanged.
+Strategy modules should return transparent, report-friendly outputs. The app is
+not trying to hide a black-box model; every score should expose the reasons,
+risks, and known data limitations behind it.
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -18,3 +22,4 @@ class StrategyResult:
     reasons: list[str] = field(default_factory=list)
     risks: list[str] = field(default_factory=list)
     next_check: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
