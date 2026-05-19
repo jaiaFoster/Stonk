@@ -16,6 +16,7 @@ runtime issue.
 from __future__ import annotations
 
 import os
+import json
 import threading
 import time
 import traceback
@@ -272,13 +273,21 @@ def run_sync_response():
 
 def loading_page(job_id: str, token: str | None, already_running: bool = False) -> str:
     safe_job_id = escape(job_id)
-    safe_token = escape(token or "", quote=True)
+    safe_token = token or ""
     title = "Run Already Active" if already_running else "Portfolio Run Started"
     subtitle = (
         "A portfolio run is already in progress. This page will load the result when it finishes."
         if already_running
         else "Your portfolio run has started. This page will load the report automatically."
     )
+
+    # Build JavaScript strings with json.dumps so special characters in the token
+    # cannot break the polling script. This also avoids the previous issue where
+    # an escaped newline became a real newline inside a JS string literal.
+    status_url = f"/run/status/{job_id}?token={safe_token}"
+    result_url = f"/run/result/{job_id}?token={safe_token}"
+    status_url_js = json.dumps(status_url)
+    result_url_js = json.dumps(result_url)
 
     return f"""<!DOCTYPE html>
 <html>
@@ -313,6 +322,7 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
         }}
         @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
         .muted {{ color: #999; }}
+        .small {{ font-size: 0.85rem; }}
         pre {{
             background: #0f0f0f;
             color: #aaa;
@@ -321,10 +331,11 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
             white-space: pre-wrap;
             min-height: 80px;
         }}
+        a {{ color: #00ff88; }}
     </style>
 </head>
 <body>
-    <h1>📈 Stock Advisor — {title}</h1>
+    <h1>📈 Stock Advisor — {escape(title)}</h1>
     <div class="card">
         <div class="spinner"></div>
         <p>{escape(subtitle)}</p>
@@ -332,11 +343,16 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
         <p class="muted">Check your phone and approve the Robinhood login/device request if one appears.</p>
         <p id="status">Starting...</p>
         <pre id="log">Job: {safe_job_id}</pre>
+        <p class="muted small">
+            If this page does not move after the logs say the run completed, open the result directly:
+            <a id="resultLink" href="#">result page</a>
+        </p>
     </div>
 
     <script>
-        const statusUrl = "/run/status/{safe_job_id}?token={safe_token}";
-        const resultUrl = "/run/result/{safe_job_id}?token={safe_token}";
+        const statusUrl = {status_url_js};
+        const resultUrl = {result_url_js};
+        document.getElementById("resultLink").href = resultUrl;
 
         async function pollStatus() {{
             try {{
@@ -345,11 +361,11 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
                 document.getElementById("status").innerText = data.message || data.status || "Working...";
 
                 if (data.log_tail && data.log_tail.length) {{
-                    document.getElementById("log").innerText = data.log_tail.join("\n");
+                    document.getElementById("log").innerText = data.log_tail.join("\\n");
                 }}
 
                 if (data.status === "complete" || data.status === "error") {{
-                    window.location.href = resultUrl;
+                    window.location.assign(resultUrl);
                     return;
                 }}
             }} catch (err) {{
@@ -362,7 +378,6 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
     </script>
 </body>
 </html>"""
-
 
 def run_already_active_page() -> str:
     return """<!DOCTYPE html>
