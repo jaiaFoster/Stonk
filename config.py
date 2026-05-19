@@ -1,20 +1,8 @@
 """
-config.py — All credentials and settings.
-On Railway, set these as Environment Variables in the project dashboard.
-Never commit real keys to GitHub — all values come from environment variables.
+config.py — Compatibility wrapper.
+
+Existing files or tools that still import `config` will continue to work.
+The real config now lives in `app/config.py`.
 """
 
-import os
-
-# --- Robinhood ---
-ROBINHOOD_USERNAME = os.environ.get("ROBINHOOD_USERNAME")
-ROBINHOOD_PASSWORD = os.environ.get("ROBINHOOD_PASSWORD")
-
-# --- NewsAPI ---
-# Free tier at newsapi.org — 100 requests/day
-NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
-
-# --- Endpoint security ---
-# A secret token to protect the /run endpoint from being triggered by anyone.
-# Set this to any long random string e.g. "jaia-stonk-abc123xyz"
-RUN_TOKEN = os.environ.get("RUN_TOKEN")
+from app.config import *  # noqa: F401,F403
