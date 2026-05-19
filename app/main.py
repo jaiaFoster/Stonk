@@ -11,8 +11,11 @@ Portfolio fetching, news fetching, and report rendering live in services and
 providers so the app can grow into a modular advisor system.
 """
 
+from __future__ import annotations
+
 import threading
 from html import escape
+from typing import Any
 
 from flask import Flask, abort, request
 
@@ -26,12 +29,12 @@ app = Flask(__name__)
 RUN_LOCK = threading.Lock()
 
 
-def run():
+def run() -> tuple[str | None, list[dict[str, Any]], dict[str, list[dict[str, Any]]], list[str]]:
     """
     Backward-compatible run function.
 
     Returns:
-        tuple[str | None, list[dict], list[str]]: payload, positions, log lines.
+        tuple: payload, positions, structured news map, log lines.
     """
     return run_portfolio_pipeline()
 
@@ -66,7 +69,7 @@ def trigger():
 
     try:
         print("=== /run ENDPOINT HIT ===", flush=True)
-        payload, positions, log = run_portfolio_pipeline()
+        payload, positions, news, log = run_portfolio_pipeline()
 
         if payload is None:
             error_log = escape("\n".join(log))
@@ -96,7 +99,7 @@ def trigger():
 </body>
 </html>""", 500
 
-        return format_html(payload, positions, log), 200
+        return format_html(payload, positions, news, log), 200
 
     finally:
         RUN_LOCK.release()
