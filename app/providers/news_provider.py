@@ -230,7 +230,7 @@ class NewsProviderAccessError(RuntimeError):
     """Raised when NewsAPI denies or rejects the request."""
 
 
-def get_news_for_tickers(tickers: list[str]) -> StructuredNewsMap:
+def get_news_for_tickers(tickers: list[str], max_tickers: int | None = None) -> StructuredNewsMap:
     """
     Fetch structured, relevance-scored news for each ticker.
 
@@ -247,13 +247,15 @@ def get_news_for_tickers(tickers: list[str]) -> StructuredNewsMap:
         print("NEWS_API_KEY is not set; skipping news fetch.", flush=True)
         return news_map
 
-    max_tickers = max(0, int(getattr(config, "NEWS_MAX_TICKERS_PER_RUN", 8) or 8))
-    tickers_to_fetch = normalized_tickers[:max_tickers] if max_tickers else []
+    configured_max_tickers = getattr(config, "NEWS_MAX_TICKERS_PER_RUN", 8)
+    effective_max_tickers = configured_max_tickers if max_tickers is None else max_tickers
+    effective_max_tickers = max(0, int(effective_max_tickers or 0))
+    tickers_to_fetch = normalized_tickers[:effective_max_tickers] if effective_max_tickers else []
 
     if len(tickers_to_fetch) < len(normalized_tickers):
         print(
             f"NewsAPI budget guard: fetching {len(tickers_to_fetch)}/{len(normalized_tickers)} ticker(s) "
-            f"this run. Set NEWS_MAX_TICKERS_PER_RUN to adjust.",
+            f"this run. Set NEWS_MAX_TICKERS_PER_RUN or use DEV_MAX_TICKERS in dev mode to adjust.",
             flush=True,
         )
 

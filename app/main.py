@@ -50,7 +50,15 @@ PipelineResult = tuple[
 ]
 
 
-def run() -> PipelineResult:
+def _requested_run_mode() -> str:
+    """Return prod/dev for the current request, defaulting to APP_MODE."""
+    requested = (request.args.get("mode") or config.APP_MODE or "prod").strip().lower()
+    if requested in {"dev", "development", "test", "testing"}:
+        return "dev"
+    return "prod"
+
+
+def run(run_mode: str = "prod") -> PipelineResult:
     """
     Backward-compatible run function.
 
@@ -60,7 +68,7 @@ def run() -> PipelineResult:
     try:
         from app.services.analysis_service import run_portfolio_pipeline
 
-        return run_portfolio_pipeline()
+        return run_portfolio_pipeline(run_mode=run_mode)
     except Exception as e:
         error_log = [
             "=== RUN STARTED ===",
@@ -76,9 +84,11 @@ def trigger():
     if token != config.RUN_TOKEN:
         abort(403)
 
+    run_mode = _requested_run_mode()
+
     # Escape hatch for old blocking behavior, useful for debugging.
     if request.args.get("sync") == "1":
-        return run_sync_response()
+        return run_sync_response(run_mode=run_mode)
 
     _cleanup_old_jobs()
 
@@ -86,24 +96,26 @@ def trigger():
 
     if not RUN_LOCK.acquire(blocking=False):
         if ACTIVE_JOB_ID and ACTIVE_JOB_ID in RUN_JOBS:
-            return loading_page(ACTIVE_JOB_ID, token, already_running=True), 202
+            active_mode = str(RUN_JOBS.get(ACTIVE_JOB_ID, {}).get("mode", "prod"))
+            return loading_page(ACTIVE_JOB_ID, token, already_running=True, run_mode=active_mode), 202
         return run_already_active_page(), 409
 
     job_id = uuid.uuid4().hex
     ACTIVE_JOB_ID = job_id
     RUN_JOBS[job_id] = {
         "status": "running",
-        "message": "Starting portfolio run. Waiting for Robinhood approval if prompted.",
+        "message": _initial_job_message(run_mode),
+        "mode": run_mode,
         "created_at": time.time(),
         "updated_at": time.time(),
         "result": None,
     }
 
-    worker = threading.Thread(target=_run_job, args=(job_id,), daemon=True)
+    worker = threading.Thread(target=_run_job, args=(job_id, run_mode), daemon=True)
     worker.start()
 
-    print(f"=== /run ENDPOINT HIT; async job {job_id} started ===", flush=True)
-    return loading_page(job_id, token), 202
+    print(f"=== /run ENDPOINT HIT; async job {job_id} started; mode={run_mode} ===", flush=True)
+    return loading_page(job_id, token, run_mode=run_mode), 202
 
 
 @app.route("/run/status/<job_id>")
@@ -137,6 +149,7 @@ def run_status(job_id: str):
             "message": job.get("message", "Working..."),
             "redirect_url": f"/run/result/{job_id}?token={token}",
             "log_tail": log_tail,
+            "mode": job.get("mode", "prod"),
             "updated_at": job.get("updated_at"),
         }
     )
@@ -154,7 +167,7 @@ def run_result(job_id: str):
 
     status = job.get("status")
     if status == "running":
-        return loading_page(job_id, token, already_running=True), 202
+        return loading_page(job_id, token, already_running=True, run_mode=str(job.get("mode", "prod"))), 202
 
     result = job.get("result")
     if not result:
@@ -192,17 +205,15 @@ def health():
     return "OK", 200
 
 
-def _run_job(job_id: str) -> None:
+def _run_job(job_id: str, run_mode: str = "prod") -> None:
     global ACTIVE_JOB_ID
 
     try:
-        RUN_JOBS[job_id]["message"] = (
-            "Running. Waiting for Robinhood approval if prompted — check your phone."
-        )
+        RUN_JOBS[job_id]["message"] = _running_job_message(run_mode)
         RUN_JOBS[job_id]["updated_at"] = time.time()
 
-        print(f"=== BACKGROUND RUN {job_id} STARTED ===", flush=True)
-        result = run()
+        print(f"=== BACKGROUND RUN {job_id} STARTED; mode={run_mode} ===", flush=True)
+        result = run(run_mode=run_mode)
         payload, positions, news, recommendations, log = result
 
         if payload is None:
@@ -238,13 +249,13 @@ def _run_job(job_id: str) -> None:
         RUN_LOCK.release()
 
 
-def run_sync_response():
+def run_sync_response(run_mode: str = "prod"):
     if not RUN_LOCK.acquire(blocking=False):
         return run_already_active_page(), 409
 
     try:
-        print("=== /run ENDPOINT HIT; sync mode ===", flush=True)
-        payload, positions, news, recommendations, log = run()
+        print(f"=== /run ENDPOINT HIT; sync mode; mode={run_mode} ===", flush=True)
+        payload, positions, news, recommendations, log = run(run_mode=run_mode)
 
         if payload is None:
             error_log = escape("\n".join(log))
@@ -273,9 +284,16 @@ def run_sync_response():
         RUN_LOCK.release()
 
 
-def loading_page(job_id: str, token: str | None, already_running: bool = False) -> str:
+def loading_page(
+    job_id: str,
+    token: str | None,
+    already_running: bool = False,
+    run_mode: str = "prod",
+) -> str:
     safe_job_id = escape(job_id)
     safe_token = token or ""
+    clean_mode = "dev" if str(run_mode).lower() == "dev" else "prod"
+    mode_badge = "DEV MODE" if clean_mode == "dev" else "PROD MODE"
     title = "Run Already Active" if already_running else "Portfolio Run Started"
     subtitle = (
         "A portfolio run is already in progress. This page will load the result when it finishes."
@@ -340,6 +358,7 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
     <h1>📈 Stock Advisor — {escape(title)}</h1>
     <div class="card">
         <div class="spinner"></div>
+        <p><strong>{escape(mode_badge)}</strong></p>
         <p>{escape(subtitle)}</p>
         <p><strong>Waiting for Robinhood approval if prompted.</strong></p>
         <p class="muted">Check your phone and approve the Robinhood login/device request if one appears.</p>
@@ -380,6 +399,25 @@ def loading_page(job_id: str, token: str | None, already_running: bool = False) 
     </script>
 </body>
 </html>"""
+
+
+def _initial_job_message(run_mode: str) -> str:
+    if str(run_mode).lower() == "dev":
+        return (
+            "Starting DEV portfolio run. Robinhood still fetches the portfolio; "
+            "external provider calls are limited."
+        )
+    return "Starting portfolio run. Waiting for Robinhood approval if prompted."
+
+
+def _running_job_message(run_mode: str) -> str:
+    if str(run_mode).lower() == "dev":
+        return (
+            "Running DEV mode. Waiting for Robinhood approval if prompted — "
+            "external API calls are limited."
+        )
+    return "Running. Waiting for Robinhood approval if prompted — check your phone."
+
 
 def run_already_active_page() -> str:
     return """<!DOCTYPE html>

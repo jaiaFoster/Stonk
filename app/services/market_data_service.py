@@ -22,6 +22,8 @@ LogFn = Callable[[str], None]
 def get_market_metrics_for_positions(
     positions: list[dict[str, Any]],
     log_print: LogFn | None = None,
+    max_tickers: int | None = None,
+    allowed_tickers: list[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Return normalized market metrics keyed by ticker."""
     def log(msg: str) -> None:
@@ -37,11 +39,21 @@ def get_market_metrics_for_positions(
     provider = FinnhubMarketDataProvider()
     tickers = _equity_tickers_from_positions(positions)
 
+    if allowed_tickers is not None:
+        allowed = {str(t).upper().strip() for t in allowed_tickers if str(t).strip()}
+        tickers = [ticker for ticker in tickers if ticker in allowed]
+
+    if max_tickers is not None:
+        tickers = tickers[: max(0, int(max_tickers or 0))]
+
     if not tickers:
         log("No equity tickers found for Finnhub Market Data v1.")
         return {}
 
-    log(f"Fetching Finnhub Market Data v1 for {len(tickers)} equity ticker(s); benchmark={benchmark_ticker}")
+    limit_note = ""
+    if max_tickers is not None or allowed_tickers is not None:
+        limit_note = " (limited by dev/test mode)"
+    log(f"Fetching Finnhub Market Data v1 for {len(tickers)} equity ticker(s); benchmark={benchmark_ticker}{limit_note}")
 
     benchmark_metrics = provider.get_market_metrics(
         ticker=benchmark_ticker,

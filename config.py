@@ -6,6 +6,9 @@ older modules or manual debugging commands.
 """
 
 from app.config import (  # noqa: F401
+    APP_MODE,
+    DEV_MAX_TICKERS,
+    DEV_TICKERS,
     FINNHUB_API_KEY,
     MARKET_BENCHMARK_TICKER,
     NEWS_API_KEY,

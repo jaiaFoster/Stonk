@@ -38,3 +38,17 @@ RUN_TOKEN = os.environ.get("RUN_TOKEN")
 # --- Optional notifications ---
 # Used by the notification provider and Robinhood login failure alerts.
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
+
+
+# --- Development/testing controls ---
+# APP_MODE can be set to "dev" in Railway while actively testing, or you can
+# pass ?mode=dev to /run for one-off dev runs. Dev mode still fetches the full
+# Robinhood portfolio, but limits external provider calls such as NewsAPI,
+# Finnhub, and future Tradier calls.
+APP_MODE = os.environ.get("APP_MODE", "prod").strip().lower()
+DEV_MAX_TICKERS = _int_env("DEV_MAX_TICKERS", 2)
+DEV_TICKERS = [
+    ticker.strip().upper()
+    for ticker in os.environ.get("DEV_TICKERS", "NVDA,AMZN").split(",")
+    if ticker.strip()
+]
