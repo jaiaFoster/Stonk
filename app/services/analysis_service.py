@@ -17,6 +17,7 @@ from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
+from app.utils.log_safety import sanitize_for_log
 
 
 PipelineResult = tuple[
@@ -35,8 +36,18 @@ def run_portfolio_pipeline() -> PipelineResult:
     recommendations: list[dict[str, Any]] = []
 
     def log_print(msg: str) -> None:
-        print(msg, flush=True)
-        log.append(msg)
+        safe_msg = sanitize_for_log(
+            msg,
+            known_secrets=[
+                config.ROBINHOOD_PASSWORD,
+                config.NEWS_API_KEY,
+                config.FINNHUB_API_KEY,
+                config.RUN_TOKEN,
+                config.NTFY_TOPIC,
+            ],
+        )
+        print(safe_msg, flush=True)
+        log.append(safe_msg)
 
     log_print("=== RUN STARTED ===")
 
@@ -50,6 +61,7 @@ def run_portfolio_pipeline() -> PipelineResult:
         log_print(f"ROBINHOOD_USERNAME set: {bool(config.ROBINHOOD_USERNAME)}")
         log_print(f"ROBINHOOD_PASSWORD set: {bool(config.ROBINHOOD_PASSWORD)}")
         log_print(f"NEWS_API_KEY set: {bool(config.NEWS_API_KEY)}")
+        log_print(f"NEWS_MAX_TICKERS_PER_RUN: {getattr(config, 'NEWS_MAX_TICKERS_PER_RUN', 8)}")
         log_print(f"FINNHUB_API_KEY set: {bool(config.FINNHUB_API_KEY)}")
         log_print(f"MARKET_BENCHMARK_TICKER: {config.MARKET_BENCHMARK_TICKER}")
     except Exception as e:

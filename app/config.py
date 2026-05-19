@@ -8,6 +8,14 @@ variables.
 
 import os
 
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # --- Robinhood ---
 ROBINHOOD_USERNAME = os.environ.get("ROBINHOOD_USERNAME")
 ROBINHOOD_PASSWORD = os.environ.get("ROBINHOOD_PASSWORD")
@@ -15,6 +23,8 @@ ROBINHOOD_PASSWORD = os.environ.get("ROBINHOOD_PASSWORD")
 # --- NewsAPI ---
 # Free tier at newsapi.org — 100 requests/day.
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY")
+NEWS_MAX_TICKERS_PER_RUN = _int_env("NEWS_MAX_TICKERS_PER_RUN", 8)
+NEWS_PAGE_SIZE = _int_env("NEWS_PAGE_SIZE", 5)
 
 # --- Finnhub market data ---
 # Used for price-history-derived momentum/trend metrics.

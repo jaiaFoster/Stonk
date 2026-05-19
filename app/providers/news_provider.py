@@ -28,6 +28,7 @@ import requests
 
 from app import config
 from app.models.news_item import NewsItem
+from app.utils.log_safety import sanitize_for_log
 
 NEWS_API_URL = "https://newsapi.org/v2/everything"
 DEFAULT_LOOKBACK_DAYS = 7
@@ -221,40 +222,60 @@ GENERAL_IRRELEVANT_TERMS = {
 StructuredNewsMap = dict[str, list[dict[str, Any]]]
 
 
+class NewsProviderRateLimitError(RuntimeError):
+    """Raised when NewsAPI rate limits the current run."""
+
+
+class NewsProviderAccessError(RuntimeError):
+    """Raised when NewsAPI denies or rejects the request."""
+
+
 def get_news_for_tickers(tickers: list[str]) -> StructuredNewsMap:
     """
     Fetch structured, relevance-scored news for each ticker.
 
-    Returns:
-        dict[str, list[dict]] where each article dictionary contains:
-        ticker, title, source, url, published_at, relevance_score.
+    The provider is intentionally API-budget aware:
+    - caps the number of tickers fetched per run with NEWS_MAX_TICKERS_PER_RUN
+    - uses smaller page sizes by default
+    - stops immediately on HTTP 429 instead of hammering the API
+    - never prints API keys or full provider URLs in logs
     """
-    news_map: StructuredNewsMap = {}
+    normalized_tickers = [str(t).upper().strip() for t in tickers if str(t).strip()]
+    news_map: StructuredNewsMap = {ticker: [] for ticker in normalized_tickers}
 
     if not config.NEWS_API_KEY:
         print("NEWS_API_KEY is not set; skipping news fetch.", flush=True)
-        return {ticker: [] for ticker in tickers}
+        return news_map
+
+    max_tickers = max(0, int(getattr(config, "NEWS_MAX_TICKERS_PER_RUN", 8) or 8))
+    tickers_to_fetch = normalized_tickers[:max_tickers] if max_tickers else []
+
+    if len(tickers_to_fetch) < len(normalized_tickers):
+        print(
+            f"NewsAPI budget guard: fetching {len(tickers_to_fetch)}/{len(normalized_tickers)} ticker(s) "
+            f"this run. Set NEWS_MAX_TICKERS_PER_RUN to adjust.",
+            flush=True,
+        )
 
     end_date = date.today()
     start_date = end_date - timedelta(days=DEFAULT_LOOKBACK_DAYS)
 
-    for ticker in tickers:
-        normalized_ticker = str(ticker).upper().strip()
-        if not normalized_ticker:
-            continue
-
+    for ticker in tickers_to_fetch:
         try:
             raw_articles = _fetch_raw_articles(
-                ticker=normalized_ticker,
+                ticker=ticker,
                 start_date=start_date.isoformat(),
                 end_date=end_date.isoformat(),
             )
-            scored_articles = _score_and_filter_articles(normalized_ticker, raw_articles)
-            news_map[normalized_ticker] = scored_articles[:DEFAULT_MAX_ARTICLES_PER_TICKER]
+            scored_articles = _score_and_filter_articles(ticker, raw_articles)
+            news_map[ticker] = scored_articles[:DEFAULT_MAX_ARTICLES_PER_TICKER]
 
+        except NewsProviderRateLimitError as e:
+            print(f"News fetch stopped: {sanitize_for_log(e, [config.NEWS_API_KEY])}", flush=True)
+            break
         except Exception as e:
-            print(f"News fetch error for {normalized_ticker}: {e}", flush=True)
-            news_map[normalized_ticker] = []
+            print(f"News fetch error for {ticker}: {sanitize_for_log(e, [config.NEWS_API_KEY])}", flush=True)
+            news_map[ticker] = []
 
     return news_map
 
@@ -279,28 +300,55 @@ def get_headlines_for_tickers(tickers: list[str]) -> dict[str, list[str]]:
 
 def _fetch_raw_articles(ticker: str, start_date: str, end_date: str) -> list[dict[str, Any]]:
     query = build_query_for_ticker(ticker)
+    page_size = max(1, int(getattr(config, "NEWS_PAGE_SIZE", DEFAULT_PAGE_SIZE) or DEFAULT_PAGE_SIZE))
 
-    response = requests.get(
-        NEWS_API_URL,
-        params={
-            "q": query,
-            "from": start_date,
-            "to": end_date,
-            "sortBy": "relevancy",
-            "language": "en",
-            "pageSize": DEFAULT_PAGE_SIZE,
-            "apiKey": config.NEWS_API_KEY,
-        },
-        timeout=10,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.get(
+            NEWS_API_URL,
+            params={
+                "q": query,
+                "from": start_date,
+                "to": end_date,
+                "sortBy": "relevancy",
+                "language": "en",
+                "pageSize": page_size,
+            },
+            headers={"X-Api-Key": config.NEWS_API_KEY or ""},
+            timeout=10,
+        )
+    except requests.RequestException as e:
+        raise RuntimeError(f"NewsAPI request failed: {sanitize_for_log(e, [config.NEWS_API_KEY])}") from e
+
+    if response.status_code == 429:
+        raise NewsProviderRateLimitError(
+            "NewsAPI returned HTTP 429 Too Many Requests. Skipping remaining news calls for this run."
+        )
+
+    if response.status_code in {401, 403}:
+        raise NewsProviderAccessError(
+            f"NewsAPI returned HTTP {response.status_code}. Check NEWS_API_KEY and plan access."
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(_safe_provider_error("NewsAPI", response))
 
     data = response.json()
     if data.get("status") == "error":
-        raise RuntimeError(data.get("message", "NewsAPI returned an unknown error"))
+        message = sanitize_for_log(data.get("message", "NewsAPI returned an unknown error"), [config.NEWS_API_KEY])
+        code = data.get("code", "unknown")
+        raise RuntimeError(f"NewsAPI error {code}: {message}")
 
     articles = data.get("articles", [])
     return articles if isinstance(articles, list) else []
+
+
+def _safe_provider_error(provider_name: str, response: requests.Response) -> str:
+    try:
+        data = response.json()
+        message = data.get("message") or data.get("error") or response.reason
+    except Exception:
+        message = response.reason
+    return f"{provider_name} returned HTTP {response.status_code}: {sanitize_for_log(message, [config.NEWS_API_KEY])}"
 
 
 def build_query_for_ticker(ticker: str) -> str:

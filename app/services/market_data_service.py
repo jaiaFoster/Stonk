@@ -57,7 +57,22 @@ def get_market_metrics_for_positions(
             f"12M {benchmark_metrics.get('return_12m_pct')}%"
         )
     else:
-        log(f"Benchmark {benchmark_ticker} unavailable: {benchmark_metrics.get('error')}")
+        benchmark_error = str(benchmark_metrics.get("error") or "Unknown benchmark error")
+        log(f"Benchmark {benchmark_ticker} unavailable: {benchmark_error}")
+
+        # If the benchmark is denied by the provider, it is almost certainly an
+        # endpoint/key/plan issue, not a symbol-specific issue. Avoid making one
+        # failing request per holding and return clean unavailable metrics.
+        if "HTTP 403" in benchmark_error or "HTTP 401" in benchmark_error:
+            log("Finnhub candle access appears unavailable for this key; skipping per-ticker candle calls.")
+            return {
+                ticker: MarketMetrics.unavailable(
+                    ticker=ticker,
+                    benchmark_ticker=benchmark_ticker,
+                    error=benchmark_error,
+                ).to_dict()
+                for ticker in tickers
+            }
 
     market_metrics: dict[str, dict[str, Any]] = {}
     success_count = 0

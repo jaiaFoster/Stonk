@@ -27,8 +27,10 @@ from typing import Any
 from flask import Flask, abort, jsonify, request
 
 from app import config
+from app.utils.log_safety import install_werkzeug_redaction_filter
 
 app = Flask(__name__)
+install_werkzeug_redaction_filter()
 
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()

@@ -13,6 +13,7 @@ import traceback
 import requests
 
 from app import config
+from app.utils.log_safety import sanitize_for_log
 
 
 def _patched_input(prompt=""):
@@ -57,7 +58,7 @@ def notify(message, title="Stonk Reporter Alert"):
         return
 
     try:
-        print(f"Sending ntfy to topic: {config.NTFY_TOPIC}", flush=True)
+        print("Sending ntfy alert.", flush=True)
         resp = requests.post(
             f"https://ntfy.sh/{config.NTFY_TOPIC}",
             data=message.encode("utf-8"),
@@ -69,12 +70,12 @@ def notify(message, title="Stonk Reporter Alert"):
         )
         print(f"ntfy response: {resp.status_code} {resp.text}", flush=True)
     except Exception as e:
-        print(f"Failed to send ntfy alert: {e}", flush=True)
+        print(f"Failed to send ntfy alert: {sanitize_for_log(e, [config.NTFY_TOPIC])}", flush=True)
 
 
 def login_with_retry():
     print("login_with_retry() called", flush=True)
-    print(f"Username: {config.ROBINHOOD_USERNAME}", flush=True)
+    print(f"Username set: {bool(config.ROBINHOOD_USERNAME)}", flush=True)
     print(f"Password set: {bool(config.ROBINHOOD_PASSWORD)}", flush=True)
 
     for attempt in range(1, MAX_LOGIN_RETRIES + 1):
@@ -90,7 +91,7 @@ def login_with_retry():
             return True
 
         except Exception as e:
-            error_msg = str(e)
+            error_msg = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])
             print(f"Login failed (attempt {attempt}): {error_msg}", flush=True)
             traceback.print_exc()
 
@@ -161,11 +162,11 @@ def get_positions():
                         all_positions.append(position)
 
                     except Exception as e:
-                        print(f"Failed to build position: {e}", flush=True)
+                        print(f"Failed to build position: {sanitize_for_log(e)}", flush=True)
                         traceback.print_exc()
 
             except Exception as e:
-                print(f"Failed to fetch {acct_label}: {e}", flush=True)
+                print(f"Failed to fetch {acct_label}: {sanitize_for_log(e)}", flush=True)
                 traceback.print_exc()
 
         # --- CRYPTO ---
@@ -210,16 +211,16 @@ def get_positions():
                     print(f"Crypto {ticker}: Built: {position}", flush=True)
                     all_positions.append(position)
                 except Exception as e:
-                    print(f"Failed to build crypto position: {e}", flush=True)
+                    print(f"Failed to build crypto position: {sanitize_for_log(e)}", flush=True)
 
         except Exception as e:
-            print(f"Crypto fetch failed: {e}", flush=True)
+            print(f"Crypto fetch failed: {sanitize_for_log(e)}", flush=True)
 
         print(f"Total positions: {len(all_positions)}", flush=True)
         return all_positions
 
     except Exception as e:
-        print(f"Robinhood error: {e}", flush=True)
+        print(f"Robinhood error: {sanitize_for_log(e)}", flush=True)
         traceback.print_exc()
         return []
 
@@ -229,7 +230,7 @@ def get_positions():
                 r.logout()
                 print("Logged out.", flush=True)
             except Exception as e:
-                print(f"Logout skipped or failed: {e}", flush=True)
+                print(f"Logout skipped or failed: {sanitize_for_log(e)}", flush=True)
 
 
 def _build_position_from_raw(ticker, pos, account, quantity):

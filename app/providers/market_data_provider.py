@@ -19,10 +19,23 @@ import requests
 
 from app import config
 from app.models.market_metrics import MarketMetrics
+from app.utils.log_safety import sanitize_for_log
 
 FINNHUB_BASE_URL = "https://finnhub.io/api/v1"
 DEFAULT_LOOKBACK_DAYS = 460
 REQUEST_TIMEOUT_SECONDS = 12
+
+def _safe_finnhub_error(response: requests.Response, api_key: str | None) -> str:
+    try:
+        data = response.json()
+        message = data.get("error") or data.get("message") or response.reason
+    except Exception:
+        message = response.reason
+
+    return (
+        f"Finnhub stock/candle returned HTTP {response.status_code}: "
+        f"{sanitize_for_log(message, [api_key])}"
+    )
 
 
 class FinnhubMarketDataProvider:
@@ -60,30 +73,60 @@ class FinnhubMarketDataProvider:
             return MarketMetrics.unavailable(
                 ticker=ticker,
                 benchmark_ticker=benchmark_ticker,
-                error=f"Finnhub market data error: {e}",
+                error=sanitize_for_log(f"Finnhub market data error: {e}", [self.api_key]),
             ).to_dict()
 
     def _fetch_daily_candles(self, ticker: str, lookback_days: int = DEFAULT_LOOKBACK_DAYS) -> dict[str, Any]:
         now = int(time.time())
         start = now - (lookback_days * 24 * 60 * 60)
 
-        response = requests.get(
-            f"{FINNHUB_BASE_URL}/stock/candle",
-            params={
-                "symbol": ticker,
-                "resolution": "D",
-                "from": start,
-                "to": now,
-                "token": self.api_key,
-            },
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
+        try:
+            response = requests.get(
+                f"{FINNHUB_BASE_URL}/stock/candle",
+                params={
+                    "symbol": ticker,
+                    "resolution": "D",
+                    "from": start,
+                    "to": now,
+                },
+                # Use the header instead of token= in the URL so access logs and
+                # requests exceptions cannot leak FINNHUB_API_KEY.
+                headers={"X-Finnhub-Token": self.api_key or ""},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(
+                f"request failed before provider response: {sanitize_for_log(e, [self.api_key])}"
+            ) from e
+
+        if response.status_code == 403:
+            raise PermissionError(
+                "HTTP 403 Forbidden from Finnhub stock/candle. The key is present, "
+                "but this endpoint or symbol appears unavailable for the current plan/key."
+            )
+
+        if response.status_code == 401:
+            raise PermissionError(
+                "HTTP 401 Unauthorized from Finnhub stock/candle. Check FINNHUB_API_KEY."
+            )
+
+        if response.status_code == 429:
+            raise RuntimeError(
+                "HTTP 429 Too Many Requests from Finnhub stock/candle. Retry later or reduce ticker count."
+            )
+
+        if response.status_code >= 400:
+            raise RuntimeError(_safe_finnhub_error(response, self.api_key))
+
         data = response.json()
 
         if data.get("s") != "ok":
             status = data.get("s", "unknown")
-            raise ValueError(f"No candle data returned for {ticker}; Finnhub status={status}")
+            error_message = data.get("error") or data.get("message") or "No candle data returned"
+            raise ValueError(
+                f"No candle data returned for {ticker}; Finnhub status={status}; "
+                f"message={sanitize_for_log(error_message, [self.api_key])}"
+            )
 
         closes = data.get("c") or []
         highs = data.get("h") or []
@@ -101,6 +144,7 @@ class FinnhubMarketDataProvider:
             "timestamp": [int(x) for x in timestamps],
             "volume": [float(x) for x in volumes],
         }
+
 
     def _build_metrics(
         self,
