@@ -1,8 +1,18 @@
 """
-config.py — Compatibility wrapper.
+config.py — Root compatibility wrapper.
 
-Existing files or tools that still import `config` will continue to work.
-The real config now lives in `app/config.py`.
+The app now stores configuration in app/config.py, but root imports are kept for
+older modules or manual debugging commands.
 """
 
-from app.config import *  # noqa: F401,F403
+from app.config import (  # noqa: F401
+    FINNHUB_API_KEY,
+    MARKET_BENCHMARK_TICKER,
+    NEWS_API_KEY,
+    NEWS_MAX_TICKERS_PER_RUN,
+    NEWS_PAGE_SIZE,
+    NTFY_TOPIC,
+    ROBINHOOD_PASSWORD,
+    ROBINHOOD_USERNAME,
+    RUN_TOKEN,
+)
