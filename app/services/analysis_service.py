@@ -1,7 +1,7 @@
 """
 app/services/analysis_service.py — Main pipeline orchestration.
 
-This service runs the current portfolio/news/scoring/report pipeline.
+This service runs the portfolio/news/market-data/scoring/report pipeline.
 Persistence and trade lifecycle checks are intentionally skipped for now; those
 will matter later when the app needs to remember open trades and checkpoints.
 """
@@ -13,6 +13,7 @@ from typing import Any
 
 from app import config
 from app.providers.news_provider import get_news_for_tickers
+from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -30,6 +31,7 @@ PipelineResult = tuple[
 def run_portfolio_pipeline() -> PipelineResult:
     log: list[str] = []
     news: dict[str, list[dict[str, Any]]] = {}
+    market_metrics: dict[str, dict[str, Any]] = {}
     recommendations: list[dict[str, Any]] = []
 
     def log_print(msg: str) -> None:
@@ -43,10 +45,13 @@ def run_portfolio_pipeline() -> PipelineResult:
         # browser run log keeps the same useful shape as before.
         log_print("robinhood imported OK")
         log_print("news imported OK")
+        log_print("market data imported OK")
         log_print("config imported OK")
         log_print(f"ROBINHOOD_USERNAME set: {bool(config.ROBINHOOD_USERNAME)}")
         log_print(f"ROBINHOOD_PASSWORD set: {bool(config.ROBINHOOD_PASSWORD)}")
         log_print(f"NEWS_API_KEY set: {bool(config.NEWS_API_KEY)}")
+        log_print(f"FINNHUB_API_KEY set: {bool(config.FINNHUB_API_KEY)}")
+        log_print(f"MARKET_BENCHMARK_TICKER: {config.MARKET_BENCHMARK_TICKER}")
     except Exception as e:
         log_print(f"IMPORT ERROR config: {e}\n{traceback.format_exc()}")
         return None, [], news, recommendations, log
@@ -75,16 +80,31 @@ def run_portfolio_pipeline() -> PipelineResult:
         log_print(f"News fetched for {len(news)} tickers; {article_count} relevant article(s)")
     except Exception as e:
         log_print(f"ERROR in get_news_for_tickers: {e}\n{traceback.format_exc()}")
-        return None, positions, news, recommendations, log
+        # News should not break the whole report.
+        news = {}
 
-    log_print("Running Portfolio Scoring v1...")
+    log_print("Fetching Finnhub Market Data v1...")
+
+    try:
+        market_metrics = get_market_metrics_for_positions(positions, log_print=log_print)
+    except Exception as e:
+        log_print(f"ERROR in Market Data v1: {e}\n{traceback.format_exc()}")
+        # Market data should not break the whole report. Portfolio scoring will
+        # fall back to v1 cost-basis/allocation/news signals.
+        market_metrics = {}
+
+    log_print("Running Portfolio Scoring v2 inputs...")
 
     try:
         strategy = PortfolioSnapshotStrategy()
-        recommendations = strategy.evaluate_portfolio(positions=positions, news_map=news)
+        recommendations = strategy.evaluate_portfolio(
+            positions=positions,
+            news_map=news,
+            market_metrics=market_metrics,
+        )
         log_print(f"Portfolio scoring generated {len(recommendations)} recommendation(s)")
     except Exception as e:
-        log_print(f"ERROR in Portfolio Scoring v1: {e}\n{traceback.format_exc()}")
+        log_print(f"ERROR in Portfolio Scoring: {e}\n{traceback.format_exc()}")
         # Scoring should not break the whole report. Continue with an empty score table.
         recommendations = []
 

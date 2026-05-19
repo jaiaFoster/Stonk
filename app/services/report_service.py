@@ -63,6 +63,30 @@ def pct(value):
         return "—"
 
 
+def compact_big_number(value):
+    if value is None:
+        return "—"
+    try:
+        val = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if abs(val) >= 1_000_000_000:
+        return f"{val / 1_000_000_000:.1f}B"
+    if abs(val) >= 1_000_000:
+        return f"{val / 1_000_000:.1f}M"
+    if abs(val) >= 1_000:
+        return f"{val / 1_000:.1f}K"
+    return f"{val:.0f}"
+
+
+def yes_no(value):
+    if value is True:
+        return "Yes"
+    if value is False:
+        return "No"
+    return "—"
+
+
 def format_payload(
     positions: list[dict[str, Any]],
     news_map: NewsMap,
@@ -96,7 +120,7 @@ def format_payload(
             f"Account: {p.get('account', 'Unknown')}"
         )
 
-    lines += ["", "=== PORTFOLIO SCORING V1 ==="]
+    lines += ["", "=== PORTFOLIO SCORING V2 ==="]
 
     if not recommendations:
         lines.append("No portfolio scoring recommendations generated.")
@@ -105,6 +129,7 @@ def format_payload(
             reasons = rec.get("reasons", []) or []
             risks = rec.get("risks", []) or []
             score = rec.get("score")
+            metrics = rec.get("market_metrics", {}) or {}
             lines.append(
                 f"{rec.get('ticker', 'UNKNOWN')} ({rec.get('account', 'Unknown')}): "
                 f"Score {number(score, 1)} | Action: {rec.get('action', 'WATCH')} | "
@@ -112,17 +137,53 @@ def format_payload(
                 f"Allocation: {pct(rec.get('allocation_pct'))} | "
                 f"G/L: {signed_pct(rec.get('gain_loss_pct'))}"
             )
+
+            if metrics.get("has_data"):
+                lines.append(
+                    "  Market: "
+                    f"3M {signed_pct(metrics.get('return_3m_pct'))}, "
+                    f"6M {signed_pct(metrics.get('return_6m_pct'))}, "
+                    f"12M {signed_pct(metrics.get('return_12m_pct'))}, "
+                    f"6M vs {metrics.get('benchmark_ticker') or 'benchmark'} "
+                    f"{signed_pct(metrics.get('relative_strength_6m_pct'))}, "
+                    f"Above 200D: {yes_no(metrics.get('above_sma_200'))}, "
+                    f"52W high distance: {signed_pct(metrics.get('distance_from_52w_high_pct'))}"
+                )
+            else:
+                err = metrics.get("error") if metrics else "No market metrics attached."
+                lines.append(f"  Market: unavailable ({err})")
+
             if reasons:
                 lines.append("  Reasons:")
-                for reason in reasons[:3]:
+                for reason in reasons[:4]:
                     lines.append(f"    - {reason}")
             if risks:
                 lines.append("  Risks / limits:")
-                for risk in risks[:3]:
+                for risk in risks[:4]:
                     lines.append(f"    - {risk}")
             next_check = rec.get("next_check")
             if next_check:
                 lines.append(f"  Next check: {next_check}")
+
+    lines += ["", "=== MARKET DATA SNAPSHOT ==="]
+    market_rows = [rec for rec in recommendations if (rec.get("market_metrics") or {}).get("has_data")]
+    if not market_rows:
+        lines.append("No Finnhub market metrics available for this run.")
+    else:
+        for rec in market_rows:
+            metrics = rec.get("market_metrics", {}) or {}
+            lines.append(
+                f"{rec.get('ticker', 'UNKNOWN')}: "
+                f"1M {signed_pct(metrics.get('return_1m_pct'))} | "
+                f"3M {signed_pct(metrics.get('return_3m_pct'))} | "
+                f"6M {signed_pct(metrics.get('return_6m_pct'))} | "
+                f"12M {signed_pct(metrics.get('return_12m_pct'))} | "
+                f"RS 6M {signed_pct(metrics.get('relative_strength_6m_pct'))} | "
+                f"Above 50D {yes_no(metrics.get('above_sma_50'))} | "
+                f"Above 200D {yes_no(metrics.get('above_sma_200'))} | "
+                f"Vol30 {pct(metrics.get('volatility_30d_pct'))} | "
+                f"AvgVol30 {compact_big_number(metrics.get('avg_volume_30d'))}"
+            )
 
     lines += ["", "=== STRUCTURED NEWS ==="]
 
@@ -151,18 +212,21 @@ def format_payload(
     lines += [
         "",
         "=== ADVISOR CONTEXT ===",
-        "This project is intended to gather portfolio data, current prices, gain/loss,",
-        "market value, account grouping, relevance-scored news, and strategy outputs",
-        "so the portfolio can be evaluated using defined numerical and strategic qualifiers.",
+        "This project gathers portfolio data, current prices, gain/loss, market value,",
+        "account grouping, relevance-scored news, and Finnhub price-history metrics",
+        "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
-        "Current scoring style: Aggressive Quality-Momentum Snapshot v1.",
-        "This v1 score uses current position data, allocation risk, duplicate exposure,",
-        "asset risk, and structured news. It does not yet include price trend, relative",
-        "strength, fundamentals, earnings surprises, or options data.",
+        "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
+        "This version uses current position data, allocation risk, duplicate exposure,",
+        "asset risk, structured news, price momentum, relative strength, 50/200-day",
+        "trend state, 52-week high/low distance, volatility, and liquidity.",
+        "It does not yet include fundamentals, earnings surprises, analyst revisions,",
+        "or options-chain data.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
-        "Include: overall portfolio summary, major winners/losers, advisor actions,",
-        "news relevance, and practical watch items. Keep it under 500 words, plain text.",
+        "Include: overall portfolio summary, strongest add/hold candidates, names to",
+        "avoid adding to, major risk flags, news relevance, and practical watch items.",
+        "Keep it under 600 words, plain text.",
     ]
 
     return "\n".join(lines)
@@ -205,6 +269,7 @@ def format_html(
 
     position_rows = format_position_rows(positions)
     recommendation_rows = format_recommendation_rows(parsed_recommendations)
+    market_rows = format_market_rows(parsed_recommendations)
     news_rows = format_news_rows(parsed_news)
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
@@ -221,7 +286,7 @@ def format_html(
             background: #0f0f0f;
             color: #e0e0e0;
             padding: 2rem;
-            max-width: 1300px;
+            max-width: 1400px;
             margin: auto;
         }}
         h1 {{ color: #00ff88; }}
@@ -298,14 +363,16 @@ def format_html(
         .action-watch {{ background: #78350f; color: #fde68a; }}
         .action-risk {{ background: #7f1d1d; color: #fecaca; }}
         ul.compact {{ margin: 0; padding-left: 1.2rem; }}
+        .yes {{ color: #00ff88; }}
+        .no {{ color: #ff8888; }}
     </style>
 </head>
 <body>
     <h1>📈 Stock Advisor — {today}</h1>
     <p class="muted">
-        Aggressive Quality-Momentum Snapshot v1 uses current portfolio data, allocation risk,
-        duplicate exposure, asset risk, and relevance-scored news. Trend, fundamentals,
-        earnings, and options data will be added later.
+        Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
+        relevance-scored news, Finnhub momentum, relative strength, trend,
+        volatility, and liquidity. Fundamentals, earnings, and options data will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -317,11 +384,31 @@ def format_html(
             <th>Action</th>
             <th>Allocation</th>
             <th>G/L</th>
+            <th>Trend/Momentum</th>
             <th>Reasons</th>
             <th>Risks / Limits</th>
             <th>Next Check</th>
         </tr>
         {recommendation_rows}
+    </table>
+
+    <h2>Market Momentum / Trend</h2>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>As Of</th>
+            <th>1M</th>
+            <th>3M</th>
+            <th>6M</th>
+            <th>12M</th>
+            <th>6M RS</th>
+            <th>Above 50D</th>
+            <th>Above 200D</th>
+            <th>52W High Dist.</th>
+            <th>Vol30</th>
+            <th>AvgVol30</th>
+        </tr>
+        {market_rows}
     </table>
 
     <h2>Positions ({len(positions)} total)</h2>
@@ -405,7 +492,7 @@ def format_recommendation_rows(recommendations: Recommendations) -> str:
     if not recommendations:
         return """
         <tr>
-            <td colspan="9" class="empty">No portfolio advisor scores generated.</td>
+            <td colspan="10" class="empty">No portfolio advisor scores generated.</td>
         </tr>"""
 
     rows = ""
@@ -418,6 +505,8 @@ def format_recommendation_rows(recommendations: Recommendations) -> str:
         reasons = rec.get("reasons", []) or []
         risks = rec.get("risks", []) or []
         next_check = escape(str(rec.get("next_check", "—") or "—"))
+        metrics = rec.get("market_metrics", {}) or {}
+        trend_summary = format_trend_summary(metrics)
 
         rows += f"""
         <tr>
@@ -427,12 +516,62 @@ def format_recommendation_rows(recommendations: Recommendations) -> str:
             <td><span class="pill {action_class}">{escape(action)}</span></td>
             <td>{pct(rec.get('allocation_pct'))}<br><span class="muted">{money(rec.get('position_value'))}</span></td>
             <td>{signed_pct(rec.get('gain_loss_pct'))}</td>
+            <td>{trend_summary}</td>
             <td>{format_compact_list(reasons)}</td>
             <td>{format_compact_list(risks)}</td>
             <td>{next_check}</td>
         </tr>"""
 
     return rows
+
+
+def format_market_rows(recommendations: Recommendations) -> str:
+    if not recommendations:
+        return """
+        <tr>
+            <td colspan="12" class="empty">No market metrics available.</td>
+        </tr>"""
+
+    seen: set[str] = set()
+    rows = ""
+    for rec in recommendations:
+        ticker = str(rec.get("ticker", "UNKNOWN"))
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+
+        metrics = rec.get("market_metrics", {}) or {}
+        safe_ticker = escape(ticker)
+
+        if not metrics.get("has_data"):
+            error = escape(str(metrics.get("error", "No data") if metrics else "No data"))
+            rows += f"""
+            <tr>
+                <td><strong>{safe_ticker}</strong></td>
+                <td colspan="11" class="empty">No Finnhub market data: {error}</td>
+            </tr>"""
+            continue
+
+        rows += f"""
+        <tr>
+            <td><strong>{safe_ticker}</strong></td>
+            <td>{escape(str(metrics.get('as_of') or '—'))}</td>
+            <td>{signed_pct(metrics.get('return_1m_pct'))}</td>
+            <td>{signed_pct(metrics.get('return_3m_pct'))}</td>
+            <td>{signed_pct(metrics.get('return_6m_pct'))}</td>
+            <td>{signed_pct(metrics.get('return_12m_pct'))}</td>
+            <td>{signed_pct(metrics.get('relative_strength_6m_pct'))}<br><span class="muted">vs {escape(str(metrics.get('benchmark_ticker') or 'benchmark'))}</span></td>
+            <td>{bool_badge(metrics.get('above_sma_50'))}</td>
+            <td>{bool_badge(metrics.get('above_sma_200'))}</td>
+            <td>{signed_pct(metrics.get('distance_from_52w_high_pct'))}</td>
+            <td>{pct(metrics.get('volatility_30d_pct'))}</td>
+            <td>{compact_big_number(metrics.get('avg_volume_30d'))}</td>
+        </tr>"""
+
+    return rows or """
+        <tr>
+            <td colspan="12" class="empty">No market metrics available.</td>
+        </tr>"""
 
 
 def format_news_rows(news_map: NewsMap) -> str:
@@ -483,6 +622,27 @@ def format_news_rows(news_map: NewsMap) -> str:
             </tr>"""
 
     return rows
+
+
+def format_trend_summary(metrics: dict[str, Any]) -> str:
+    if not metrics or not metrics.get("has_data"):
+        return '<span class="empty">No market data</span>'
+
+    parts = [
+        f"6M {signed_pct(metrics.get('return_6m_pct'))}",
+        f"RS {signed_pct(metrics.get('relative_strength_6m_pct'))}",
+        f"200D {yes_no(metrics.get('above_sma_200'))}",
+        f"52H {signed_pct(metrics.get('distance_from_52w_high_pct'))}",
+    ]
+    return "<br>".join(escape(part) for part in parts)
+
+
+def bool_badge(value: Any) -> str:
+    if value is True:
+        return '<span class="yes">Yes</span>'
+    if value is False:
+        return '<span class="no">No</span>'
+    return '<span class="empty">—</span>'
 
 
 def format_compact_list(items: list[str]) -> str:

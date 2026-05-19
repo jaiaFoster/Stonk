@@ -1,0 +1,105 @@
+"""
+app/services/market_data_service.py — Market metric orchestration.
+
+This service connects the portfolio pipeline to the Finnhub provider. It fetches
+one benchmark snapshot, then one daily-candle snapshot per equity ticker. Crypto
+positions are skipped for now because their trend/risk model should be separate.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Callable
+
+from app import config
+from app.models.market_metrics import MarketMetrics
+from app.providers.market_data_provider import FinnhubMarketDataProvider
+
+CRYPTO_TICKERS = {"BTC", "ETH", "SOL", "DOGE", "ADA", "XRP", "LTC"}
+
+LogFn = Callable[[str], None]
+
+
+def get_market_metrics_for_positions(
+    positions: list[dict[str, Any]],
+    log_print: LogFn | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return normalized market metrics keyed by ticker."""
+    def log(msg: str) -> None:
+        if log_print:
+            log_print(msg)
+
+    benchmark_ticker = (config.MARKET_BENCHMARK_TICKER or "QQQ").upper()
+
+    if not config.FINNHUB_API_KEY:
+        log("FINNHUB_API_KEY is not set; skipping Market Data v1.")
+        return {}
+
+    provider = FinnhubMarketDataProvider()
+    tickers = _equity_tickers_from_positions(positions)
+
+    if not tickers:
+        log("No equity tickers found for Finnhub Market Data v1.")
+        return {}
+
+    log(f"Fetching Finnhub Market Data v1 for {len(tickers)} equity ticker(s); benchmark={benchmark_ticker}")
+
+    benchmark_metrics = provider.get_market_metrics(
+        ticker=benchmark_ticker,
+        benchmark_ticker=benchmark_ticker,
+        benchmark_metrics=None,
+    )
+
+    if benchmark_metrics.get("has_data"):
+        log(
+            f"Benchmark {benchmark_ticker}: "
+            f"3M {benchmark_metrics.get('return_3m_pct')}%, "
+            f"6M {benchmark_metrics.get('return_6m_pct')}%, "
+            f"12M {benchmark_metrics.get('return_12m_pct')}%"
+        )
+    else:
+        log(f"Benchmark {benchmark_ticker} unavailable: {benchmark_metrics.get('error')}")
+
+    market_metrics: dict[str, dict[str, Any]] = {}
+    success_count = 0
+
+    for ticker in tickers:
+        if ticker == benchmark_ticker:
+            metrics = benchmark_metrics
+        else:
+            metrics = provider.get_market_metrics(
+                ticker=ticker,
+                benchmark_ticker=benchmark_ticker,
+                benchmark_metrics=benchmark_metrics if benchmark_metrics.get("has_data") else None,
+            )
+
+        market_metrics[ticker] = metrics
+        if metrics.get("has_data"):
+            success_count += 1
+        else:
+            log(f"Market data unavailable for {ticker}: {metrics.get('error')}")
+
+    log(f"Market Data v1 fetched for {success_count}/{len(tickers)} equity ticker(s)")
+    return market_metrics
+
+
+def _equity_tickers_from_positions(positions: list[dict[str, Any]]) -> list[str]:
+    tickers: list[str] = []
+    seen: set[str] = set()
+
+    for position in positions:
+        ticker = str(position.get("ticker", "")).upper().strip()
+        account = str(position.get("account", "")).lower()
+
+        if not ticker or ticker in seen:
+            continue
+        if ticker in CRYPTO_TICKERS or account == "crypto":
+            continue
+
+        seen.add(ticker)
+        tickers.append(ticker)
+
+    return tickers
+
+
+def unavailable_metric(ticker: str, error: str) -> dict[str, Any]:
+    return MarketMetrics.unavailable(ticker=ticker, error=error).to_dict()
