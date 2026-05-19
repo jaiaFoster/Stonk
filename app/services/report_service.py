@@ -10,6 +10,7 @@ from typing import Any
 
 
 NewsMap = dict[str, list[dict[str, Any]]]
+Recommendations = list[dict[str, Any]]
 
 
 def money(value):
@@ -52,8 +53,24 @@ def signed_pct(value):
         return "N/A"
 
 
-def format_payload(positions: list[dict[str, Any]], news_map: NewsMap) -> str:
+def pct(value):
+    """Format a percentage value."""
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.1f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def format_payload(
+    positions: list[dict[str, Any]],
+    news_map: NewsMap,
+    recommendations: Recommendations | None = None,
+) -> str:
     today = date.today().strftime("%B %d, %Y")
+    recommendations = recommendations or []
+
     lines = [
         f"Date: {today}",
         "",
@@ -78,6 +95,34 @@ def format_payload(positions: list[dict[str, Any]], news_map: NewsMap) -> str:
             f"Value: {money(p.get('market_value'))} | "
             f"Account: {p.get('account', 'Unknown')}"
         )
+
+    lines += ["", "=== PORTFOLIO SCORING V1 ==="]
+
+    if not recommendations:
+        lines.append("No portfolio scoring recommendations generated.")
+    else:
+        for rec in recommendations:
+            reasons = rec.get("reasons", []) or []
+            risks = rec.get("risks", []) or []
+            score = rec.get("score")
+            lines.append(
+                f"{rec.get('ticker', 'UNKNOWN')} ({rec.get('account', 'Unknown')}): "
+                f"Score {number(score, 1)} | Action: {rec.get('action', 'WATCH')} | "
+                f"Confidence: {rec.get('confidence', 'Low')} | "
+                f"Allocation: {pct(rec.get('allocation_pct'))} | "
+                f"G/L: {signed_pct(rec.get('gain_loss_pct'))}"
+            )
+            if reasons:
+                lines.append("  Reasons:")
+                for reason in reasons[:3]:
+                    lines.append(f"    - {reason}")
+            if risks:
+                lines.append("  Risks / limits:")
+                for risk in risks[:3]:
+                    lines.append(f"    - {risk}")
+            next_check = rec.get("next_check")
+            if next_check:
+                lines.append(f"  Next check: {next_check}")
 
     lines += ["", "=== STRUCTURED NEWS ==="]
 
@@ -107,12 +152,17 @@ def format_payload(positions: list[dict[str, Any]], news_map: NewsMap) -> str:
         "",
         "=== ADVISOR CONTEXT ===",
         "This project is intended to gather portfolio data, current prices, gain/loss,",
-        "market value, account grouping, and relevance-scored news so the portfolio",
-        "can later be evaluated using defined numerical and strategic qualifiers.",
+        "market value, account grouping, relevance-scored news, and strategy outputs",
+        "so the portfolio can be evaluated using defined numerical and strategic qualifiers.",
         "",
-        "For now, provide a practical daily portfolio briefing based only on the data above.",
-        "Include: overall portfolio summary, major winners/losers, news relevance,",
-        "and practical watch items. Keep it under 400 words, plain text.",
+        "Current scoring style: Aggressive Quality-Momentum Snapshot v1.",
+        "This v1 score uses current position data, allocation risk, duplicate exposure,",
+        "asset risk, and structured news. It does not yet include price trend, relative",
+        "strength, fundamentals, earnings surprises, or options data.",
+        "",
+        "Provide a practical daily portfolio briefing based only on the data above.",
+        "Include: overall portfolio summary, major winners/losers, advisor actions,",
+        "news relevance, and practical watch items. Keep it under 500 words, plain text.",
     ]
 
     return "\n".join(lines)
@@ -121,27 +171,43 @@ def format_payload(positions: list[dict[str, Any]], news_map: NewsMap) -> str:
 def format_html(
     payload: str,
     positions: list[dict[str, Any]],
-    news_map_or_log_lines: NewsMap | list[str],
-    maybe_log_lines: list[str] | None = None,
+    news_map: NewsMap | list[str] | None = None,
+    recommendations: Recommendations | list[str] | None = None,
+    log_lines: list[str] | None = None,
 ) -> str:
     """
     Wrap the report in a clean HTML page for browser viewing.
 
-    Supports both call styles for safety:
+    New call style:
+    - format_html(payload, positions, news_map, recommendations, log_lines)
+
+    Backward-compatible call styles:
     - format_html(payload, positions, log_lines)
     - format_html(payload, positions, news_map, log_lines)
     """
-    if maybe_log_lines is None:
-        news_map: NewsMap = {}
-        log_lines = news_map_or_log_lines if isinstance(news_map_or_log_lines, list) else []
-    else:
-        news_map = news_map_or_log_lines if isinstance(news_map_or_log_lines, dict) else {}
-        log_lines = maybe_log_lines
+    parsed_news: NewsMap = {}
+    parsed_recommendations: Recommendations = []
+    parsed_log_lines: list[str] = []
 
-    rows = format_position_rows(positions)
-    news_rows = format_news_rows(news_map)
+    if isinstance(news_map, list) and all(isinstance(item, str) for item in news_map):
+        parsed_log_lines = news_map
+    elif isinstance(news_map, dict):
+        parsed_news = news_map
+
+    if isinstance(recommendations, list):
+        if all(isinstance(item, str) for item in recommendations):
+            parsed_log_lines = recommendations
+        else:
+            parsed_recommendations = recommendations  # type: ignore[assignment]
+
+    if log_lines is not None:
+        parsed_log_lines = log_lines
+
+    position_rows = format_position_rows(positions)
+    recommendation_rows = format_recommendation_rows(parsed_recommendations)
+    news_rows = format_news_rows(parsed_news)
     payload_html = escape(payload)
-    log_html = escape("\n".join(log_lines))
+    log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
 
     return f"""<!DOCTYPE html>
@@ -155,12 +221,10 @@ def format_html(
             background: #0f0f0f;
             color: #e0e0e0;
             padding: 2rem;
-            max-width: 1200px;
+            max-width: 1300px;
             margin: auto;
         }}
-        h1 {{
-            color: #00ff88;
-        }}
+        h1 {{ color: #00ff88; }}
         h2 {{
             color: #888;
             border-bottom: 1px solid #333;
@@ -183,12 +247,8 @@ def format_html(
             border-bottom: 1px solid #222;
             vertical-align: top;
         }}
-        tr:hover td {{
-            background: #1a1a1a;
-        }}
-        a {{
-            color: #00ff88;
-        }}
+        tr:hover td {{ background: #1a1a1a; }}
+        a {{ color: #00ff88; }}
         pre {{
             background: #1a1a1a;
             padding: 1.5rem;
@@ -220,27 +280,49 @@ def format_html(
             font-weight: bold;
             margin-bottom: 1rem;
         }}
-        .copy-btn:hover {{
-            background: #00cc66;
+        .copy-btn:hover {{ background: #00cc66; }}
+        .muted {{ color: #999; font-size: 0.9rem; }}
+        .score {{ font-weight: bold; }}
+        .empty {{ color: #777; font-style: italic; }}
+        .pill {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            background: #1f2937;
+            color: #e5e7eb;
+            font-size: 0.78rem;
+            white-space: nowrap;
         }}
-        .muted {{
-            color: #999;
-            font-size: 0.9rem;
-        }}
-        .score {{
-            font-weight: bold;
-        }}
-        .empty {{
-            color: #777;
-            font-style: italic;
-        }}
+        .action-add {{ background: #064e3b; color: #a7f3d0; }}
+        .action-hold {{ background: #1e3a8a; color: #bfdbfe; }}
+        .action-watch {{ background: #78350f; color: #fde68a; }}
+        .action-risk {{ background: #7f1d1d; color: #fecaca; }}
+        ul.compact {{ margin: 0; padding-left: 1.2rem; }}
     </style>
 </head>
 <body>
     <h1>📈 Stock Advisor — {today}</h1>
     <p class="muted">
-        Portfolio data collection is working toward future numerical and strategic advisor qualifiers.
+        Aggressive Quality-Momentum Snapshot v1 uses current portfolio data, allocation risk,
+        duplicate exposure, asset risk, and relevance-scored news. Trend, fundamentals,
+        earnings, and options data will be added later.
     </p>
+
+    <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Account</th>
+            <th>Score</th>
+            <th>Action</th>
+            <th>Allocation</th>
+            <th>G/L</th>
+            <th>Reasons</th>
+            <th>Risks / Limits</th>
+            <th>Next Check</th>
+        </tr>
+        {recommendation_rows}
+    </table>
 
     <h2>Positions ({len(positions)} total)</h2>
     <table>
@@ -253,7 +335,7 @@ def format_html(
             <th>G/L</th>
             <th>Market Value</th>
         </tr>
-        {rows}
+        {position_rows}
     </table>
 
     <h2>Relevant News</h2>
@@ -319,6 +401,40 @@ def format_position_rows(positions: list[dict[str, Any]]) -> str:
     return rows
 
 
+def format_recommendation_rows(recommendations: Recommendations) -> str:
+    if not recommendations:
+        return """
+        <tr>
+            <td colspan="9" class="empty">No portfolio advisor scores generated.</td>
+        </tr>"""
+
+    rows = ""
+    for rec in recommendations:
+        ticker = escape(str(rec.get("ticker", "UNKNOWN")))
+        account = escape(str(rec.get("account", "Unknown")))
+        action = str(rec.get("action", "WATCH"))
+        action_class = action_css_class(action)
+        confidence = escape(str(rec.get("confidence", "Low")))
+        reasons = rec.get("reasons", []) or []
+        risks = rec.get("risks", []) or []
+        next_check = escape(str(rec.get("next_check", "—") or "—"))
+
+        rows += f"""
+        <tr>
+            <td><strong>{ticker}</strong></td>
+            <td>{account}</td>
+            <td class="score">{number(rec.get('score'), 1)}<br><span class="muted">{confidence}</span></td>
+            <td><span class="pill {action_class}">{escape(action)}</span></td>
+            <td>{pct(rec.get('allocation_pct'))}<br><span class="muted">{money(rec.get('position_value'))}</span></td>
+            <td>{signed_pct(rec.get('gain_loss_pct'))}</td>
+            <td>{format_compact_list(reasons)}</td>
+            <td>{format_compact_list(risks)}</td>
+            <td>{next_check}</td>
+        </tr>"""
+
+    return rows
+
+
 def format_news_rows(news_map: NewsMap) -> str:
     if not news_map:
         return """
@@ -350,7 +466,11 @@ def format_news_rows(news_map: NewsMap) -> str:
             published_at = escape(normalized["published_at"] or "Unknown")
             score = normalized["relevance_score"]
             url = normalized["url"]
-            link_html = f'<a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">Open</a>' if url else "—"
+            link_html = (
+                f'<a href="{escape(url, quote=True)}" target="_blank" rel="noopener noreferrer">Open</a>'
+                if url
+                else "—"
+            )
 
             rows += f"""
             <tr>
@@ -363,6 +483,25 @@ def format_news_rows(news_map: NewsMap) -> str:
             </tr>"""
 
     return rows
+
+
+def format_compact_list(items: list[str]) -> str:
+    if not items:
+        return '<span class="empty">—</span>'
+
+    safe_items = "".join(f"<li>{escape(str(item))}</li>" for item in items[:3])
+    return f'<ul class="compact">{safe_items}</ul>'
+
+
+def action_css_class(action: str) -> str:
+    upper = action.upper()
+    if "ADD" in upper:
+        return "action-add"
+    if upper == "HOLD" or "HOLD" in upper:
+        return "action-hold"
+    if "REDUCE" in upper or "CUT" in upper or "AVOID" in upper:
+        return "action-risk"
+    return "action-watch"
 
 
 def normalize_news_item(ticker: str, article: dict[str, Any] | str) -> dict[str, Any]:
