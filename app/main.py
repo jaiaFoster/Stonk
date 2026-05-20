@@ -46,6 +46,7 @@ PipelineResult = tuple[
     list[dict[str, Any]],
     dict[str, list[dict[str, Any]]],
     list[dict[str, Any]],
+    dict[str, dict[str, Any]],
     list[str],
 ]
 
@@ -75,7 +76,7 @@ def run(run_mode: str = "prod") -> PipelineResult:
             f"FATAL ERROR before pipeline could run: {e}",
             traceback.format_exc(),
         ]
-        return None, [], {}, [], error_log
+        return None, [], {}, [], {}, error_log
 
 
 @app.route("/run")
@@ -139,7 +140,7 @@ def run_status(job_id: str):
     result = job.get("result")
     if result:
         try:
-            log_tail = list(result[4])[-10:]
+            log_tail = list(result[5])[-10:]
         except Exception:
             log_tail = []
 
@@ -174,7 +175,7 @@ def run_result(job_id: str):
         error_log = escape(str(job.get("message", "Run failed without a result.")))
         return error_page("Run Failed", error_log), 500
 
-    payload, positions, news, recommendations, log = result
+    payload, positions, news, recommendations, tradier_snapshot, log = result
 
     if payload is None or status == "error":
         error_log = escape("\n".join(log))
@@ -183,7 +184,7 @@ def run_result(job_id: str):
     try:
         from app.services.report_service import format_html
 
-        return format_html(payload, positions, news, recommendations, log), 200
+        return format_html(payload, positions, news, recommendations, tradier_snapshot, log), 200
     except Exception as e:
         error_log = escape(
             "\n".join(
@@ -214,7 +215,7 @@ def _run_job(job_id: str, run_mode: str = "prod") -> None:
 
         print(f"=== BACKGROUND RUN {job_id} STARTED; mode={run_mode} ===", flush=True)
         result = run(run_mode=run_mode)
-        payload, positions, news, recommendations, log = result
+        payload, positions, news, recommendations, tradier_snapshot, log = result
 
         if payload is None:
             RUN_JOBS[job_id]["status"] = "error"
@@ -235,6 +236,7 @@ def _run_job(job_id: str, run_mode: str = "prod") -> None:
             [],
             {},
             [],
+            {},
             [
                 "=== RUN STARTED ===",
                 f"UNEXPECTED BACKGROUND ERROR: {e}",
@@ -255,7 +257,7 @@ def run_sync_response(run_mode: str = "prod"):
 
     try:
         print(f"=== /run ENDPOINT HIT; sync mode; mode={run_mode} ===", flush=True)
-        payload, positions, news, recommendations, log = run(run_mode=run_mode)
+        payload, positions, news, recommendations, tradier_snapshot, log = run(run_mode=run_mode)
 
         if payload is None:
             error_log = escape("\n".join(log))
@@ -264,7 +266,7 @@ def run_sync_response(run_mode: str = "prod"):
         try:
             from app.services.report_service import format_html
 
-            return format_html(payload, positions, news, recommendations, log), 200
+            return format_html(payload, positions, news, recommendations, tradier_snapshot, log), 200
         except Exception as e:
             error_log = escape(
                 "\n".join(

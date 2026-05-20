@@ -11,6 +11,7 @@ from typing import Any
 
 NewsMap = dict[str, list[dict[str, Any]]]
 Recommendations = list[dict[str, Any]]
+TradierSnapshot = dict[str, dict[str, Any]]
 
 
 def money(value):
@@ -63,6 +64,16 @@ def pct(value):
         return "—"
 
 
+def option_money(value):
+    """Format an option quote/debit value without adding contract multiplier."""
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
 def compact_big_number(value):
     if value is None:
         return "—"
@@ -91,9 +102,11 @@ def format_payload(
     positions: list[dict[str, Any]],
     news_map: NewsMap,
     recommendations: Recommendations | None = None,
+    tradier_snapshot: TradierSnapshot | None = None,
 ) -> str:
     today = date.today().strftime("%B %d, %Y")
     recommendations = recommendations or []
+    tradier_snapshot = tradier_snapshot or {}
 
     lines = [
         f"Date: {today}",
@@ -185,6 +198,43 @@ def format_payload(
                 f"AvgVol30 {compact_big_number(metrics.get('avg_volume_30d'))}"
             )
 
+    lines += ["", "=== TRADIER OPTIONS SNAPSHOT ==="]
+    if not tradier_snapshot:
+        lines.append("No Tradier quote/options data available for this run.")
+    else:
+        for ticker, data in tradier_snapshot.items():
+            quote = data.get("quote", {}) or {}
+            atm_call = data.get("atm_call") or {}
+            atm_put = data.get("atm_put") or {}
+            if not data.get("has_data"):
+                lines.append(f"{ticker}: unavailable — {data.get('error') or 'No Tradier data returned.'}")
+                continue
+
+            lines.append(
+                f"{ticker}: quote last {money(quote.get('last'))} | "
+                f"bid {money(quote.get('bid'))} | ask {money(quote.get('ask'))} | "
+                f"expirations {data.get('expiration_count', 0)} | "
+                f"sample expiration {data.get('selected_expiration') or 'N/A'} | "
+                f"contracts {data.get('chain_contract_count', 0)} "
+                f"({data.get('call_count', 0)} calls / {data.get('put_count', 0)} puts)"
+            )
+            if atm_call:
+                lines.append(
+                    f"  ATM call: {atm_call.get('symbol') or 'N/A'} | strike {option_money(atm_call.get('strike'))} | "
+                    f"bid/ask {option_money(atm_call.get('bid'))}/{option_money(atm_call.get('ask'))} | "
+                    f"mid {option_money(atm_call.get('mid'))} | vol {atm_call.get('volume') or 0} | "
+                    f"OI {atm_call.get('open_interest') or 0} | delta {option_money(atm_call.get('delta'))} | "
+                    f"theta {option_money(atm_call.get('theta'))} | IV {option_money(atm_call.get('iv'))}"
+                )
+            if atm_put:
+                lines.append(
+                    f"  ATM put: {atm_put.get('symbol') or 'N/A'} | strike {option_money(atm_put.get('strike'))} | "
+                    f"bid/ask {option_money(atm_put.get('bid'))}/{option_money(atm_put.get('ask'))} | "
+                    f"mid {option_money(atm_put.get('mid'))} | vol {atm_put.get('volume') or 0} | "
+                    f"OI {atm_put.get('open_interest') or 0} | delta {option_money(atm_put.get('delta'))} | "
+                    f"theta {option_money(atm_put.get('theta'))} | IV {option_money(atm_put.get('iv'))}"
+                )
+
     lines += ["", "=== STRUCTURED NEWS ==="]
 
     for ticker, articles in news_map.items():
@@ -213,7 +263,8 @@ def format_payload(
         "",
         "=== ADVISOR CONTEXT ===",
         "This project gathers portfolio data, current prices, gain/loss, market value,",
-        "account grouping, relevance-scored news, and Finnhub price-history metrics",
+        "account grouping, relevance-scored news, Finnhub price-history metrics,",
+        "and Tradier quote/options-chain snapshots",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
         "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
@@ -221,7 +272,8 @@ def format_payload(
         "asset risk, structured news, price momentum, relative strength, 50/200-day",
         "trend state, 52-week high/low distance, volatility, and liquidity.",
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
-        "or options-chain data.",
+        "or full options-chain strategy scoring yet. Tradier data is currently used as",
+        "a connectivity/options-liquidity snapshot for future calendar spread scanning.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
         "Include: overall portfolio summary, strongest add/hold candidates, names to",
@@ -237,6 +289,7 @@ def format_html(
     positions: list[dict[str, Any]],
     news_map: NewsMap | list[str] | None = None,
     recommendations: Recommendations | list[str] | None = None,
+    tradier_snapshot: TradierSnapshot | list[str] | None = None,
     log_lines: list[str] | None = None,
 ) -> str:
     """
@@ -252,6 +305,7 @@ def format_html(
     parsed_news: NewsMap = {}
     parsed_recommendations: Recommendations = []
     parsed_log_lines: list[str] = []
+    parsed_tradier_snapshot: TradierSnapshot = {}
 
     if isinstance(news_map, list) and all(isinstance(item, str) for item in news_map):
         parsed_log_lines = news_map
@@ -264,6 +318,11 @@ def format_html(
         else:
             parsed_recommendations = recommendations  # type: ignore[assignment]
 
+    if isinstance(tradier_snapshot, dict):
+        parsed_tradier_snapshot = tradier_snapshot
+    elif isinstance(tradier_snapshot, list) and all(isinstance(item, str) for item in tradier_snapshot):
+        parsed_log_lines = tradier_snapshot
+
     if log_lines is not None:
         parsed_log_lines = log_lines
 
@@ -271,6 +330,7 @@ def format_html(
     recommendation_rows = format_recommendation_rows(parsed_recommendations)
     market_rows = format_market_rows(parsed_recommendations)
     news_rows = format_news_rows(parsed_news)
+    tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -365,6 +425,7 @@ def format_html(
         ul.compact {{ margin: 0; padding-left: 1.2rem; }}
         .yes {{ color: #00ff88; }}
         .no {{ color: #ff8888; }}
+        .nowrap {{ white-space: nowrap; }}
     </style>
 </head>
 <body>
@@ -372,7 +433,7 @@ def format_html(
     <p class="muted">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, Finnhub momentum, relative strength, trend,
-        volatility, and liquidity. Fundamentals, earnings, and options data will be added later.
+        volatility, liquidity, and Tradier quote/options snapshots. Fundamentals, earnings, and full options strategy scoring will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -423,6 +484,21 @@ def format_html(
             <th>Market Value</th>
         </tr>
         {position_rows}
+    </table>
+
+
+    <h2>Tradier Quote / Options Snapshot</h2>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Quote</th>
+            <th>Expirations</th>
+            <th>Sample Chain</th>
+            <th>ATM Call</th>
+            <th>ATM Put</th>
+            <th>Liquidity</th>
+        </tr>
+        {tradier_rows}
     </table>
 
     <h2>Relevant News</h2>
@@ -572,6 +648,85 @@ def format_market_rows(recommendations: Recommendations) -> str:
         <tr>
             <td colspan="12" class="empty">No market metrics available.</td>
         </tr>"""
+
+
+def format_tradier_rows(tradier_snapshot: TradierSnapshot) -> str:
+    if not tradier_snapshot:
+        return """
+        <tr>
+            <td colspan="7" class="empty">No Tradier data available. Set TRADIER_ACCESS_TOKEN to enable quote/options snapshots.</td>
+        </tr>"""
+
+    rows = ""
+    for ticker, data in tradier_snapshot.items():
+        safe_ticker = escape(str(ticker))
+        if not data.get("has_data"):
+            error = escape(str(data.get("error") or "No Tradier data returned."))
+            rows += f"""
+            <tr>
+                <td><strong>{safe_ticker}</strong></td>
+                <td colspan="6" class="empty">Tradier unavailable: {error}</td>
+            </tr>"""
+            continue
+
+        quote = data.get("quote", {}) or {}
+        atm_call = data.get("atm_call") or {}
+        atm_put = data.get("atm_put") or {}
+        selected_expiration = escape(str(data.get("selected_expiration") or "—"))
+        quote_html = (
+            f"Last {money(quote.get('last'))}<br>"
+            f"Bid/Ask {money(quote.get('bid'))} / {money(quote.get('ask'))}<br>"
+            f"Vol {compact_big_number(quote.get('volume'))}"
+        )
+        expiration_html = (
+            f"{int(data.get('expiration_count') or 0)} available<br>"
+            f"<span class='muted'>Sample: {selected_expiration}</span>"
+        )
+        chain_html = (
+            f"{int(data.get('chain_contract_count') or 0)} contracts<br>"
+            f"<span class='muted'>{int(data.get('call_count') or 0)} calls / {int(data.get('put_count') or 0)} puts</span>"
+        )
+        liquidity_html = (
+            f"Vol {compact_big_number(data.get('total_volume'))}<br>"
+            f"OI {compact_big_number(data.get('total_open_interest'))}"
+        )
+
+        rows += f"""
+        <tr>
+            <td><strong>{safe_ticker}</strong></td>
+            <td>{quote_html}</td>
+            <td>{expiration_html}</td>
+            <td>{chain_html}</td>
+            <td>{format_compact_option(atm_call)}</td>
+            <td>{format_compact_option(atm_put)}</td>
+            <td>{liquidity_html}</td>
+        </tr>"""
+
+    return rows
+
+
+def format_compact_option(option: dict[str, Any] | None) -> str:
+    if not option:
+        return '<span class="empty">—</span>'
+    symbol = escape(str(option.get("symbol") or "N/A"))
+    strike = option_money(option.get("strike"))
+    bid = option_money(option.get("bid"))
+    ask = option_money(option.get("ask"))
+    mid = option_money(option.get("mid"))
+    volume = compact_big_number(option.get("volume"))
+    oi = compact_big_number(option.get("open_interest"))
+    delta = option_money(option.get("delta"))
+    theta = option_money(option.get("theta"))
+    iv = option_money(option.get("iv"))
+    spread = pct(option.get("spread_pct"))
+    return (
+        f"<strong>{symbol}</strong><br>"
+        f"Strike {strike} | Mid {mid}<br>"
+        f"Bid/Ask {bid} / {ask}<br>"
+        f"Vol {volume} | OI {oi}<br>"
+        f"Δ {delta} | Θ {theta} | IV {iv}<br>"
+        f"<span class='muted'>Spread {spread}</span>"
+    )
 
 
 def format_news_rows(news_map: NewsMap) -> str:

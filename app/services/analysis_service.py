@@ -19,6 +19,7 @@ from typing import Any
 from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.market_data_service import get_market_metrics_for_positions
+from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -30,6 +31,7 @@ PipelineResult = tuple[
     list[dict[str, Any]],
     dict[str, list[dict[str, Any]]],
     list[dict[str, Any]],
+    dict[str, dict[str, Any]],
     list[str],
 ]
 
@@ -39,6 +41,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     news: dict[str, list[dict[str, Any]]] = {}
     market_metrics: dict[str, dict[str, Any]] = {}
     recommendations: list[dict[str, Any]] = []
+    tradier_snapshot: dict[str, dict[str, Any]] = {}
 
     clean_mode = _normalize_run_mode(run_mode)
 
@@ -49,6 +52,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 config.ROBINHOOD_PASSWORD,
                 config.NEWS_API_KEY,
                 config.FINNHUB_API_KEY,
+                config.TRADIER_ACCESS_TOKEN,
                 config.RUN_TOKEN,
                 config.NTFY_TOPIC,
             ],
@@ -64,6 +68,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print("robinhood imported OK")
         log_print("news imported OK")
         log_print("market data imported OK")
+        log_print("tradier imported OK")
         log_print("config imported OK")
         log_print(f"APP_MODE: {config.APP_MODE}")
         log_print(f"Run mode: {clean_mode}")
@@ -73,6 +78,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"NEWS_MAX_TICKERS_PER_RUN: {getattr(config, 'NEWS_MAX_TICKERS_PER_RUN', 8)}")
         log_print(f"FINNHUB_API_KEY set: {bool(config.FINNHUB_API_KEY)}")
         log_print(f"MARKET_BENCHMARK_TICKER: {config.MARKET_BENCHMARK_TICKER}")
+        log_print(f"TRADIER_ACCESS_TOKEN set: {bool(config.TRADIER_ACCESS_TOKEN)}")
+        log_print(f"TRADIER_ENV: {config.TRADIER_ENV}")
+        log_print(f"TRADIER_MAX_TICKERS_PER_RUN: {config.TRADIER_MAX_TICKERS_PER_RUN}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -81,7 +89,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             log_print(f"DEV_TICKERS: {config.DEV_TICKERS}; DEV_MAX_TICKERS: {config.DEV_MAX_TICKERS}")
     except Exception as e:
         log_print(f"IMPORT ERROR config: {e}\n{traceback.format_exc()}")
-        return None, [], news, recommendations, log
+        return None, [], news, recommendations, tradier_snapshot, log
 
     log_print("Fetching Robinhood positions...")
 
@@ -90,11 +98,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"get_positions returned {len(positions)} positions")
     except Exception as e:
         log_print(f"ERROR in get_positions: {e}\n{traceback.format_exc()}")
-        return None, [], news, recommendations, log
+        return None, [], news, recommendations, tradier_snapshot, log
 
     if not positions:
         log_print("No positions found or login failed.")
-        return None, [], news, recommendations, log
+        return None, [], news, recommendations, tradier_snapshot, log
 
     tickers = list(dict.fromkeys(p.get("ticker") for p in positions if p.get("ticker")))
     log_print(f"Tickers: {tickers}")
@@ -133,6 +141,21 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         # fall back to v1 cost-basis/allocation/news signals.
         market_metrics = {}
 
+    log_print("Fetching Tradier Provider v1...")
+
+    try:
+        tradier_snapshot = get_tradier_snapshot_for_positions(
+            positions,
+            log_print=log_print,
+            max_tickers=_tradier_max_tickers_for_mode(clean_mode),
+            allowed_tickers=external_tickers if clean_mode == "dev" else None,
+        )
+        tradier_count = sum(1 for item in tradier_snapshot.values() if item.get("has_data"))
+        log_print(f"Tradier Provider v1 fetched {tradier_count}/{len(tradier_snapshot)} ticker snapshot(s)")
+    except Exception as e:
+        log_print(f"ERROR in Tradier Provider v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot = {}
+
     log_print("Running Portfolio Scoring v2 inputs...")
 
     try:
@@ -151,16 +174,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log_print("Formatting payload...")
 
     try:
-        payload = format_payload(positions, news, recommendations)
+        payload = format_payload(positions, news, recommendations, tradier_snapshot)
         if clean_mode == "dev":
             payload = "MODE: DEV — external provider calls limited for API-budget-safe testing.\n\n" + payload
         log_print(f"Payload length: {len(payload)} chars")
     except Exception as e:
         log_print(f"ERROR in format_payload: {e}\n{traceback.format_exc()}")
-        return None, positions, news, recommendations, log
+        return None, positions, news, recommendations, tradier_snapshot, log
 
     log_print("=== RUN COMPLETE ===")
-    return payload, positions, news, recommendations, log
+    return payload, positions, news, recommendations, tradier_snapshot, log
 
 
 def _normalize_run_mode(run_mode: str | None) -> str:
@@ -199,6 +222,12 @@ def _market_max_tickers_for_mode(run_mode: str) -> int | None:
     if run_mode == "dev":
         return max(1, int(config.DEV_MAX_TICKERS or 1))
     return None
+
+
+def _tradier_max_tickers_for_mode(run_mode: str) -> int | None:
+    if run_mode == "dev":
+        return max(1, int(config.DEV_MAX_TICKERS or 1))
+    return max(1, int(config.TRADIER_MAX_TICKERS_PER_RUN or 1))
 
 
 def _fill_missing_news_keys(
