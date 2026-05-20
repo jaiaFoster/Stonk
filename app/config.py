@@ -42,6 +42,8 @@ MARKET_BENCHMARK_TICKER = os.environ.get("MARKET_BENCHMARK_TICKER", "QQQ")
 # Required for Tradier Provider v1. Use your production token for live data,
 # or a sandbox token with TRADIER_ENV=sandbox for delayed/paper-trading tests.
 TRADIER_ACCESS_TOKEN = os.environ.get("TRADIER_ACCESS_TOKEN")
+# Optional. If omitted, the app will try the Tradier user/profile endpoint to find accounts.
+TRADIER_ACCOUNT_ID = os.environ.get("TRADIER_ACCOUNT_ID")
 TRADIER_ENV = os.environ.get("TRADIER_ENV", "prod").strip().lower()
 TRADIER_MAX_TICKERS_PER_RUN = _int_env("TRADIER_MAX_TICKERS_PER_RUN", 2)
 TRADIER_INCLUDE_GREEKS = _bool_env("TRADIER_INCLUDE_GREEKS", True)
@@ -67,6 +69,14 @@ CALENDAR_MIN_VOLUME = _int_env("CALENDAR_MIN_VOLUME", 10)
 CALENDAR_MAX_LEG_SPREAD_PCT = _int_env("CALENDAR_MAX_LEG_SPREAD_PCT", 15)
 CALENDAR_MAX_DEBIT_PCT_UNDERLYING = _int_env("CALENDAR_MAX_DEBIT_PCT_UNDERLYING", 8)
 CALENDAR_MAX_ATM_DISTANCE_PCT = _int_env("CALENDAR_MAX_ATM_DISTANCE_PCT", 3)
+
+# --- Open options position detector ---
+# Read-only account-position parsing. It detects option legs held at Tradier and
+# groups simple calendar spreads. It does not place or close trades.
+OPEN_OPTIONS_DETECTOR_ENABLED = _bool_env("OPEN_OPTIONS_DETECTOR_ENABLED", True)
+OPEN_OPTIONS_QUOTE_LEGS = _bool_env("OPEN_OPTIONS_QUOTE_LEGS", True)
+OPEN_OPTIONS_MAX_LEGS_TO_PRICE = _int_env("OPEN_OPTIONS_MAX_LEGS_TO_PRICE", 20)
+OPEN_OPTIONS_MAX_ACCOUNTS = _int_env("OPEN_OPTIONS_MAX_ACCOUNTS", 3)
 
 # --- Endpoint security ---
 # A secret token to protect the /run endpoint from being triggered by anyone.

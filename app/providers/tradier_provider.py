@@ -51,6 +51,41 @@ class TradierProvider:
     def is_configured(self) -> bool:
         return bool(self.access_token)
 
+    def get_user_profile(self) -> dict[str, Any]:
+        """Return the Tradier user profile payload. Useful for discovering account IDs."""
+        return self._request_json("GET", "/user/profile")
+
+    def get_account_ids(self) -> list[str]:
+        """Return account IDs/account numbers discoverable from the user profile payload."""
+        data = self.get_user_profile()
+        profile = (data or {}).get("profile") if isinstance(data, dict) else {}
+        accounts = (profile or {}).get("account") if isinstance(profile, dict) else None
+        ids: list[str] = []
+        for account in _as_list(accounts):
+            if not isinstance(account, dict):
+                continue
+            for key in ["account_number", "account_id", "id", "number"]:
+                value = account.get(key)
+                if value not in {None, ""}:
+                    candidate = str(value).strip()
+                    if candidate and candidate not in ids:
+                        ids.append(candidate)
+                        break
+        return ids
+
+    def get_account_positions(self, account_id: str) -> list[dict[str, Any]]:
+        """Return raw Tradier account positions for one account ID."""
+        account_id = str(account_id or "").strip()
+        if not account_id:
+            return []
+
+        data = self._request_json("GET", f"/accounts/{account_id}/positions")
+        positions = (data or {}).get("positions") if isinstance(data, dict) else {}
+        if positions is None or positions == "null":
+            return []
+        raw = positions.get("position") if isinstance(positions, dict) else None
+        return [item for item in _as_list(raw) if isinstance(item, dict)]
+
     def get_quotes(self, symbols: list[str], greeks: bool = False) -> dict[str, dict[str, Any]]:
         """Return normalized quote dictionaries keyed by ticker."""
         clean_symbols = [str(s).upper().strip() for s in symbols if str(s).strip()]

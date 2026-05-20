@@ -109,6 +109,7 @@ def format_payload(
     recommendations = recommendations or []
     tradier_snapshot = tradier_snapshot or {}
     calendar_candidates = calendar_candidates_from_tradier_snapshot(tradier_snapshot)
+    open_options = open_options_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -262,6 +263,40 @@ def format_payload(
                 lines.append(f"  - {risk}")
             lines.append(f"  Next check: {cand.get('next_check') or 'Recheck before entry.'}")
 
+    lines += ["", "=== OPEN OPTIONS POSITION DETECTOR V1 ==="]
+    if not open_options:
+        lines.append("Open options detector did not run for this report.")
+    else:
+        summary = open_options.get("summary", {}) or {}
+        errors = open_options.get("errors", []) or []
+        lines.append(
+            f"Accounts checked: {summary.get('account_count', 0)} | "
+            f"Total Tradier positions: {summary.get('total_positions', 0)} | "
+            f"Option legs: {summary.get('option_leg_count', 0)} | "
+            f"Detected calendars: {summary.get('calendar_count', 0)}"
+        )
+        if errors:
+            for error in errors[:3]:
+                lines.append(f"  - {error}")
+        calendars = open_options.get("calendars", []) or []
+        if calendars:
+            lines.append("Detected calendar spreads:")
+            for cal in calendars:
+                lines.append(
+                    f"  - {cal.get('underlying', 'UNKNOWN')} {option_money(cal.get('strike'))} "
+                    f"{str(cal.get('option_type') or 'call').upper()} calendar | "
+                    f"Qty {option_money(cal.get('quantity'))} | "
+                    f"Short {cal.get('front_expiration')} ({cal.get('front_dte')} DTE) / "
+                    f"Long {cal.get('back_expiration')} ({cal.get('back_dte')} DTE) | "
+                    f"Current mid debit {option_money(cal.get('current_mid_debit'))} | "
+                    f"Action: {cal.get('action', 'MONITOR')}"
+                )
+                for risk in cal.get('risks', []) or []:
+                    lines.append(f"    - {risk}")
+                lines.append(f"    Next check: {cal.get('next_check') or 'Monitor daily.'}")
+        else:
+            lines.append("No open calendar spreads detected from Tradier positions.")
+
     lines += ["", "=== STRUCTURED NEWS ==="]
 
     for ticker, articles in news_map.items():
@@ -292,6 +327,7 @@ def format_payload(
         "This project gathers portfolio data, current prices, gain/loss, market value,",
         "account grouping, relevance-scored news, Finnhub price-history metrics,",
         "and Tradier quote/options-chain snapshots, including a v1 calendar-spread screener",
+        "and read-only open options-position detection for Tradier-held option legs",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
         "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
@@ -299,8 +335,9 @@ def format_payload(
         "asset risk, structured news, price momentum, relative strength, 50/200-day",
         "trend state, 52-week high/low distance, volatility, and liquidity.",
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
-        "or open options-position detection yet. Tradier data is now used for",
-        "quote/options liquidity and simple long-call calendar candidate screening.",
+        "or full lifecycle exit scoring yet. Tradier data is now used for",
+        "quote/options liquidity, simple long-call calendar candidate screening,",
+        "and detecting existing Tradier-held calendar spreads when account access is configured.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
         "Include: overall portfolio summary, strongest add/hold candidates, names to",
@@ -359,6 +396,7 @@ def format_html(
     news_rows = format_news_rows(parsed_news)
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
     calendar_rows = format_calendar_spread_rows(calendar_candidates_from_tradier_snapshot(parsed_tradier_snapshot))
+    open_options_rows = format_open_options_rows(open_options_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -461,7 +499,7 @@ def format_html(
     <p class="muted">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, Finnhub momentum, relative strength, trend,
-        volatility, liquidity, and Tradier quote/options snapshots. Fundamentals, earnings, and full options strategy scoring will be added later.
+        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, and open-options detection. Fundamentals, earnings, and full options strategy scoring will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -543,6 +581,19 @@ def format_html(
             <th>Risks / Next</th>
         </tr>
         {calendar_rows}
+    </table>
+
+    <h2>Open Options Position Detector v1</h2>
+    <p class="muted">Read-only Tradier account-position parser. Detects existing calendar spreads only when TRADIER_ACCOUNT_ID/profile access is available.</p>
+    <table>
+        <tr>
+            <th>Status</th>
+            <th>Detected Calendar</th>
+            <th>Legs</th>
+            <th>Current Value</th>
+            <th>Risks / Next</th>
+        </tr>
+        {open_options_rows}
     </table>
 
     <h2>Relevant News</h2>
@@ -839,6 +890,82 @@ def format_calendar_spread_rows(candidates: CalendarCandidates) -> str:
             <td>{format_compact_list(risks)}<br><span class="muted">{next_check}</span></td>
         </tr>"""
     return rows
+
+
+def open_options_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_open_options_positions", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_open_options_rows(open_options: dict[str, Any]) -> str:
+    if not open_options:
+        return """
+        <tr>
+            <td colspan="5" class="empty">Open options detector did not run for this report.</td>
+        </tr>"""
+
+    summary = open_options.get("summary", {}) or {}
+    errors = open_options.get("errors", []) or []
+    calendars = open_options.get("calendars", []) or []
+
+    status = (
+        f"Accounts {summary.get('account_count', 0)}<br>"
+        f"Positions {summary.get('total_positions', 0)}<br>"
+        f"Option legs {summary.get('option_leg_count', 0)}<br>"
+        f"Calendars {summary.get('calendar_count', 0)}"
+    )
+
+    if not calendars:
+        error_html = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No open calendars detected.</span>'
+        return f"""
+        <tr>
+            <td>{status}</td>
+            <td colspan="4" class="empty">{error_html}</td>
+        </tr>"""
+
+    rows = ""
+    for cal in calendars:
+        underlying = escape(str(cal.get("underlying") or cal.get("ticker") or "UNKNOWN"))
+        option_type = escape(str(cal.get("option_type") or "call").upper())
+        action = escape(str(cal.get("action") or "MONITOR"))
+        action_class = action_css_class(action)
+        short_leg = cal.get("short_front_leg", {}) or {}
+        long_leg = cal.get("long_back_leg", {}) or {}
+        risks = cal.get("risks", []) or []
+        if not risks:
+            risks = cal.get("reasons", []) or []
+        next_check = escape(str(cal.get("next_check") or "Monitor daily."))
+        detected = (
+            f"<strong>{underlying} {option_money(cal.get('strike'))} {option_type}</strong><br>"
+            f"Qty {option_money(cal.get('quantity'))}<br>"
+            f"<span class='pill {action_class}'>{action}</span>"
+        )
+        legs = (
+            f"Short {escape(str(cal.get('front_expiration') or '—'))} "
+            f"({cal.get('front_dte') if cal.get('front_dte') is not None else '—'} DTE)<br>"
+            f"<span class='muted'>{escape(str(short_leg.get('symbol') or '—'))}</span><br>"
+            f"Long {escape(str(cal.get('back_expiration') or '—'))} "
+            f"({cal.get('back_dte') if cal.get('back_dte') is not None else '—'} DTE)<br>"
+            f"<span class='muted'>{escape(str(long_leg.get('symbol') or '—'))}</span>"
+        )
+        value = (
+            f"Mid debit {option_money(cal.get('current_mid_debit'))}<br>"
+            f"Value {money(cal.get('current_value_estimate'))}<br>"
+            f"Cost basis est. {money(cal.get('cost_basis_estimate'))}"
+        )
+        rows += f"""
+        <tr>
+            <td>{status}</td>
+            <td>{detected}</td>
+            <td>{legs}</td>
+            <td>{value}</td>
+            <td>{format_compact_list([str(r) for r in risks[:3]])}<br><span class="muted">{next_check}</span></td>
+        </tr>"""
+        status = ""
+    return rows
+
 
 def format_news_rows(news_map: NewsMap) -> str:
     if not news_map:

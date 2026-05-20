@@ -21,6 +21,7 @@ from app.providers.news_provider import get_news_for_tickers
 from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
+from app.services.open_options_service import detect_open_options_positions
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -84,6 +85,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"TRADIER_MAX_TICKERS_PER_RUN: {config.TRADIER_MAX_TICKERS_PER_RUN}")
         log_print(f"CALENDAR_SCANNER_ENABLED: {config.CALENDAR_SCANNER_ENABLED}")
         log_print(f"CALENDAR_MAX_TICKERS_PER_RUN: {config.CALENDAR_MAX_TICKERS_PER_RUN}")
+        log_print(f"OPEN_OPTIONS_DETECTOR_ENABLED: {config.OPEN_OPTIONS_DETECTOR_ENABLED}")
+        log_print(f"TRADIER_ACCOUNT_ID set: {bool(config.TRADIER_ACCOUNT_ID)}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -181,6 +184,39 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "has_data": False,
             "source": "tradier",
             "error": str(e),
+        }
+
+    log_print("Detecting Open Options Positions v1...")
+
+    try:
+        open_options = detect_open_options_positions(log_print=log_print)
+        tradier_snapshot["_open_options_positions"] = open_options
+        summary = open_options.get("summary", {}) if isinstance(open_options, dict) else {}
+        log_print(
+            "Open Options Position Detector v1 produced "
+            f"{summary.get('option_leg_count', 0)} option leg(s) and "
+            f"{summary.get('calendar_count', 0)} detected calendar(s)."
+        )
+    except Exception as e:
+        log_print(f"ERROR in Open Options Position Detector v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_open_options_positions"] = {
+            "source": "tradier",
+            "has_data": False,
+            "enabled": True,
+            "configured": bool(config.TRADIER_ACCESS_TOKEN),
+            "account_ids": [],
+            "positions": [],
+            "option_legs": [],
+            "calendars": [],
+            "errors": [str(e)],
+            "summary": {
+                "account_count": 0,
+                "total_positions": 0,
+                "option_leg_count": 0,
+                "calendar_count": 0,
+                "has_open_options": False,
+                "has_open_calendars": False,
+            },
         }
 
     log_print("Running Portfolio Scoring v2 inputs...")
