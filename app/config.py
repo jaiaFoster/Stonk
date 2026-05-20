@@ -78,6 +78,29 @@ OPEN_OPTIONS_QUOTE_LEGS = _bool_env("OPEN_OPTIONS_QUOTE_LEGS", True)
 OPEN_OPTIONS_MAX_LEGS_TO_PRICE = _int_env("OPEN_OPTIONS_MAX_LEGS_TO_PRICE", 20)
 OPEN_OPTIONS_MAX_ACCOUNTS = _int_env("OPEN_OPTIONS_MAX_ACCOUNTS", 3)
 
+
+# --- Earnings timestamp provider ---
+# Earnings Provider v1 is optional and read-only. It uses Finnhub earnings
+# calendar by default because FINNHUB_API_KEY already exists in the app.
+# If Finnhub denies or returns no data, the run still completes and earnings
+# fields show as unavailable.
+EARNINGS_PROVIDER_ENABLED = _bool_env("EARNINGS_PROVIDER_ENABLED", True)
+EARNINGS_PROVIDER = os.environ.get("EARNINGS_PROVIDER", "finnhub").strip().lower()
+EARNINGS_LOOKAHEAD_DAYS = _int_env("EARNINGS_LOOKAHEAD_DAYS", 45)
+EARNINGS_LOOKBACK_DAYS = _int_env("EARNINGS_LOOKBACK_DAYS", 7)
+EARNINGS_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_MAX_TICKERS_PER_RUN", 8)
+
+# --- Calendar lifecycle checker ---
+# Uses detected open calendars from Tradier positions. It does not require
+# persistence, but exit gain/loss is more useful when broker cost basis or a
+# later trade-memory module provides entry debit.
+CALENDAR_LIFECYCLE_ENABLED = _bool_env("CALENDAR_LIFECYCLE_ENABLED", True)
+CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT = _int_env("CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT", 50)
+CALENDAR_LIFECYCLE_MAX_LOSS_PCT = _int_env("CALENDAR_LIFECYCLE_MAX_LOSS_PCT", -35)
+CALENDAR_LIFECYCLE_URGENT_DTE = _int_env("CALENDAR_LIFECYCLE_URGENT_DTE", 3)
+CALENDAR_LIFECYCLE_REVIEW_DTE = _int_env("CALENDAR_LIFECYCLE_REVIEW_DTE", 7)
+CALENDAR_LIFECYCLE_NEAR_MONEY_PCT = _int_env("CALENDAR_LIFECYCLE_NEAR_MONEY_PCT", 2)
+
 # --- Endpoint security ---
 # A secret token to protect the /run endpoint from being triggered by anyone.
 RUN_TOKEN = os.environ.get("RUN_TOKEN")

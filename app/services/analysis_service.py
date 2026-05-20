@@ -1,14 +1,13 @@
 """
 app/services/analysis_service.py — Main pipeline orchestration.
 
-This service runs the portfolio/news/market-data/scoring/report pipeline.
-Persistence and trade lifecycle checks are intentionally skipped for now; those
-will matter later when the app needs to remember open trades and checkpoints.
+This service runs the portfolio/news/market-data/Tradier/calendar/scoring/report
+pipeline.
 
 Dev mode is supported for API-budget-safe testing:
 - Robinhood still fetches the full portfolio, because that is the baseline state.
-- External providers such as NewsAPI, Finnhub, and future Tradier calls are
-  limited to a small ticker subset.
+- External providers such as NewsAPI, Finnhub, earnings, and Tradier are limited
+  to a small ticker subset.
 """
 
 from __future__ import annotations
@@ -22,6 +21,8 @@ from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.open_options_service import detect_open_options_positions
+from app.services.earnings_service import get_earnings_for_positions
+from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -44,6 +45,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     market_metrics: dict[str, dict[str, Any]] = {}
     recommendations: list[dict[str, Any]] = []
     tradier_snapshot: dict[str, dict[str, Any]] = {}
+    earnings_events: dict[str, dict[str, Any]] = {}
 
     clean_mode = _normalize_run_mode(run_mode)
 
@@ -65,8 +67,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log_print("=== RUN STARTED ===")
 
     try:
-        # Imports happen at module load, but these log lines are preserved so the
-        # browser run log keeps the same useful shape as before.
         log_print("robinhood imported OK")
         log_print("news imported OK")
         log_print("market data imported OK")
@@ -87,6 +87,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"CALENDAR_MAX_TICKERS_PER_RUN: {config.CALENDAR_MAX_TICKERS_PER_RUN}")
         log_print(f"OPEN_OPTIONS_DETECTOR_ENABLED: {config.OPEN_OPTIONS_DETECTOR_ENABLED}")
         log_print(f"TRADIER_ACCOUNT_ID set: {bool(config.TRADIER_ACCOUNT_ID)}")
+        log_print(f"EARNINGS_PROVIDER_ENABLED: {config.EARNINGS_PROVIDER_ENABLED}")
+        log_print(f"EARNINGS_PROVIDER: {config.EARNINGS_PROVIDER}")
+        log_print(f"EARNINGS_LOOKAHEAD_DAYS: {config.EARNINGS_LOOKAHEAD_DAYS}")
+        log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
+        log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -129,7 +134,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"News fetched for {len(news)} tickers; {article_count} relevant article(s)")
     except Exception as e:
         log_print(f"ERROR in get_news_for_tickers: {e}\n{traceback.format_exc()}")
-        # News should not break the whole report.
         news = _fill_missing_news_keys(tickers, {})
 
     log_print("Fetching Finnhub Market Data v1...")
@@ -143,9 +147,22 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         )
     except Exception as e:
         log_print(f"ERROR in Market Data v1: {e}\n{traceback.format_exc()}")
-        # Market data should not break the whole report. Portfolio scoring will
-        # fall back to v1 cost-basis/allocation/news signals.
         market_metrics = {}
+
+    log_print("Fetching Earnings Timestamp Provider v1...")
+
+    try:
+        earnings_events = get_earnings_for_positions(
+            positions,
+            log_print=log_print,
+            max_tickers=_earnings_max_tickers_for_mode(clean_mode),
+            allowed_tickers=external_tickers if clean_mode == "dev" else None,
+        )
+        fetched_count = sum(1 for item in earnings_events.values() if item.get("has_data"))
+        log_print(f"Earnings Timestamp Provider v1 fetched {fetched_count}/{len(earnings_events)} event(s)")
+    except Exception as e:
+        log_print(f"ERROR in Earnings Timestamp Provider v1: {e}\n{traceback.format_exc()}")
+        earnings_events = {}
 
     log_print("Fetching Tradier Provider v1...")
 
@@ -161,6 +178,12 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     except Exception as e:
         log_print(f"ERROR in Tradier Provider v1: {e}\n{traceback.format_exc()}")
         tradier_snapshot = {}
+
+    tradier_snapshot["_earnings_events"] = {
+        "items": earnings_events,
+        "has_data": any(item.get("has_data") for item in earnings_events.values()),
+        "source": config.EARNINGS_PROVIDER,
+    }
 
     log_print("Running Calendar Spread Screener v1...")
 
@@ -219,6 +242,39 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             },
         }
 
+    log_print("Running Calendar Lifecycle Check v1...")
+
+    try:
+        lifecycle_checks = evaluate_calendar_lifecycle(
+            open_options=tradier_snapshot.get("_open_options_positions", {}),
+            tradier_snapshot=tradier_snapshot,
+            earnings_events=earnings_events,
+            log_print=log_print,
+        )
+        tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
+        summary = lifecycle_checks.get("summary", {}) if isinstance(lifecycle_checks, dict) else {}
+        log_print(
+            "Calendar Lifecycle Check v1 produced "
+            f"{summary.get('calendar_count', 0)} check(s), "
+            f"{summary.get('urgent_count', 0)} urgent, "
+            f"{summary.get('exit_review_count', 0)} exit-review."
+        )
+    except Exception as e:
+        log_print(f"ERROR in Calendar Lifecycle Check v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_calendar_lifecycle_checks"] = {
+            "source": "calendar_lifecycle_v1",
+            "enabled": True,
+            "has_data": False,
+            "checks": [],
+            "errors": [str(e)],
+            "summary": {
+                "calendar_count": 0,
+                "urgent_count": 0,
+                "exit_review_count": 0,
+                "has_open_calendars": False,
+            },
+        }
+
     log_print("Running Portfolio Scoring v2 inputs...")
 
     try:
@@ -231,7 +287,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"Portfolio scoring generated {len(recommendations)} recommendation(s)")
     except Exception as e:
         log_print(f"ERROR in Portfolio Scoring: {e}\n{traceback.format_exc()}")
-        # Scoring should not break the whole report. Continue with an empty score table.
         recommendations = []
 
     log_print("Formatting payload...")
@@ -297,6 +352,12 @@ def _calendar_max_tickers_for_mode(run_mode: str) -> int | None:
     if run_mode == "dev":
         return max(1, int(config.DEV_MAX_TICKERS or 1))
     return max(1, int(config.CALENDAR_MAX_TICKERS_PER_RUN or 1))
+
+
+def _earnings_max_tickers_for_mode(run_mode: str) -> int | None:
+    if run_mode == "dev":
+        return max(1, int(config.DEV_MAX_TICKERS or 1))
+    return max(1, int(config.EARNINGS_MAX_TICKERS_PER_RUN or 1))
 
 
 def _fill_missing_news_keys(

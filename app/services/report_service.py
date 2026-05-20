@@ -110,6 +110,8 @@ def format_payload(
     tradier_snapshot = tradier_snapshot or {}
     calendar_candidates = calendar_candidates_from_tradier_snapshot(tradier_snapshot)
     open_options = open_options_from_tradier_snapshot(tradier_snapshot)
+    lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(tradier_snapshot)
+    earnings_events = earnings_events_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -200,6 +202,22 @@ def format_payload(
                 f"Vol30 {pct(metrics.get('volatility_30d_pct'))} | "
                 f"AvgVol30 {compact_big_number(metrics.get('avg_volume_30d'))}"
             )
+
+    lines += ["", "=== EARNINGS TIMESTAMP PROVIDER V1 ==="]
+    if not earnings_events:
+        lines.append("No earnings timestamp data available for this run.")
+    else:
+        for ticker, event in earnings_events.items():
+            if event.get("has_data"):
+                dte = event.get("days_until_earnings")
+                dte_text = f"{dte} days" if dte is not None else "unknown DTE"
+                lines.append(
+                    f"{ticker}: {event.get('earnings_date') or 'Unknown date'} | "
+                    f"{event.get('session_label') or 'Unknown'} | {dte_text} | "
+                    f"Confirmed timestamp: {yes_no(event.get('is_timestamp_confirmed'))} | Source: {event.get('source') or 'unknown'}"
+                )
+            else:
+                lines.append(f"{ticker}: earnings unavailable — {event.get('error') or 'No event returned.'}")
 
     lines += ["", "=== TRADIER OPTIONS SNAPSHOT ==="]
     if not tradier_snapshot:
@@ -297,6 +315,38 @@ def format_payload(
         else:
             lines.append("No open calendar spreads detected from Tradier positions.")
 
+    lines += ["", "=== CALENDAR LIFECYCLE CHECK V1 ==="]
+    if not lifecycle_checks:
+        lines.append("Calendar lifecycle checker did not run for this report.")
+    else:
+        summary = lifecycle_checks.get("summary", {}) or {}
+        lines.append(
+            f"Open calendars checked: {summary.get('calendar_count', 0)} | "
+            f"Urgent: {summary.get('urgent_count', 0)} | "
+            f"Exit-review: {summary.get('exit_review_count', 0)}"
+        )
+        checks = lifecycle_checks.get("checks", []) or []
+        if not checks:
+            lines.append("No open calendars to lifecycle-check.")
+        else:
+            for check in checks:
+                lines.append(
+                    f"{check.get('ticker', 'UNKNOWN')} {option_money(check.get('strike'))} "
+                    f"{str(check.get('option_type') or 'call').upper()} calendar | "
+                    f"Action: {check.get('action', 'HOLD / MONITOR')} | "
+                    f"Current debit {option_money(check.get('current_mid_debit'))} | "
+                    f"Entry debit est. {option_money(check.get('entry_debit_estimate'))} | "
+                    f"P/L est. {signed_pct(check.get('estimated_pnl_pct'))} | "
+                    f"Short DTE {check.get('front_dte')} | "
+                    f"Short moneyness {signed_pct(check.get('short_leg_moneyness_pct'))} | "
+                    f"Earnings {check.get('earnings_date') or 'unknown'} ({check.get('earnings_session') or 'Unknown'})"
+                )
+                for reason in check.get("reasons", []) or []:
+                    lines.append(f"  + {reason}")
+                for risk in check.get("risks", []) or []:
+                    lines.append(f"  - {risk}")
+                lines.append(f"  Next check: {check.get('next_check') or 'Monitor daily.'}")
+
     lines += ["", "=== STRUCTURED NEWS ==="]
 
     for ticker, articles in news_map.items():
@@ -326,8 +376,9 @@ def format_payload(
         "=== ADVISOR CONTEXT ===",
         "This project gathers portfolio data, current prices, gain/loss, market value,",
         "account grouping, relevance-scored news, Finnhub price-history metrics,",
-        "and Tradier quote/options-chain snapshots, including a v1 calendar-spread screener",
-        "and read-only open options-position detection for Tradier-held option legs",
+        "and Tradier quote/options-chain snapshots, including a v1 calendar-spread screener,",
+        "read-only open options-position detection, earnings timestamp context,",
+        "and calendar lifecycle checks for Tradier-held option legs",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
         "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
@@ -335,9 +386,9 @@ def format_payload(
         "asset risk, structured news, price momentum, relative strength, 50/200-day",
         "trend state, 52-week high/low distance, volatility, and liquidity.",
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
-        "or full lifecycle exit scoring yet. Tradier data is now used for",
+        "or persistent trade-memory yet. Tradier data is now used for",
         "quote/options liquidity, simple long-call calendar candidate screening,",
-        "and detecting existing Tradier-held calendar spreads when account access is configured.",
+        "detecting existing Tradier-held calendar spreads, and basic hold/exit review checks.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
         "Include: overall portfolio summary, strongest add/hold candidates, names to",
@@ -397,6 +448,8 @@ def format_html(
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
     calendar_rows = format_calendar_spread_rows(calendar_candidates_from_tradier_snapshot(parsed_tradier_snapshot))
     open_options_rows = format_open_options_rows(open_options_from_tradier_snapshot(parsed_tradier_snapshot))
+    lifecycle_rows = format_calendar_lifecycle_rows(calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot))
+    earnings_rows = format_earnings_rows(earnings_events_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -499,7 +552,7 @@ def format_html(
     <p class="muted">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, Finnhub momentum, relative strength, trend,
-        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, and open-options detection. Fundamentals, earnings, and full options strategy scoring will be added later.
+        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, earnings timestamps, open-options detection, and calendar lifecycle checks. Fundamentals, persistence, and full options strategy scoring will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -553,6 +606,21 @@ def format_html(
     </table>
 
 
+    <h2>Earnings Timestamp Provider v1</h2>
+    <p class="muted">Read-only earnings-date context for portfolio tickers. Uses the configured earnings provider when available and does not block the run if data is unavailable.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Earnings Date</th>
+            <th>Session</th>
+            <th>DTE</th>
+            <th>Confirmed?</th>
+            <th>EPS / Revenue</th>
+            <th>Status</th>
+        </tr>
+        {earnings_rows}
+    </table>
+
     <h2>Tradier Quote / Options Snapshot</h2>
     <table>
         <tr>
@@ -594,6 +662,21 @@ def format_html(
             <th>Risks / Next</th>
         </tr>
         {open_options_rows}
+    </table>
+
+    <h2>Calendar Lifecycle Check v1</h2>
+    <p class="muted">Read-only hold/exit review for detected open calendars. Exact P/L requires broker cost basis or a later persistent trade-memory module.</p>
+    <table>
+        <tr>
+            <th>Status</th>
+            <th>Calendar</th>
+            <th>Value / P&L</th>
+            <th>Risk State</th>
+            <th>Earnings</th>
+            <th>Reasons / Risks</th>
+            <th>Next Check</th>
+        </tr>
+        {lifecycle_rows}
     </table>
 
     <h2>Relevant News</h2>
@@ -966,6 +1049,135 @@ def format_open_options_rows(open_options: dict[str, Any]) -> str:
         status = ""
     return rows
 
+
+
+
+def earnings_events_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, dict[str, Any]]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_earnings_events", {}) or {}
+    if not isinstance(raw, dict):
+        return {}
+    items = raw.get("items", {})
+    return items if isinstance(items, dict) else {}
+
+
+def format_earnings_rows(earnings_events: dict[str, dict[str, Any]]) -> str:
+    if not earnings_events:
+        return """
+        <tr>
+            <td colspan="7" class="empty">No earnings timestamp data available.</td>
+        </tr>"""
+
+    rows = ""
+    for ticker, event in earnings_events.items():
+        safe_ticker = escape(str(ticker))
+        if not isinstance(event, dict) or not event.get("has_data"):
+            error = escape(str((event or {}).get("error") or "No event returned.")) if isinstance(event, dict) else "No event returned."
+            rows += f"""
+            <tr>
+                <td><strong>{safe_ticker}</strong></td>
+                <td colspan="6" class="empty">Earnings unavailable: {error}</td>
+            </tr>"""
+            continue
+
+        dte = event.get("days_until_earnings")
+        dte_text = f"{dte} days" if dte is not None else "—"
+        eps = option_money(event.get("eps_estimate"))
+        eps_actual = option_money(event.get("eps_actual"))
+        revenue_est = compact_big_number(event.get("revenue_estimate"))
+        revenue_actual = compact_big_number(event.get("revenue_actual"))
+        status = "Confirmed timestamp" if event.get("is_timestamp_confirmed") else "Timestamp unknown"
+        rows += f"""
+        <tr>
+            <td><strong>{safe_ticker}</strong></td>
+            <td>{escape(str(event.get('earnings_date') or '—'))}</td>
+            <td>{escape(str(event.get('session_label') or 'Unknown'))}</td>
+            <td>{escape(str(dte_text))}</td>
+            <td>{bool_badge(event.get('is_timestamp_confirmed'))}</td>
+            <td>EPS est/act {eps}/{eps_actual}<br><span class="muted">Rev est/act {revenue_est}/{revenue_actual}</span></td>
+            <td>{escape(status)}<br><span class="muted">Source: {escape(str(event.get('source') or 'unknown'))}</span></td>
+        </tr>"""
+    return rows
+
+
+def calendar_lifecycle_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_calendar_lifecycle_checks", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
+    if not lifecycle:
+        return """
+        <tr>
+            <td colspan="7" class="empty">Calendar lifecycle checker did not run for this report.</td>
+        </tr>"""
+
+    summary = lifecycle.get("summary", {}) or {}
+    errors = lifecycle.get("errors", []) or []
+    checks = lifecycle.get("checks", []) or []
+    status = (
+        f"Open calendars {summary.get('calendar_count', 0)}<br>"
+        f"Urgent {summary.get('urgent_count', 0)}<br>"
+        f"Exit-review {summary.get('exit_review_count', 0)}"
+    )
+
+    if not checks:
+        msg = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No open calendars to lifecycle-check.</span>'
+        return f"""
+        <tr>
+            <td>{status}</td>
+            <td colspan="6" class="empty">{msg}</td>
+        </tr>"""
+
+    rows = ""
+    for check in checks:
+        ticker = escape(str(check.get("ticker") or "UNKNOWN"))
+        option_type = escape(str(check.get("option_type") or "call").upper())
+        action = escape(str(check.get("action") or "HOLD / MONITOR"))
+        action_class = action_css_class(action)
+        reasons = [str(r) for r in (check.get("reasons", []) or [])]
+        risks = [str(r) for r in (check.get("risks", []) or [])]
+        combined = reasons[:2] + risks[:3]
+        next_check = escape(str(check.get("next_check") or "Monitor daily."))
+        calendar = (
+            f"<strong>{ticker} {option_money(check.get('strike'))} {option_type}</strong><br>"
+            f"Short {escape(str(check.get('front_expiration') or '—'))} "
+            f"({check.get('front_dte') if check.get('front_dte') is not None else '—'} DTE)<br>"
+            f"Long {escape(str(check.get('back_expiration') or '—'))} "
+            f"({check.get('back_dte') if check.get('back_dte') is not None else '—'} DTE)<br>"
+            f"<span class='pill {action_class}'>{action}</span>"
+        )
+        value = (
+            f"Current debit {option_money(check.get('current_mid_debit'))}<br>"
+            f"Entry debit est. {option_money(check.get('entry_debit_estimate'))}<br>"
+            f"P/L est. {signed_pct(check.get('estimated_pnl_pct'))}<br>"
+            f"Value {money(check.get('current_value_estimate'))}"
+        )
+        risk_state = (
+            f"Underlying {money(check.get('underlying_price'))}<br>"
+            f"Short moneyness {signed_pct(check.get('short_leg_moneyness_pct'))}<br>"
+            f"Short ITM {yes_no(check.get('short_leg_itm'))}"
+        )
+        earnings = (
+            f"{escape(str(check.get('earnings_date') or 'Unknown'))}<br>"
+            f"{escape(str(check.get('earnings_session') or 'Unknown'))}<br>"
+            f"<span class='muted'>DTE {check.get('days_until_earnings') if check.get('days_until_earnings') is not None else '—'}</span>"
+        )
+        rows += f"""
+        <tr>
+            <td>{status}</td>
+            <td>{calendar}</td>
+            <td>{value}</td>
+            <td>{risk_state}</td>
+            <td>{earnings}</td>
+            <td>{format_compact_list(combined)}</td>
+            <td>{next_check}</td>
+        </tr>"""
+        status = ""
+    return rows
 
 def format_news_rows(news_map: NewsMap) -> str:
     if not news_map:
