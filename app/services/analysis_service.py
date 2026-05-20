@@ -20,6 +20,7 @@ from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.tradier_service import get_tradier_snapshot_for_positions
+from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -81,6 +82,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"TRADIER_ACCESS_TOKEN set: {bool(config.TRADIER_ACCESS_TOKEN)}")
         log_print(f"TRADIER_ENV: {config.TRADIER_ENV}")
         log_print(f"TRADIER_MAX_TICKERS_PER_RUN: {config.TRADIER_MAX_TICKERS_PER_RUN}")
+        log_print(f"CALENDAR_SCANNER_ENABLED: {config.CALENDAR_SCANNER_ENABLED}")
+        log_print(f"CALENDAR_MAX_TICKERS_PER_RUN: {config.CALENDAR_MAX_TICKERS_PER_RUN}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -156,6 +159,30 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"ERROR in Tradier Provider v1: {e}\n{traceback.format_exc()}")
         tradier_snapshot = {}
 
+    log_print("Running Calendar Spread Screener v1...")
+
+    try:
+        calendar_candidates = scan_calendar_spreads_for_positions(
+            positions,
+            log_print=log_print,
+            max_tickers=_calendar_max_tickers_for_mode(clean_mode),
+            allowed_tickers=external_tickers if clean_mode == "dev" else None,
+        )
+        tradier_snapshot["_calendar_spread_candidates"] = {
+            "items": calendar_candidates,
+            "has_data": bool(calendar_candidates),
+            "source": "tradier",
+        }
+        log_print(f"Calendar Spread Screener v1 produced {len(calendar_candidates)} candidate(s)")
+    except Exception as e:
+        log_print(f"ERROR in Calendar Spread Screener v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_calendar_spread_candidates"] = {
+            "items": [],
+            "has_data": False,
+            "source": "tradier",
+            "error": str(e),
+        }
+
     log_print("Running Portfolio Scoring v2 inputs...")
 
     try:
@@ -228,6 +255,12 @@ def _tradier_max_tickers_for_mode(run_mode: str) -> int | None:
     if run_mode == "dev":
         return max(1, int(config.DEV_MAX_TICKERS or 1))
     return max(1, int(config.TRADIER_MAX_TICKERS_PER_RUN or 1))
+
+
+def _calendar_max_tickers_for_mode(run_mode: str) -> int | None:
+    if run_mode == "dev":
+        return max(1, int(config.DEV_MAX_TICKERS or 1))
+    return max(1, int(config.CALENDAR_MAX_TICKERS_PER_RUN or 1))
 
 
 def _fill_missing_news_keys(

@@ -12,6 +12,7 @@ from typing import Any
 NewsMap = dict[str, list[dict[str, Any]]]
 Recommendations = list[dict[str, Any]]
 TradierSnapshot = dict[str, dict[str, Any]]
+CalendarCandidates = list[dict[str, Any]]
 
 
 def money(value):
@@ -107,6 +108,7 @@ def format_payload(
     today = date.today().strftime("%B %d, %Y")
     recommendations = recommendations or []
     tradier_snapshot = tradier_snapshot or {}
+    calendar_candidates = calendar_candidates_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -203,6 +205,8 @@ def format_payload(
         lines.append("No Tradier quote/options data available for this run.")
     else:
         for ticker, data in tradier_snapshot.items():
+            if str(ticker).startswith("_"):
+                continue
             quote = data.get("quote", {}) or {}
             atm_call = data.get("atm_call") or {}
             atm_put = data.get("atm_put") or {}
@@ -235,6 +239,29 @@ def format_payload(
                     f"theta {option_money(atm_put.get('theta'))} | IV {option_money(atm_put.get('iv'))}"
                 )
 
+    lines += ["", "=== CALENDAR SPREAD SCREENER V1 ==="]
+    if not calendar_candidates:
+        lines.append("No calendar spread candidates generated for this run.")
+    else:
+        for cand in calendar_candidates:
+            lines.append(
+                f"{cand.get('ticker', 'UNKNOWN')} {cand.get('strategy', 'Calendar')}: "
+                f"Score {number(cand.get('score'), 1)} | Action: {cand.get('action', 'WATCH')} | "
+                f"Strike {option_money(cand.get('strike'))} {str(cand.get('option_type') or 'call').upper()} | "
+                f"Short {cand.get('front_expiration')} ({cand.get('front_dte')} DTE) / "
+                f"Long {cand.get('back_expiration')} ({cand.get('back_dte')} DTE) | "
+                f"Debit conservative {option_money(cand.get('conservative_debit'))} | "
+                f"Mid debit {option_money(cand.get('mid_debit'))} | "
+                f"Max leg spread {pct(cand.get('max_leg_spread_pct'))} | "
+                f"Min OI {compact_big_number(cand.get('min_leg_open_interest'))} | "
+                f"Min Vol {compact_big_number(cand.get('min_leg_volume'))}"
+            )
+            for reason in cand.get("reasons", []) or []:
+                lines.append(f"  + {reason}")
+            for risk in cand.get("risks", []) or []:
+                lines.append(f"  - {risk}")
+            lines.append(f"  Next check: {cand.get('next_check') or 'Recheck before entry.'}")
+
     lines += ["", "=== STRUCTURED NEWS ==="]
 
     for ticker, articles in news_map.items():
@@ -264,7 +291,7 @@ def format_payload(
         "=== ADVISOR CONTEXT ===",
         "This project gathers portfolio data, current prices, gain/loss, market value,",
         "account grouping, relevance-scored news, Finnhub price-history metrics,",
-        "and Tradier quote/options-chain snapshots",
+        "and Tradier quote/options-chain snapshots, including a v1 calendar-spread screener",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
         "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
@@ -272,8 +299,8 @@ def format_payload(
         "asset risk, structured news, price momentum, relative strength, 50/200-day",
         "trend state, 52-week high/low distance, volatility, and liquidity.",
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
-        "or full options-chain strategy scoring yet. Tradier data is currently used as",
-        "a connectivity/options-liquidity snapshot for future calendar spread scanning.",
+        "or open options-position detection yet. Tradier data is now used for",
+        "quote/options liquidity and simple long-call calendar candidate screening.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
         "Include: overall portfolio summary, strongest add/hold candidates, names to",
@@ -331,6 +358,7 @@ def format_html(
     market_rows = format_market_rows(parsed_recommendations)
     news_rows = format_news_rows(parsed_news)
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
+    calendar_rows = format_calendar_spread_rows(calendar_candidates_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -501,6 +529,22 @@ def format_html(
         {tradier_rows}
     </table>
 
+    <h2>Calendar Spread Screener v1</h2>
+    <p class="muted">Read-only scan for possible new long call calendars. This does not detect open positions or recommend exits yet.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Score / Action</th>
+            <th>Structure</th>
+            <th>Debit</th>
+            <th>Liquidity</th>
+            <th>IV / Spread</th>
+            <th>Reasons</th>
+            <th>Risks / Next</th>
+        </tr>
+        {calendar_rows}
+    </table>
+
     <h2>Relevant News</h2>
     <table>
         <tr>
@@ -659,6 +703,8 @@ def format_tradier_rows(tradier_snapshot: TradierSnapshot) -> str:
 
     rows = ""
     for ticker, data in tradier_snapshot.items():
+        if str(ticker).startswith("_"):
+            continue
         safe_ticker = escape(str(ticker))
         if not data.get("has_data"):
             error = escape(str(data.get("error") or "No Tradier data returned."))
@@ -728,6 +774,71 @@ def format_compact_option(option: dict[str, Any] | None) -> str:
         f"<span class='muted'>Spread {spread}</span>"
     )
 
+
+
+def calendar_candidates_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> CalendarCandidates:
+    if not tradier_snapshot:
+        return []
+    raw = tradier_snapshot.get("_calendar_spread_candidates", {}) or {}
+    items = raw.get("items", []) if isinstance(raw, dict) else []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def format_calendar_spread_rows(candidates: CalendarCandidates) -> str:
+    if not candidates:
+        return """
+        <tr>
+            <td colspan="8" class="empty">No calendar spread candidates generated for this run.</td>
+        </tr>"""
+
+    rows = ""
+    for cand in candidates:
+        ticker = escape(str(cand.get("ticker") or "UNKNOWN"))
+        action = escape(str(cand.get("action") or "WATCH"))
+        action_class = action_css_class(action)
+        option_type = escape(str(cand.get("option_type") or "call").upper())
+        front_leg = cand.get("short_front_leg") or {}
+        back_leg = cand.get("long_back_leg") or {}
+        reasons = cand.get("reasons", []) or []
+        risks = cand.get("risks", []) or []
+        next_check = escape(str(cand.get("next_check") or "Recheck before entry."))
+
+        structure = (
+            f"Strike {option_money(cand.get('strike'))} {option_type}<br>"
+            f"Short {escape(str(cand.get('front_expiration') or '—'))} "
+            f"({cand.get('front_dte') if cand.get('front_dte') is not None else '—'} DTE)<br>"
+            f"Long {escape(str(cand.get('back_expiration') or '—'))} "
+            f"({cand.get('back_dte') if cand.get('back_dte') is not None else '—'} DTE)<br>"
+            f"<span class='muted'>Front {escape(str(front_leg.get('symbol') or '—'))}<br>Back {escape(str(back_leg.get('symbol') or '—'))}</span>"
+        )
+        debit = (
+            f"Conservative {option_money(cand.get('conservative_debit'))}<br>"
+            f"Mid {option_money(cand.get('mid_debit'))}<br>"
+            f"<span class='muted'>{pct(cand.get('debit_pct_underlying'))} of underlying</span>"
+        )
+        liquidity = (
+            f"Min OI {compact_big_number(cand.get('min_leg_open_interest'))}<br>"
+            f"Min Vol {compact_big_number(cand.get('min_leg_volume'))}<br>"
+            f"<span class='muted'>Underlying {money(cand.get('underlying_price'))}</span>"
+        )
+        iv_spread = (
+            f"Front IV {option_money(cand.get('front_iv'))}<br>"
+            f"Back IV {option_money(cand.get('back_iv'))}<br>"
+            f"IV edge {option_money(cand.get('iv_edge'))}<br>"
+            f"<span class='muted'>Max leg spread {pct(cand.get('max_leg_spread_pct'))}</span>"
+        )
+        rows += f"""
+        <tr>
+            <td><strong>{ticker}</strong></td>
+            <td class="score">{number(cand.get('score'), 1)}<br><span class="pill {action_class}">{action}</span></td>
+            <td>{structure}</td>
+            <td>{debit}</td>
+            <td>{liquidity}</td>
+            <td>{iv_spread}</td>
+            <td>{format_compact_list(reasons)}</td>
+            <td>{format_compact_list(risks)}<br><span class="muted">{next_check}</span></td>
+        </tr>"""
+    return rows
 
 def format_news_rows(news_map: NewsMap) -> str:
     if not news_map:
