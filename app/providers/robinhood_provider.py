@@ -253,3 +253,179 @@ def _build_position_from_raw(ticker, pos, account, quantity):
         "market_value": current_price * quantity if current_price else None,
         "account": account,
     }
+
+
+def get_watchlist_tickers(watchlist_names=None, max_tickers=None):
+    """
+    Fetch Robinhood watchlist tickers defensively.
+
+    Returns a normalized result dict rather than raising. This uses the
+    robin_stocks account watchlist helpers when available:
+    - get_all_watchlists()
+    - get_watchlist_by_name(name)
+    """
+    print("get_watchlist_tickers() called", flush=True)
+    logged_in = False
+    requested_names = [str(n).strip() for n in (watchlist_names or []) if str(n).strip()]
+    limit = int(max_tickers or 0) if max_tickers is not None else None
+
+    result = {
+        "source": "robinhood",
+        "has_data": False,
+        "configured": bool(config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
+        "requested_names": requested_names,
+        "watchlists": [],
+        "items": [],
+        "tickers": [],
+        "errors": [],
+        "summary": {
+            "watchlist_count": 0,
+            "ticker_count": 0,
+        },
+    }
+
+    try:
+        if not login_with_retry():
+            result["errors"].append("Robinhood login failed while fetching watchlists.")
+            return result
+
+        logged_in = True
+        all_watchlists = r.account.get_all_watchlists() or {}
+        raw_lists = _watchlist_results(all_watchlists)
+
+        if not raw_lists:
+            result["errors"].append("Robinhood returned no watchlists.")
+            return result
+
+        target_names = {name.lower() for name in requested_names}
+        selected_lists = []
+        for raw_watchlist in raw_lists:
+            if not isinstance(raw_watchlist, dict):
+                continue
+            display_name = str(
+                raw_watchlist.get("display_name")
+                or raw_watchlist.get("name")
+                or raw_watchlist.get("id")
+                or "Unknown"
+            ).strip()
+            if target_names and display_name.lower() not in target_names:
+                continue
+            selected_lists.append(display_name)
+
+        if not selected_lists and requested_names:
+            result["errors"].append(
+                "Requested Robinhood watchlist name(s) were not found: " + ", ".join(requested_names)
+            )
+            return result
+
+        seen = set()
+        for list_name in selected_lists:
+            list_record = {
+                "name": list_name,
+                "tickers": [],
+                "errors": [],
+            }
+            try:
+                raw_items = r.account.get_watchlist_by_name(list_name) or {}
+                rows = _watchlist_results(raw_items)
+                for item in rows:
+                    ticker = _ticker_from_watchlist_item(item)
+                    if not ticker:
+                        continue
+                    ticker = ticker.upper().strip()
+                    if ticker not in list_record["tickers"]:
+                        list_record["tickers"].append(ticker)
+                    if ticker not in seen:
+                        seen.add(ticker)
+                        result["items"].append(
+                            {
+                                "ticker": ticker,
+                                "watchlist_name": list_name,
+                                "source": "robinhood",
+                                "raw": item if isinstance(item, dict) else {},
+                            }
+                        )
+                        result["tickers"].append(ticker)
+                        if limit and len(result["tickers"]) >= limit:
+                            break
+                result["watchlists"].append(list_record)
+            except Exception as e:
+                safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.RUN_TOKEN])
+                list_record["errors"].append(str(safe_error))
+                result["watchlists"].append(list_record)
+                result["errors"].append(f"Failed to fetch watchlist {list_name}: {safe_error}")
+
+            if limit and len(result["tickers"]) >= limit:
+                break
+
+        result["has_data"] = bool(result["tickers"])
+        result["summary"] = {
+            "watchlist_count": len(result["watchlists"]),
+            "ticker_count": len(result["tickers"]),
+        }
+        print(
+            f"Robinhood watchlists fetched: {len(result['watchlists'])} list(s), {len(result['tickers'])} ticker(s)",
+            flush=True,
+        )
+        return result
+
+    except Exception as e:
+        safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.RUN_TOKEN])
+        result["errors"].append(str(safe_error))
+        print(f"Robinhood watchlist fetch failed: {safe_error}", flush=True)
+        return result
+
+    finally:
+        if logged_in:
+            try:
+                r.logout()
+                print("Logged out after watchlist fetch.", flush=True)
+            except Exception as e:
+                print(f"Watchlist logout skipped or failed: {sanitize_for_log(e)}", flush=True)
+
+
+def _watchlist_results(payload):
+    """Return result rows from several Robinhood/watchlist response shapes."""
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    for key in ["results", "items", "instruments", "watchlist"]:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+    # Some robin_stocks watchlist calls return {"results": [...]}, while some
+    # lower-level responses may wrap the list one level deeper.
+    nested = payload.get("data")
+    if isinstance(nested, dict):
+        return _watchlist_results(nested)
+    return []
+
+
+def _ticker_from_watchlist_item(item):
+    """Extract a ticker symbol from a Robinhood watchlist row."""
+    if not isinstance(item, dict):
+        return None
+
+    for key in ["symbol", "ticker"]:
+        value = item.get(key)
+        if value:
+            return str(value).upper().strip()
+
+    instrument = item.get("instrument") or item.get("instrument_url")
+    if not instrument and isinstance(item.get("object"), dict):
+        obj = item.get("object") or {}
+        instrument = obj.get("url") or obj.get("instrument")
+        for key in ["symbol", "ticker"]:
+            if obj.get(key):
+                return str(obj.get(key)).upper().strip()
+
+    if instrument:
+        try:
+            symbol = r.get_symbol_by_url(instrument)
+            if symbol:
+                return str(symbol).upper().strip()
+        except Exception as e:
+            print(f"Could not resolve watchlist instrument URL: {sanitize_for_log(e)}", flush=True)
+
+    return None

@@ -25,6 +25,8 @@ from app.services.earnings_service import get_earnings_for_positions
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
 from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
 from app.services.portfolio_service import get_portfolio_positions
+from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
+from app.services.watchlist_review_service import review_watchlist_candidates
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
 from app.utils.log_safety import sanitize_for_log
@@ -47,6 +49,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     recommendations: list[dict[str, Any]] = []
     tradier_snapshot: dict[str, dict[str, Any]] = {}
     earnings_events: dict[str, dict[str, Any]] = {}
+    watchlist_candidates: dict[str, Any] = {}
+    watchlist_review: dict[str, Any] = {}
 
     clean_mode = _normalize_run_mode(run_mode)
 
@@ -94,6 +98,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
         log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
         log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
+        log_print(f"WATCHLIST_ENABLED: {config.WATCHLIST_ENABLED}")
+        log_print(f"WATCHLIST_SOURCE: {config.WATCHLIST_SOURCE}")
+        log_print(f"WATCHLIST_NAMES: {config.WATCHLIST_NAMES}")
+        log_print(f"WATCHLIST_MAX_TICKERS_PER_RUN: {config.WATCHLIST_MAX_TICKERS_PER_RUN}")
+        log_print(f"WATCHLIST_PRIORITIZE_FOR_SCANS: {config.WATCHLIST_PRIORITIZE_FOR_SCANS}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -117,10 +126,37 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print("No positions found or login failed.")
         return None, [], news, recommendations, tradier_snapshot, log
 
-    tickers = list(dict.fromkeys(p.get("ticker") for p in positions if p.get("ticker")))
-    log_print(f"Tickers: {tickers}")
+    portfolio_tickers = list(dict.fromkeys(p.get("ticker") for p in positions if p.get("ticker")))
+    log_print(f"Tickers: {portfolio_tickers}")
 
-    external_tickers = _external_provider_tickers(tickers, clean_mode)
+    try:
+        watchlist_candidates = get_watchlist_candidates(
+            positions=positions,
+            log_print=log_print,
+            run_mode=clean_mode,
+        )
+        tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
+    except Exception as e:
+        log_print(f"ERROR in Watchlist Candidate Pipeline v1: {e}\n{traceback.format_exc()}")
+        watchlist_candidates = {
+            "source": "watchlist_pipeline_v1",
+            "enabled": True,
+            "has_data": False,
+            "items": [],
+            "tickers": [],
+            "errors": [str(e)],
+            "summary": {"candidate_count": 0, "new_candidate_count": 0, "already_held_count": 0, "scan_universe_count": 0},
+        }
+        tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
+
+    analysis_positions = merge_watchlist_universe_positions(positions, watchlist_candidates)
+    analysis_tickers = list(dict.fromkeys(p.get("ticker") for p in analysis_positions if p.get("ticker")))
+    watchlist_tickers = [item.get("ticker") for item in (watchlist_candidates or {}).get("items", []) if item.get("ticker")]
+    if watchlist_tickers:
+        log_print(f"Watchlist tickers added to scan universe: {watchlist_tickers}")
+        log_print(f"Analysis universe tickers: {analysis_tickers}")
+
+    external_tickers = _external_provider_tickers(analysis_tickers, clean_mode)
     if clean_mode == "dev":
         log_print(f"DEV MODE external provider ticker subset: {external_tickers}")
 
@@ -131,18 +167,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             external_tickers,
             max_tickers=_news_max_tickers_for_mode(clean_mode),
         )
-        news = _fill_missing_news_keys(tickers, news)
+        news = _fill_missing_news_keys(analysis_tickers, news)
         article_count = sum(len(articles) for articles in news.values())
         log_print(f"News fetched for {len(news)} tickers; {article_count} relevant article(s)")
     except Exception as e:
         log_print(f"ERROR in get_news_for_tickers: {e}\n{traceback.format_exc()}")
-        news = _fill_missing_news_keys(tickers, {})
+        news = _fill_missing_news_keys(analysis_tickers, {})
 
     log_print("Fetching Finnhub Market Data v1...")
 
     try:
         market_metrics = get_market_metrics_for_positions(
-            positions,
+            analysis_positions,
             log_print=log_print,
             max_tickers=_market_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
@@ -155,7 +191,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     try:
         earnings_events = get_earnings_for_positions(
-            positions,
+            analysis_positions,
             log_print=log_print,
             max_tickers=_earnings_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
@@ -170,7 +206,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     try:
         tradier_snapshot = get_tradier_snapshot_for_positions(
-            positions,
+            analysis_positions,
             log_print=log_print,
             max_tickers=_tradier_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
@@ -181,6 +217,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"ERROR in Tradier Provider v1: {e}\n{traceback.format_exc()}")
         tradier_snapshot = {}
 
+    # Re-attach non-provider metadata after Tradier Provider v1 replaces the snapshot dict.
+    tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
     tradier_snapshot["_earnings_events"] = {
         "items": earnings_events,
         "has_data": any(item.get("has_data") for item in earnings_events.values()),
@@ -191,7 +229,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     try:
         calendar_candidates = scan_calendar_spreads_for_positions(
-            positions,
+            analysis_positions,
             log_print=log_print,
             max_tickers=_calendar_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
@@ -243,6 +281,42 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 "avoid_count": 0,
                 "manual_review_count": 0,
                 "has_candidates": False,
+            },
+        }
+
+    log_print("Running Watchlist Candidate Review v1...")
+
+    try:
+        watchlist_review = review_watchlist_candidates(
+            watchlist_result=watchlist_candidates,
+            tradier_snapshot=tradier_snapshot,
+            earnings_events=earnings_events,
+            news_map=news,
+            positions=positions,
+            log_print=log_print,
+        )
+        tradier_snapshot["_watchlist_review"] = watchlist_review
+        summary = watchlist_review.get("summary", {}) if isinstance(watchlist_review, dict) else {}
+        log_print(
+            "Watchlist Candidate Review v1 produced "
+            f"{summary.get('candidate_count', 0)} review(s), "
+            f"{summary.get('potential_trade_count', 0)} potential trade setup(s), "
+            f"{summary.get('urgent_count', 0)} urgent."
+        )
+    except Exception as e:
+        log_print(f"ERROR in Watchlist Candidate Review v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_watchlist_review"] = {
+            "source": "watchlist_candidate_review_v1",
+            "enabled": True,
+            "has_data": False,
+            "items": [],
+            "errors": [str(e)],
+            "summary": {
+                "candidate_count": 0,
+                "new_candidate_count": 0,
+                "already_held_count": 0,
+                "potential_trade_count": 0,
+                "urgent_count": 0,
             },
         }
 

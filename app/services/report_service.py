@@ -113,6 +113,7 @@ def format_payload(
     open_options = open_options_from_tradier_snapshot(tradier_snapshot)
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(tradier_snapshot)
     earnings_events = earnings_events_from_tradier_snapshot(tradier_snapshot)
+    watchlist_review = watchlist_review_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -138,6 +139,49 @@ def format_payload(
             f"Value: {money(p.get('market_value'))} | "
             f"Account: {p.get('account', 'Unknown')}"
         )
+
+    lines += ["", "=== WATCHLIST CANDIDATE REVIEW V1 ==="]
+    if not watchlist_review or not watchlist_review.get("items"):
+        errors = (watchlist_review or {}).get("errors", []) or []
+        if errors:
+            lines.append("No watchlist candidates reviewed: " + "; ".join(str(e) for e in errors[:3]))
+        else:
+            lines.append("No watchlist candidates reviewed this run. Add Robinhood watchlist items or set WATCHLIST_TICKERS.")
+    else:
+        summary = watchlist_review.get("summary", {}) or {}
+        lines.append(
+            f"Candidates {summary.get('candidate_count', 0)} | "
+            f"New {summary.get('new_candidate_count', 0)} | "
+            f"Already held {summary.get('already_held_count', 0)} | "
+            f"Potential trade setups {summary.get('potential_trade_count', 0)} | "
+            f"Urgent {summary.get('urgent_count', 0)}"
+        )
+        for item in watchlist_review.get("items", []) or []:
+            earnings = item.get("earnings", {}) or {}
+            strategy = item.get("earnings_calendar_strategy", {}) or {}
+            lines.append(
+                f"{item.get('ticker', 'UNKNOWN')}: Score {number(item.get('score'), 1)} | "
+                f"Category: {item.get('category', 'WATCH')} | "
+                f"Portfolio: {item.get('portfolio_status', 'Unknown')} | "
+                f"Watchlists: {', '.join(item.get('watchlists', []) or []) or '—'}"
+            )
+            if earnings.get("has_data"):
+                lines.append(
+                    f"  Earnings: {earnings.get('earnings_date') or 'Unknown'} | "
+                    f"{earnings.get('session_label') or 'Unknown'} | "
+                    f"DTE {earnings.get('days_until_earnings') if earnings.get('days_until_earnings') is not None else 'unknown'}"
+                )
+            if strategy:
+                lines.append(
+                    f"  Earnings strategy: {strategy.get('action') or '—'} | "
+                    f"Score {number(strategy.get('score'), 1)}"
+                )
+            for reason in (item.get("reasons", []) or [])[:3]:
+                lines.append(f"  + {reason}")
+            for risk in (item.get("risks", []) or [])[:3]:
+                lines.append(f"  - {risk}")
+            if item.get("next_check"):
+                lines.append(f"  Next check: {item.get('next_check')}")
 
     lines += ["", "=== PORTFOLIO SCORING V2 ==="]
 
@@ -410,8 +454,8 @@ def format_payload(
         "This project gathers portfolio data, current prices, gain/loss, market value,",
         "account grouping, relevance-scored news, Finnhub price-history metrics,",
         "and Tradier quote/options-chain snapshots, including a v1 calendar-spread screener,",
-        "read-only open options-position detection, earnings timestamp context,",
-        "and calendar lifecycle checks for Tradier-held option legs",
+        "watchlist candidate review, read-only open options-position detection,",
+        "earnings timestamp context, and calendar lifecycle checks for Tradier-held option legs",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
         "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
@@ -421,7 +465,8 @@ def format_payload(
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
         "or persistent trade-memory yet. Tradier data is now used for",
         "quote/options liquidity, simple long-call calendar candidate screening,",
-        "detecting existing Tradier-held calendar spreads, and basic hold/exit review checks.",
+        "watchlist idea triage, detecting existing Tradier-held calendar spreads,",
+        "and basic hold/exit review checks.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
         "Include: overall portfolio summary, strongest add/hold candidates, names to",
@@ -484,6 +529,7 @@ def format_html(
     open_options_rows = format_open_options_rows(open_options_from_tradier_snapshot(parsed_tradier_snapshot))
     lifecycle_rows = format_calendar_lifecycle_rows(calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot))
     earnings_rows = format_earnings_rows(earnings_events_from_tradier_snapshot(parsed_tradier_snapshot))
+    watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -579,6 +625,8 @@ def format_html(
         .yes {{ color: #00ff88; }}
         .no {{ color: #ff8888; }}
         .nowrap {{ white-space: nowrap; }}
+        .urgent {{ background: #7f1d1d; color: #fecaca; font-weight: bold; }}
+        .candidate {{ background: #064e3b; color: #a7f3d0; }}
     </style>
 </head>
 <body>
@@ -586,7 +634,7 @@ def format_html(
     <p class="muted">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, Finnhub momentum, relative strength, trend,
-        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, earnings timestamps, earnings-calendar strategy scoring, open-options detection, and calendar lifecycle checks. Fundamentals, persistence, and full options strategy scoring will be added later.
+        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, earnings timestamps, earnings-calendar strategy scoring, watchlist candidate review, open-options detection, and calendar lifecycle checks. Fundamentals, persistence, and full options strategy scoring will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -639,6 +687,21 @@ def format_html(
         {position_rows}
     </table>
 
+
+    <h2>Watchlist Candidate Review v1</h2>
+    <p class="muted">Robinhood/manual watchlist tickers reviewed as a watching category for possible stock adds or options/earnings-calendar scans. These are not treated as owned positions.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Score / Category</th>
+            <th>Portfolio</th>
+            <th>Watchlist Source</th>
+            <th>Earnings</th>
+            <th>Options / Strategy</th>
+            <th>Reasons / Next</th>
+        </tr>
+        {watchlist_rows}
+    </table>
 
     <h2>Earnings Timestamp Provider v1</h2>
     <p class="muted">Read-only earnings-date context for portfolio tickers. Uses the configured earnings provider when available and does not block the run if data is unavailable.</p>
@@ -1416,5 +1479,88 @@ def format_earnings_calendar_strategy_rows(strategy: dict[str, Any]) -> str:
             <td>{debit_liquidity}</td>
             <td>{format_compact_list(reasons)}</td>
             <td>{format_compact_list(risks)}<br><span class="muted">{next_check}</span></td>
+        </tr>"""
+    return rows
+
+
+def watchlist_review_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_watchlist_review", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_watchlist_review_rows(review: dict[str, Any]) -> str:
+    if not review:
+        return """
+        <tr>
+            <td colspan="7" class="empty">Watchlist Candidate Review v1 did not run for this report.</td>
+        </tr>"""
+
+    items = review.get("items", []) or []
+    summary = review.get("summary", {}) or {}
+    errors = review.get("errors", []) or []
+
+    if not items:
+        message = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No watchlist candidates found. Add Robinhood watchlist items or set WATCHLIST_TICKERS.</span>'
+        status = (
+            f"Candidates {summary.get('candidate_count', 0)}<br>"
+            f"New {summary.get('new_candidate_count', 0)}<br>"
+            f"Urgent {summary.get('urgent_count', 0)}"
+        )
+        return f"""
+        <tr>
+            <td>{status}</td>
+            <td colspan="6">{message}</td>
+        </tr>"""
+
+    rows = ""
+    for item in items:
+        ticker = escape(str(item.get("ticker") or "UNKNOWN"))
+        category = escape(str(item.get("category") or "WATCH"))
+        category_upper = category.upper()
+        category_class = "urgent" if "URGENT" in category_upper or "AVOID" in category_upper else "candidate" if "CALENDAR" in category_upper else action_css_class(category)
+        earnings = item.get("earnings", {}) or {}
+        strategy = item.get("earnings_calendar_strategy", {}) or {}
+        calendar = item.get("calendar_candidate", {}) or {}
+        watchlists = ", ".join(str(w) for w in (item.get("watchlists", []) or [])) or "—"
+        sources = ", ".join(str(src) for src in (item.get("sources", []) or [])) or "—"
+
+        if earnings.get("has_data"):
+            earnings_text = (
+                f"{escape(str(earnings.get('earnings_date') or 'Unknown'))}<br>"
+                f"{escape(str(earnings.get('session_label') or 'Unknown'))}<br>"
+                f"DTE {earnings.get('days_until_earnings') if earnings.get('days_until_earnings') is not None else 'unknown'}"
+            )
+        else:
+            earnings_text = f"<span class='empty'>{escape(str(earnings.get('error') or 'No earnings event this run.'))}</span>"
+
+        strategy_bits = []
+        if calendar:
+            strategy_bits.append(
+                f"Calendar candidate score {number(calendar.get('score'), 1)}"
+            )
+        if strategy:
+            strategy_bits.append(
+                f"Strategy: {escape(str(strategy.get('action') or '—'))}"
+            )
+            if strategy.get("score") is not None:
+                strategy_bits.append(f"Strategy score {number(strategy.get('score'), 1)}")
+        if item.get("news_article_count"):
+            strategy_bits.append(f"News articles {item.get('news_article_count')}")
+        options_text = "<br>".join(strategy_bits) if strategy_bits else '<span class="empty">No options/strategy signal yet.</span>'
+
+        reasons = [str(r) for r in (item.get("reasons", []) or [])]
+        risks = [str(r) for r in (item.get("risks", []) or [])]
+        next_check = escape(str(item.get("next_check") or "Keep watching."))
+        rows += f"""
+        <tr>
+            <td><strong>{ticker}</strong></td>
+            <td class="score">{number(item.get('score'), 1)}<br><span class="pill {category_class}">{category}</span></td>
+            <td>{escape(str(item.get('portfolio_status') or 'Unknown'))}</td>
+            <td>{escape(watchlists)}<br><span class="muted">{escape(sources)}</span></td>
+            <td>{earnings_text}</td>
+            <td>{options_text}</td>
+            <td>{format_compact_list(reasons + risks)}<br><span class="muted">{next_check}</span></td>
         </tr>"""
     return rows
