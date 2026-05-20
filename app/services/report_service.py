@@ -109,6 +109,7 @@ def format_payload(
     recommendations = recommendations or []
     tradier_snapshot = tradier_snapshot or {}
     calendar_candidates = calendar_candidates_from_tradier_snapshot(tradier_snapshot)
+    earnings_calendar_strategy = earnings_calendar_strategy_from_tradier_snapshot(tradier_snapshot)
     open_options = open_options_from_tradier_snapshot(tradier_snapshot)
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(tradier_snapshot)
     earnings_events = earnings_events_from_tradier_snapshot(tradier_snapshot)
@@ -281,6 +282,38 @@ def format_payload(
                 lines.append(f"  - {risk}")
             lines.append(f"  Next check: {cand.get('next_check') or 'Recheck before entry.'}")
 
+    lines += ["", "=== EARNINGS CALENDAR STRATEGY V1 ==="]
+    if not earnings_calendar_strategy:
+        lines.append("Earnings calendar strategy did not run for this report.")
+    else:
+        summary = earnings_calendar_strategy.get("summary", {}) or {}
+        lines.append(
+            f"Candidates evaluated: {summary.get('candidate_count', 0)} | "
+            f"Preferred earnings setups: {summary.get('preferred_count', 0)} | "
+            f"Urgent review: {summary.get('urgent_count', 0)} | "
+            f"Avoid: {summary.get('avoid_count', 0)}"
+        )
+        items = earnings_calendar_strategy.get("items", []) or []
+        if not items:
+            lines.append("No earnings-calendar candidates evaluated.")
+        else:
+            for item in items:
+                earnings = item.get("earnings", {}) or {}
+                lines.append(
+                    f"{item.get('ticker', 'UNKNOWN')} Earnings Long Call Calendar: "
+                    f"Score {number(item.get('score'), 1)} | Action: {item.get('action', 'MANUAL REVIEW')} | "
+                    f"Strike {option_money(item.get('strike'))} {str(item.get('option_type') or 'call').upper()} | "
+                    f"Short {item.get('front_expiration')} ({item.get('front_dte')} DTE) / "
+                    f"Long {item.get('back_expiration')} ({item.get('back_dte')} DTE) | "
+                    f"Earnings {earnings.get('earnings_date') or 'unknown'} ({earnings.get('session_label') or 'Unknown'}) | "
+                    f"Relation {item.get('earnings_relation') or 'unknown'}"
+                )
+                for reason in item.get("reasons", []) or []:
+                    lines.append(f"  + {reason}")
+                for risk in item.get("risks", []) or []:
+                    lines.append(f"  - {risk}")
+                lines.append(f"  Next check: {item.get('next_check') or 'Manual review before entry.'}")
+
     lines += ["", "=== OPEN OPTIONS POSITION DETECTOR V1 ==="]
     if not open_options:
         lines.append("Open options detector did not run for this report.")
@@ -447,6 +480,7 @@ def format_html(
     news_rows = format_news_rows(parsed_news)
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
     calendar_rows = format_calendar_spread_rows(calendar_candidates_from_tradier_snapshot(parsed_tradier_snapshot))
+    earnings_calendar_rows = format_earnings_calendar_strategy_rows(earnings_calendar_strategy_from_tradier_snapshot(parsed_tradier_snapshot))
     open_options_rows = format_open_options_rows(open_options_from_tradier_snapshot(parsed_tradier_snapshot))
     lifecycle_rows = format_calendar_lifecycle_rows(calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot))
     earnings_rows = format_earnings_rows(earnings_events_from_tradier_snapshot(parsed_tradier_snapshot))
@@ -552,7 +586,7 @@ def format_html(
     <p class="muted">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, Finnhub momentum, relative strength, trend,
-        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, earnings timestamps, open-options detection, and calendar lifecycle checks. Fundamentals, persistence, and full options strategy scoring will be added later.
+        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, earnings timestamps, earnings-calendar strategy scoring, open-options detection, and calendar lifecycle checks. Fundamentals, persistence, and full options strategy scoring will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -649,6 +683,21 @@ def format_html(
             <th>Risks / Next</th>
         </tr>
         {calendar_rows}
+    </table>
+
+    <h2>Earnings Calendar Strategy v1</h2>
+    <p class="muted">Earnings-aware review of calendar candidates. This flags whether the structure captures earnings, whether the short leg spans the event, and whether manual review is urgent.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Score / Action</th>
+            <th>Structure</th>
+            <th>Earnings Fit</th>
+            <th>Debit / Liquidity</th>
+            <th>Reasons</th>
+            <th>Risks / Next</th>
+        </tr>
+        {earnings_calendar_rows}
     </table>
 
     <h2>Open Options Position Detector v1</h2>
@@ -1294,3 +1343,78 @@ def normalize_news_item(ticker: str, article: dict[str, Any] | str) -> dict[str,
         "published_at": str(article.get("published_at", "")),
         "relevance_score": max(0.0, min(1.0, relevance_score)),
     }
+
+
+def earnings_calendar_strategy_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_earnings_calendar_strategy", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_earnings_calendar_strategy_rows(strategy: dict[str, Any]) -> str:
+    if not strategy:
+        return """
+        <tr>
+            <td colspan="7" class="empty">Earnings Calendar Strategy v1 did not run for this report.</td>
+        </tr>"""
+
+    items = strategy.get("items", []) or []
+    summary = strategy.get("summary", {}) or {}
+    errors = strategy.get("errors", []) or []
+
+    if not items:
+        message = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No earnings-calendar candidates evaluated.</span>'
+        status = (
+            f"Candidates {summary.get('candidate_count', 0)}<br>"
+            f"Preferred {summary.get('preferred_count', 0)}<br>"
+            f"Urgent {summary.get('urgent_count', 0)}"
+        )
+        return f"""
+        <tr>
+            <td>{status}</td>
+            <td colspan="6" class="empty">{message}</td>
+        </tr>"""
+
+    rows = ""
+    for item in items:
+        ticker = escape(str(item.get("ticker") or "UNKNOWN"))
+        action = escape(str(item.get("action") or "MANUAL REVIEW"))
+        action_class = action_css_class(action)
+        earnings = item.get("earnings", {}) or {}
+        reasons = [str(r) for r in (item.get("reasons", []) or [])]
+        risks = [str(r) for r in (item.get("risks", []) or [])]
+        next_check = escape(str(item.get("next_check") or "Manual review before entry."))
+        option_type = escape(str(item.get("option_type") or "call").upper())
+
+        structure = (
+            f"Strike {option_money(item.get('strike'))} {option_type}<br>"
+            f"Short {escape(str(item.get('front_expiration') or '—'))} "
+            f"({item.get('front_dte') if item.get('front_dte') is not None else '—'} DTE)<br>"
+            f"Long {escape(str(item.get('back_expiration') or '—'))} "
+            f"({item.get('back_dte') if item.get('back_dte') is not None else '—'} DTE)"
+        )
+        earnings_fit = (
+            f"{escape(str(earnings.get('earnings_date') or 'Unknown'))}<br>"
+            f"{escape(str(earnings.get('session_label') or 'Unknown'))}<br>"
+            f"<span class='muted'>Relation: {escape(str(item.get('earnings_relation') or 'unknown'))}</span><br>"
+            f"<span class='muted'>Preferred: {yes_no(item.get('is_preferred_setup'))} | Urgent: {yes_no(item.get('urgent_review'))}</span>"
+        )
+        debit_liquidity = (
+            f"Conservative debit {option_money(item.get('conservative_debit'))}<br>"
+            f"Mid debit {option_money(item.get('mid_debit'))}<br>"
+            f"Max spread {pct(item.get('max_leg_spread_pct'))}<br>"
+            f"Min OI {compact_big_number(item.get('min_leg_open_interest'))} | "
+            f"Min Vol {compact_big_number(item.get('min_leg_volume'))}"
+        )
+        rows += f"""
+        <tr>
+            <td><strong>{ticker}</strong></td>
+            <td class="score">{number(item.get('score'), 1)}<br><span class="pill {action_class}">{action}</span></td>
+            <td>{structure}</td>
+            <td>{earnings_fit}</td>
+            <td>{debit_liquidity}</td>
+            <td>{format_compact_list(reasons)}</td>
+            <td>{format_compact_list(risks)}<br><span class="muted">{next_check}</span></td>
+        </tr>"""
+    return rows

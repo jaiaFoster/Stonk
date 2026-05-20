@@ -122,3 +122,13 @@ DEV_TICKERS = [
     for ticker in os.environ.get("DEV_TICKERS", "NVDA,AMZN").split(",")
     if ticker.strip()
 ]
+
+# --- Earnings calendar strategy layer ---
+# Evaluates whether calendar-spread candidates are actually positioned around
+# earnings. This is read-only and uses already-fetched earnings/candidate data.
+EARNINGS_CALENDAR_STRATEGY_ENABLED = _bool_env("EARNINGS_CALENDAR_STRATEGY_ENABLED", True)
+EARNINGS_CALENDAR_URGENT_DTE = _int_env("EARNINGS_CALENDAR_URGENT_DTE", 1)
+EARNINGS_CALENDAR_PREFERRED_BONUS = _int_env("EARNINGS_CALENDAR_PREFERRED_BONUS", 8)
+EARNINGS_CALENDAR_UNKNOWN_TIMESTAMP_SCORE_CAP = _int_env("EARNINGS_CALENDAR_UNKNOWN_TIMESTAMP_SCORE_CAP", 60)
+EARNINGS_CALENDAR_UNCONFIRMED_SCORE_CAP = _int_env("EARNINGS_CALENDAR_UNCONFIRMED_SCORE_CAP", 70)
+EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP = _int_env("EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP", 55)

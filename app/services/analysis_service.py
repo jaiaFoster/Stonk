@@ -23,6 +23,7 @@ from app.services.calendar_spread_service import scan_calendar_spreads_for_posit
 from app.services.open_options_service import detect_open_options_positions
 from app.services.earnings_service import get_earnings_for_positions
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
+from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -92,6 +93,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"EARNINGS_LOOKAHEAD_DAYS: {config.EARNINGS_LOOKAHEAD_DAYS}")
         log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
         log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
+        log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -207,6 +209,41 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "has_data": False,
             "source": "tradier",
             "error": str(e),
+        }
+
+    log_print("Running Earnings Calendar Strategy v1...")
+
+    try:
+        earnings_calendar_strategy = evaluate_earnings_calendar_candidates(
+            calendar_candidates=tradier_snapshot.get("_calendar_spread_candidates", {}).get("items", [])
+            if isinstance(tradier_snapshot.get("_calendar_spread_candidates", {}), dict) else [],
+            earnings_events=earnings_events,
+            log_print=log_print,
+        )
+        tradier_snapshot["_earnings_calendar_strategy"] = earnings_calendar_strategy
+        summary = earnings_calendar_strategy.get("summary", {}) if isinstance(earnings_calendar_strategy, dict) else {}
+        log_print(
+            "Earnings Calendar Strategy v1 produced "
+            f"{summary.get('candidate_count', 0)} evaluation(s), "
+            f"{summary.get('preferred_count', 0)} preferred, "
+            f"{summary.get('urgent_count', 0)} urgent-review."
+        )
+    except Exception as e:
+        log_print(f"ERROR in Earnings Calendar Strategy v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_earnings_calendar_strategy"] = {
+            "source": "earnings_calendar_strategy_v1",
+            "enabled": True,
+            "has_data": False,
+            "items": [],
+            "errors": [str(e)],
+            "summary": {
+                "candidate_count": 0,
+                "preferred_count": 0,
+                "urgent_count": 0,
+                "avoid_count": 0,
+                "manual_review_count": 0,
+                "has_candidates": False,
+            },
         }
 
     log_print("Detecting Open Options Positions v1...")
