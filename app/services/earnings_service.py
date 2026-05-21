@@ -1,8 +1,9 @@
 """
-app/services/earnings_service.py — Earnings Timestamp Provider v1.
+app/services/earnings_service.py — Earnings Timestamp Provider v1 + discovery.
 
-Fetches upcoming earnings events for portfolio tickers. This is used as context
-for calendar-spread screening/lifecycle checks, but it does not block the run.
+The timestamp provider fetches earnings context for known tickers. The discovery
+helper starts from an earnings-calendar date window and produces an independent
+trade-discovery universe for the earnings-calendar strategy.
 """
 
 from __future__ import annotations
@@ -21,7 +22,6 @@ from app.utils.log_safety import sanitize_for_log
 
 LogFn = Callable[[str], None]
 
-
 NON_EQUITY_TICKERS = {"BTC", "ETH", "SOL", "DOGE", "ADA", "AVAX", "MATIC", "USDC", "USDT"}
 
 
@@ -34,7 +34,6 @@ def get_earnings_for_positions(
     """Return upcoming earnings data keyed by ticker."""
     logger = log_print or (lambda msg: print(msg, flush=True))
     provider = get_provider()
-
     result: dict[str, dict[str, Any]] = {}
 
     tickers = _equity_tickers_from_positions(positions)
@@ -95,6 +94,123 @@ def get_earnings_for_positions(
     return _fill_unavailable(all_equity_tickers, result, "Not fetched this run; limited by provider budget/dev mode.")
 
 
+def discover_upcoming_earnings_for_calendar_trades(
+    log_print: LogFn | None = None,
+    run_mode: str = "prod",
+) -> dict[str, Any]:
+    """Discover an independent earnings universe for possible calendar trades.
+
+    This is deliberately separate from portfolio and watchlist tickers. The
+    calendar strategy should start from upcoming earnings events, then use
+    Tradier chains to decide whether a trade is interesting.
+    """
+    logger = log_print or (lambda msg: print(msg, flush=True))
+    provider = get_provider()
+
+    result: dict[str, Any] = {
+        "source": "earnings_discovery_v1",
+        "provider": str(config.EARNINGS_PROVIDER or "finnhub"),
+        "enabled": bool(config.EARNINGS_DISCOVERY_ENABLED),
+        "has_data": False,
+        "window_start": None,
+        "window_end": None,
+        "items": [],
+        "events_by_ticker": {},
+        "tickers": [],
+        "errors": [],
+        "summary": {
+            "event_count": 0,
+            "ticker_count": 0,
+            "window_start_days": int(config.EARNINGS_DISCOVERY_START_DAYS or 2),
+            "window_end_days": int(config.EARNINGS_DISCOVERY_END_DAYS or 4),
+        },
+    }
+
+    if not config.EARNINGS_DISCOVERY_ENABLED:
+        logger("Earnings Trade Discovery v1 disabled by EARNINGS_DISCOVERY_ENABLED=false.")
+        return result
+
+    if not config.EARNINGS_PROVIDER_ENABLED:
+        result["errors"].append("Earnings provider disabled.")
+        logger("Earnings Trade Discovery v1 skipped: earnings provider disabled.")
+        return result
+
+    if not provider.is_configured:
+        result["errors"].append("FINNHUB_API_KEY is not set.")
+        logger("Earnings Trade Discovery v1 skipped: FINNHUB_API_KEY is not set.")
+        return result
+
+    start_offset = int(config.EARNINGS_DISCOVERY_START_DAYS or 2)
+    end_offset = int(config.EARNINGS_DISCOVERY_END_DAYS or 4)
+    if end_offset < start_offset:
+        end_offset = start_offset
+    start = date.today() + timedelta(days=max(0, start_offset))
+    end = date.today() + timedelta(days=max(0, end_offset))
+    result["window_start"] = start.isoformat()
+    result["window_end"] = end.isoformat()
+
+    max_events = max(1, int(config.EARNINGS_DISCOVERY_MAX_EVENTS or 25))
+    max_tickers = max(1, int(config.EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN or 6))
+    if str(run_mode or "prod").lower() == "dev":
+        max_tickers = max(1, int(config.DEV_MAX_TICKERS or 1))
+        max_events = max_tickers
+
+    logger(
+        "Fetching Earnings Trade Discovery v1 universe; "
+        f"provider={config.EARNINGS_PROVIDER}; window={start.isoformat()}..{end.isoformat()}; "
+        f"max_tickers={max_tickers}"
+        + (" (limited by dev/test mode)" if str(run_mode or "prod").lower() == "dev" else "")
+    )
+
+    try:
+        raw_events = provider.get_earnings_calendar_range(start, end)
+    except EarningsRateLimitError as e:
+        safe_error = sanitize_for_log(e, [config.FINNHUB_API_KEY, config.RUN_TOKEN])
+        result["errors"].append(str(safe_error))
+        logger(f"Earnings Trade Discovery v1 stopped: {safe_error}")
+        return result
+    except (EarningsAuthError, EarningsProviderError, Exception) as e:
+        safe_error = sanitize_for_log(e, [config.FINNHUB_API_KEY, config.RUN_TOKEN])
+        result["errors"].append(str(safe_error))
+        logger(f"Earnings Trade Discovery v1 unavailable: {safe_error}")
+        return result
+
+    events: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in raw_events:
+        ticker = str(event.get("ticker") or event.get("symbol") or "").upper().strip()
+        if not _valid_equity_symbol(ticker) or ticker in seen:
+            continue
+        selected = _select_best_event(ticker, [event])
+        if not selected:
+            continue
+        selected = dict(selected)
+        selected["discovery_reason"] = "Upcoming earnings event in configured discovery window."
+        events.append(selected)
+        seen.add(ticker)
+        if len(events) >= max_events or len(seen) >= max_tickers:
+            break
+
+    events.sort(key=lambda item: (item.get("earnings_date") or "9999-99-99", str(item.get("ticker") or "")))
+    events = events[:max_tickers]
+    tickers = [str(event.get("ticker") or "").upper().strip() for event in events if event.get("ticker")]
+
+    result["items"] = events
+    result["events_by_ticker"] = {ticker: event for ticker, event in zip(tickers, events)}
+    result["tickers"] = tickers
+    result["has_data"] = bool(events)
+    result["summary"] = {
+        "event_count": len(events),
+        "ticker_count": len(tickers),
+        "window_start_days": start_offset,
+        "window_end_days": end_offset,
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+    }
+    logger(f"Earnings Trade Discovery v1 found {len(events)} event(s): {tickers}")
+    return result
+
+
 def _select_best_event(ticker: str, events: list[dict[str, Any]]) -> dict[str, Any] | None:
     today = date.today()
     parsed: list[tuple[int, dict[str, Any]]] = []
@@ -103,11 +219,12 @@ def _select_best_event(ticker: str, events: list[dict[str, Any]]) -> dict[str, A
         if not event_date:
             continue
         distance = (event_date - today).days
-        # Prefer future/upcoming events, but allow a small lookback so recent reports still show.
         if distance < -max(0, int(config.EARNINGS_LOOKBACK_DAYS or 0)):
             continue
         priority = distance if distance >= 0 else 10_000 + abs(distance)
         event = dict(event)
+        event["ticker"] = str(event.get("ticker") or ticker).upper().strip()
+        event["symbol"] = event["ticker"]
         event["days_until_earnings"] = distance
         event["has_data"] = True
         parsed.append((priority, event))
@@ -157,6 +274,14 @@ def _all_equity_tickers_from_positions(positions: list[dict[str, Any]]) -> list[
         if ticker not in seen:
             seen.append(ticker)
     return seen
+
+
+def _valid_equity_symbol(ticker: str) -> bool:
+    if not ticker or ticker in NON_EQUITY_TICKERS:
+        return False
+    # Tradier usually supports simple US equity tickers cleanly. Skip symbols
+    # with punctuation for v1 discovery to avoid wasting option-chain calls.
+    return ticker.replace(".", "").replace("-", "").isalnum() and len(ticker) <= 6
 
 
 def _parse_date(value: Any) -> date | None:

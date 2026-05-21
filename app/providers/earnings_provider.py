@@ -68,6 +68,35 @@ class FinnhubEarningsProvider:
             raw_items = _as_list(data.get("earningsCalendar"))
         return [self._normalize_item(symbol, item) for item in raw_items if isinstance(item, dict)]
 
+
+    def get_earnings_calendar_range(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> list[dict[str, Any]]:
+        """Return normalized earnings-calendar entries for all symbols in a date range."""
+        if not self.api_key:
+            raise EarningsAuthError("FINNHUB_API_KEY is not set.")
+
+        params = {
+            "from": start_date.isoformat(),
+            "to": end_date.isoformat(),
+        }
+        data = self._request_json("GET", "/calendar/earnings", params=params)
+        raw_items = []
+        if isinstance(data, dict):
+            raw_items = _as_list(data.get("earningsCalendar"))
+
+        normalized: list[dict[str, Any]] = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            symbol = str(item.get("symbol") or item.get("ticker") or "").upper().strip()
+            if not symbol:
+                continue
+            normalized.append(self._normalize_item(symbol, item))
+        return normalized
+
     def _request_json(self, method: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.api_key:
             raise EarningsAuthError("FINNHUB_API_KEY is not set.")

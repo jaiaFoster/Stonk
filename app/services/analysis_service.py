@@ -21,7 +21,7 @@ from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.open_options_service import detect_open_options_positions
-from app.services.earnings_service import get_earnings_for_positions
+from app.services.earnings_service import get_earnings_for_positions, discover_upcoming_earnings_for_calendar_trades
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
 from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
 from app.services.portfolio_service import get_portfolio_positions
@@ -51,6 +51,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     earnings_events: dict[str, dict[str, Any]] = {}
     watchlist_candidates: dict[str, Any] = {}
     watchlist_review: dict[str, Any] = {}
+    earnings_trade_discovery: dict[str, Any] = {}
 
     clean_mode = _normalize_run_mode(run_mode)
 
@@ -85,6 +86,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"NEWS_MAX_TICKERS_PER_RUN: {getattr(config, 'NEWS_MAX_TICKERS_PER_RUN', 8)}")
         log_print(f"FINNHUB_API_KEY set: {bool(config.FINNHUB_API_KEY)}")
         log_print(f"MARKET_BENCHMARK_TICKER: {config.MARKET_BENCHMARK_TICKER}")
+        log_print(f"MARKET_DATA_USE_TRADIER_FALLBACK: {config.MARKET_DATA_USE_TRADIER_FALLBACK}")
+        log_print(f"MARKET_DATA_MAX_TICKERS_PER_RUN: {config.MARKET_DATA_MAX_TICKERS_PER_RUN}")
         log_print(f"TRADIER_ACCESS_TOKEN set: {bool(config.TRADIER_ACCESS_TOKEN)}")
         log_print(f"TRADIER_ENV: {config.TRADIER_ENV}")
         log_print(f"TRADIER_MAX_TICKERS_PER_RUN: {config.TRADIER_MAX_TICKERS_PER_RUN}")
@@ -95,6 +98,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"EARNINGS_PROVIDER_ENABLED: {config.EARNINGS_PROVIDER_ENABLED}")
         log_print(f"EARNINGS_PROVIDER: {config.EARNINGS_PROVIDER}")
         log_print(f"EARNINGS_LOOKAHEAD_DAYS: {config.EARNINGS_LOOKAHEAD_DAYS}")
+        log_print(f"EARNINGS_DISCOVERY_ENABLED: {config.EARNINGS_DISCOVERY_ENABLED}")
+        log_print(f"EARNINGS_DISCOVERY_WINDOW: +{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS} days")
+        log_print(f"EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN: {config.EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN}")
         log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
         log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
         log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
@@ -202,6 +208,26 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"ERROR in Earnings Timestamp Provider v1: {e}\n{traceback.format_exc()}")
         earnings_events = {}
 
+    log_print("Fetching Earnings Trade Discovery v1...")
+
+    try:
+        earnings_trade_discovery = discover_upcoming_earnings_for_calendar_trades(
+            log_print=log_print,
+            run_mode=clean_mode,
+        )
+    except Exception as e:
+        log_print(f"ERROR in Earnings Trade Discovery v1: {e}\n{traceback.format_exc()}")
+        earnings_trade_discovery = {
+            "source": "earnings_discovery_v1",
+            "enabled": True,
+            "has_data": False,
+            "items": [],
+            "events_by_ticker": {},
+            "tickers": [],
+            "errors": [str(e)],
+            "summary": {"event_count": 0, "ticker_count": 0},
+        }
+
     log_print("Fetching Tradier Provider v1...")
 
     try:
@@ -224,28 +250,42 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "has_data": any(item.get("has_data") for item in earnings_events.values()),
         "source": config.EARNINGS_PROVIDER,
     }
+    tradier_snapshot["_earnings_trade_discovery"] = earnings_trade_discovery
 
-    log_print("Running Calendar Spread Screener v1...")
+    log_print("Running Calendar Spread Screener v1 for earnings-discovery universe...")
 
     try:
-        calendar_candidates = scan_calendar_spreads_for_positions(
-            analysis_positions,
-            log_print=log_print,
-            max_tickers=_calendar_max_tickers_for_mode(clean_mode),
-            allowed_tickers=external_tickers if clean_mode == "dev" else None,
-        )
+        discovery_tickers = [
+            str(t).upper().strip()
+            for t in (earnings_trade_discovery or {}).get("tickers", [])
+            if str(t).strip()
+        ]
+        discovery_positions = _positions_from_earnings_discovery(earnings_trade_discovery)
+        if not discovery_positions:
+            log_print("Calendar Spread Screener v1 skipped: no earnings-discovery tickers in configured window.")
+            calendar_candidates = []
+        else:
+            log_print(f"Calendar scanner universe from earnings discovery: {discovery_tickers}")
+            calendar_candidates = scan_calendar_spreads_for_positions(
+                discovery_positions,
+                log_print=log_print,
+                max_tickers=_calendar_max_tickers_for_mode(clean_mode),
+                allowed_tickers=discovery_tickers,
+            )
         tradier_snapshot["_calendar_spread_candidates"] = {
             "items": calendar_candidates,
             "has_data": bool(calendar_candidates),
             "source": "tradier",
+            "universe_source": "earnings_discovery_v1",
         }
-        log_print(f"Calendar Spread Screener v1 produced {len(calendar_candidates)} candidate(s)")
+        log_print(f"Calendar Spread Screener v1 produced {len(calendar_candidates)} earnings-discovery candidate(s)")
     except Exception as e:
         log_print(f"ERROR in Calendar Spread Screener v1: {e}\n{traceback.format_exc()}")
         tradier_snapshot["_calendar_spread_candidates"] = {
             "items": [],
             "has_data": False,
             "source": "tradier",
+            "universe_source": "earnings_discovery_v1",
             "error": str(e),
         }
 
@@ -255,7 +295,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         earnings_calendar_strategy = evaluate_earnings_calendar_candidates(
             calendar_candidates=tradier_snapshot.get("_calendar_spread_candidates", {}).get("items", [])
             if isinstance(tradier_snapshot.get("_calendar_spread_candidates", {}), dict) else [],
-            earnings_events=earnings_events,
+            earnings_events=_merge_earnings_events(earnings_events, earnings_trade_discovery),
             log_print=log_print,
         )
         tradier_snapshot["_earnings_calendar_strategy"] = earnings_calendar_strategy
@@ -359,7 +399,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lifecycle_checks = evaluate_calendar_lifecycle(
             open_options=tradier_snapshot.get("_open_options_positions", {}),
             tradier_snapshot=tradier_snapshot,
-            earnings_events=earnings_events,
+            earnings_events=_merge_earnings_events(earnings_events, earnings_trade_discovery),
             log_print=log_print,
         )
         tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
@@ -415,6 +455,41 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     return payload, positions, news, recommendations, tradier_snapshot, log
 
 
+def _positions_from_earnings_discovery(discovery: dict[str, Any]) -> list[dict[str, Any]]:
+    positions: list[dict[str, Any]] = []
+    for event in (discovery or {}).get("items", []) or []:
+        ticker = str(event.get("ticker") or event.get("symbol") or "").upper().strip()
+        if not ticker:
+            continue
+        positions.append(
+            {
+                "ticker": ticker,
+                "quantity": 0,
+                "avg_buy_price": None,
+                "current_price": None,
+                "gain_loss": None,
+                "gain_loss_pct": None,
+                "market_value": 0,
+                "account": "Earnings Discovery",
+                "source": "earnings_discovery_v1",
+                "earnings_event": event,
+            }
+        )
+    return positions
+
+
+def _merge_earnings_events(
+    earnings_events: dict[str, dict[str, Any]],
+    discovery: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    merged = dict(earnings_events or {})
+    for ticker, event in ((discovery or {}).get("events_by_ticker", {}) or {}).items():
+        clean = str(ticker).upper().strip()
+        if clean:
+            merged[clean] = event
+    return merged
+
+
 def _normalize_run_mode(run_mode: str | None) -> str:
     value = str(run_mode or config.APP_MODE or "prod").strip().lower()
     return "dev" if value in {"dev", "development", "test", "testing"} else "prod"
@@ -450,7 +525,7 @@ def _news_max_tickers_for_mode(run_mode: str) -> int | None:
 def _market_max_tickers_for_mode(run_mode: str) -> int | None:
     if run_mode == "dev":
         return max(1, int(config.DEV_MAX_TICKERS or 1))
-    return None
+    return max(1, int(config.MARKET_DATA_MAX_TICKERS_PER_RUN or 1))
 
 
 def _tradier_max_tickers_for_mode(run_mode: str) -> int | None:

@@ -114,6 +114,7 @@ def format_payload(
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(tradier_snapshot)
     earnings_events = earnings_events_from_tradier_snapshot(tradier_snapshot)
     watchlist_review = watchlist_review_from_tradier_snapshot(tradier_snapshot)
+    earnings_trade_discovery = earnings_trade_discovery_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -231,7 +232,7 @@ def format_payload(
     lines += ["", "=== MARKET DATA SNAPSHOT ==="]
     market_rows = [rec for rec in recommendations if (rec.get("market_metrics") or {}).get("has_data")]
     if not market_rows:
-        lines.append("No Finnhub market metrics available for this run.")
+        lines.append("No market metrics available for this run.")
     else:
         for rec in market_rows:
             metrics = rec.get("market_metrics", {}) or {}
@@ -263,6 +264,27 @@ def format_payload(
                 )
             else:
                 lines.append(f"{ticker}: earnings unavailable — {event.get('error') or 'No event returned.'}")
+
+    lines += ["", "=== EARNINGS TRADE DISCOVERY V1 ==="]
+    if not earnings_trade_discovery or not earnings_trade_discovery.get("has_data"):
+        errors = (earnings_trade_discovery or {}).get("errors", []) or []
+        if errors:
+            lines.append("No earnings-discovery universe available: " + "; ".join(str(e) for e in errors[:3]))
+        else:
+            lines.append("No upcoming earnings events found in the configured discovery window.")
+    else:
+        summary = earnings_trade_discovery.get("summary", {}) or {}
+        lines.append(
+            f"Window {earnings_trade_discovery.get('window_start') or '—'}..{earnings_trade_discovery.get('window_end') or '—'} | "
+            f"Events {summary.get('event_count', 0)} | Tickers {summary.get('ticker_count', 0)}"
+        )
+        for event in (earnings_trade_discovery.get("items", []) or [])[:20]:
+            lines.append(
+                f"{event.get('ticker', 'UNKNOWN')}: {event.get('earnings_date') or 'Unknown date'} | "
+                f"{event.get('session_label') or 'Unknown'} | "
+                f"DTE {event.get('days_until_earnings') if event.get('days_until_earnings') is not None else 'unknown'} | "
+                f"Confirmed {yes_no(event.get('is_timestamp_confirmed'))}"
+            )
 
     lines += ["", "=== TRADIER OPTIONS SNAPSHOT ==="]
     if not tradier_snapshot:
@@ -453,7 +475,7 @@ def format_payload(
         "=== ADVISOR CONTEXT ===",
         "This project gathers portfolio data, current prices, gain/loss, market value,",
         "account grouping, relevance-scored news, Finnhub price-history metrics,",
-        "and Tradier quote/options-chain snapshots, including a v1 calendar-spread screener,",
+        "and Tradier quote/options-chain snapshots, including an earnings-discovery calendar screener,",
         "watchlist candidate review, read-only open options-position detection,",
         "earnings timestamp context, and calendar lifecycle checks for Tradier-held option legs",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
@@ -464,7 +486,7 @@ def format_payload(
         "trend state, 52-week high/low distance, volatility, and liquidity.",
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
         "or persistent trade-memory yet. Tradier data is now used for",
-        "quote/options liquidity, simple long-call calendar candidate screening,",
+        "quote/options liquidity, earnings-driven long-call calendar candidate screening,",
         "watchlist idea triage, detecting existing Tradier-held calendar spreads,",
         "and basic hold/exit review checks.",
         "",
@@ -530,6 +552,7 @@ def format_html(
     lifecycle_rows = format_calendar_lifecycle_rows(calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot))
     earnings_rows = format_earnings_rows(earnings_events_from_tradier_snapshot(parsed_tradier_snapshot))
     watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))
+    earnings_discovery_rows = format_earnings_trade_discovery_rows(earnings_trade_discovery_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -716,6 +739,19 @@ def format_html(
             <th>Status</th>
         </tr>
         {earnings_rows}
+    </table>
+
+    <h2>Earnings Trade Discovery v1</h2>
+    <p class="muted">Independent earnings-calendar trade universe. This starts from upcoming earnings events, not your watchlist. Calendar strategy candidates are generated only from this universe.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Earnings</th>
+            <th>DTE</th>
+            <th>Confirmed?</th>
+            <th>Source / Notes</th>
+        </tr>
+        {earnings_discovery_rows}
     </table>
 
     <h2>Tradier Quote / Options Snapshot</h2>
@@ -914,7 +950,7 @@ def format_market_rows(recommendations: Recommendations) -> str:
             rows += f"""
             <tr>
                 <td><strong>{safe_ticker}</strong></td>
-                <td colspan="11" class="empty">No Finnhub market data: {error}</td>
+                <td colspan="11" class="empty">No market data: {error}</td>
             </tr>"""
             continue
 
@@ -1162,6 +1198,49 @@ def format_open_options_rows(open_options: dict[str, Any]) -> str:
     return rows
 
 
+
+
+def earnings_trade_discovery_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_earnings_trade_discovery", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_earnings_trade_discovery_rows(discovery: dict[str, Any]) -> str:
+    if not discovery:
+        return """
+        <tr>
+            <td colspan="5" class="empty">Earnings trade discovery did not run for this report.</td>
+        </tr>"""
+
+    errors = discovery.get("errors", []) or []
+    items = discovery.get("items", []) or []
+    if not items:
+        msg = "; ".join(str(e) for e in errors[:3]) if errors else "No upcoming earnings events found in the configured discovery window."
+        return f"""
+        <tr>
+            <td colspan="5" class="empty">{escape(msg)}</td>
+        </tr>"""
+
+    rows = ""
+    for event in items[:30]:
+        ticker = escape(str(event.get("ticker") or event.get("symbol") or "UNKNOWN"))
+        earnings_date = escape(str(event.get("earnings_date") or event.get("date") or "—"))
+        session = escape(str(event.get("session_label") or "Unknown"))
+        dte = event.get("days_until_earnings")
+        dte_text = f"{dte} days" if dte is not None else "—"
+        source = escape(str(event.get("source") or discovery.get("provider") or "unknown"))
+        note = escape(str(event.get("discovery_reason") or "Upcoming earnings event in configured discovery window."))
+        rows += f"""
+        <tr>
+            <td><strong>{ticker}</strong></td>
+            <td>{earnings_date}<br><span class="muted">{session}</span></td>
+            <td>{escape(str(dte_text))}</td>
+            <td>{bool_badge(event.get('is_timestamp_confirmed'))}</td>
+            <td>{source}<br><span class="muted">{note}</span></td>
+        </tr>"""
+    return rows
 
 
 def earnings_events_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, dict[str, Any]]:

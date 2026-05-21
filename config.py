@@ -37,6 +37,10 @@ NEWS_PAGE_SIZE = _int_env("NEWS_PAGE_SIZE", 5)
 # Currently optional. Finnhub stock/candle may be plan-restricted depending on the key.
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 MARKET_BENCHMARK_TICKER = os.environ.get("MARKET_BENCHMARK_TICKER", "QQQ")
+MARKET_DATA_USE_TRADIER_FALLBACK = _bool_env("MARKET_DATA_USE_TRADIER_FALLBACK", True)
+TRADIER_HISTORICAL_LOOKBACK_DAYS = _int_env("TRADIER_HISTORICAL_LOOKBACK_DAYS", 460)
+TRADIER_HISTORICAL_INTERVAL = os.environ.get("TRADIER_HISTORICAL_INTERVAL", "daily").strip().lower()
+MARKET_DATA_MAX_TICKERS_PER_RUN = _int_env("MARKET_DATA_MAX_TICKERS_PER_RUN", 20)
 
 # --- Tradier market/options data ---
 # Required for Tradier Provider v1. Use your production token for live data,
@@ -90,6 +94,15 @@ EARNINGS_LOOKAHEAD_DAYS = _int_env("EARNINGS_LOOKAHEAD_DAYS", 45)
 EARNINGS_LOOKBACK_DAYS = _int_env("EARNINGS_LOOKBACK_DAYS", 7)
 EARNINGS_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_MAX_TICKERS_PER_RUN", 8)
 
+# --- Earnings trade discovery universe ---
+# Separate from portfolio/watchlist. This starts from provider earnings-calendar
+# events, then runs Tradier option-chain/calendar scoring only on those tickers.
+EARNINGS_DISCOVERY_ENABLED = _bool_env("EARNINGS_DISCOVERY_ENABLED", True)
+EARNINGS_DISCOVERY_START_DAYS = _int_env("EARNINGS_DISCOVERY_START_DAYS", 2)
+EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 4)
+EARNINGS_DISCOVERY_MAX_EVENTS = _int_env("EARNINGS_DISCOVERY_MAX_EVENTS", 25)
+EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN", 6)
+
 # --- Calendar lifecycle checker ---
 # Uses detected open calendars from Tradier positions. It does not require
 # persistence, but exit gain/loss is more useful when broker cost basis or a
@@ -134,6 +147,9 @@ EARNINGS_CALENDAR_UNCONFIRMED_SCORE_CAP = _int_env("EARNINGS_CALENDAR_UNCONFIRME
 EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP = _int_env("EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP", 55)
 
 # --- Watchlist / portfolio gap candidate pipeline ---
+# Pulls candidate tickers from Robinhood watchlists when available, and/or from
+# WATCHLIST_TICKERS as a manual fallback. These tickers are treated as a
+# "watching" category, not as owned positions.
 # Leave WATCHLIST_NAMES blank to discover and scan all Robinhood watchlists.
 WATCHLIST_ENABLED = _bool_env("WATCHLIST_ENABLED", True)
 WATCHLIST_SOURCE = os.environ.get("WATCHLIST_SOURCE", "robinhood,manual").strip().lower()

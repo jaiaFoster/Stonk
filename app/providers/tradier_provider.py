@@ -170,6 +170,48 @@ class TradierProvider:
         raw_options = ((data or {}).get("options") or {}).get("option")
         return [_normalize_option(raw, symbol, expiration) for raw in _as_list(raw_options) if isinstance(raw, dict)]
 
+
+    def get_historical_quotes(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str = "daily",
+    ) -> list[dict[str, Any]]:
+        """Return normalized historical O/H/L/C/V candles for an equity or option symbol."""
+        symbol = str(symbol or "").upper().strip()
+        if not symbol:
+            return []
+
+        data = self._request_json(
+            "GET",
+            "/markets/history",
+            params={
+                "symbol": symbol,
+                "interval": str(interval or "daily"),
+                "start": str(start_date),
+                "end": str(end_date),
+            },
+        )
+        raw_days = ((data or {}).get("history") or {}).get("day")
+        days = _as_list(raw_days)
+        normalized: list[dict[str, Any]] = []
+        for raw in days:
+            if not isinstance(raw, dict):
+                continue
+            normalized.append(
+                {
+                    "date": raw.get("date"),
+                    "open": _float_or_none(raw.get("open")),
+                    "high": _float_or_none(raw.get("high")),
+                    "low": _float_or_none(raw.get("low")),
+                    "close": _float_or_none(raw.get("close")),
+                    "volume": _float_or_none(raw.get("volume")),
+                    "raw": raw,
+                }
+            )
+        return normalized
+
     def _request_json(self, method: str, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         if not self.access_token:
             raise TradierAuthError("TRADIER_ACCESS_TOKEN is not set.")
