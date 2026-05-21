@@ -284,7 +284,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             },
         }
 
-    log_print("Running Watchlist Candidate Review v1...")
+    log_print("Running Watchlist Stock Candidate Review v2...")
 
     try:
         watchlist_review = review_watchlist_candidates(
@@ -298,15 +298,15 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         tradier_snapshot["_watchlist_review"] = watchlist_review
         summary = watchlist_review.get("summary", {}) if isinstance(watchlist_review, dict) else {}
         log_print(
-            "Watchlist Candidate Review v1 produced "
+            "Watchlist Stock Candidate Review v2 produced "
             f"{summary.get('candidate_count', 0)} review(s), "
             f"{summary.get('potential_trade_count', 0)} potential trade setup(s), "
             f"{summary.get('urgent_count', 0)} urgent."
         )
     except Exception as e:
-        log_print(f"ERROR in Watchlist Candidate Review v1: {e}\n{traceback.format_exc()}")
+        log_print(f"ERROR in Watchlist Stock Candidate Review v2: {e}\n{traceback.format_exc()}")
         tradier_snapshot["_watchlist_review"] = {
-            "source": "watchlist_candidate_review_v1",
+            "source": "watchlist_stock_candidate_review_v2",
             "enabled": True,
             "has_data": False,
             "items": [],

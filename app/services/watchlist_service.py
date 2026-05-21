@@ -75,6 +75,19 @@ def get_watchlist_candidates(
             else:
                 logger("Robinhood watchlist names discovered: none")
 
+            # If Railway still has an old/mistyped WATCHLIST_NAMES value, do not
+            # silently return zero candidates. Fall back to scanning all discovered
+            # lists so the watchlist feature remains useful without exact names.
+            if requested_names and not (rh_result.get("items") or []):
+                logger(
+                    "Requested WATCHLIST_NAMES returned no tickers; falling back to all discovered Robinhood watchlists."
+                )
+                rh_result = get_watchlist_tickers(
+                    watchlist_names=[],
+                    max_tickers=max_tickers,
+                )
+                found_names = rh_result.get("available_watchlist_names", []) or found_names
+
             for watchlist_record in rh_result.get("watchlists", []) or []:
                 logger(
                     "Robinhood watchlist "

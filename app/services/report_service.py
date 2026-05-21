@@ -140,7 +140,7 @@ def format_payload(
             f"Account: {p.get('account', 'Unknown')}"
         )
 
-    lines += ["", "=== WATCHLIST CANDIDATE REVIEW V1 ==="]
+    lines += ["", "=== WATCHLIST STOCK CANDIDATE REVIEW V2 ==="]
     if not watchlist_review or not watchlist_review.get("items"):
         errors = (watchlist_review or {}).get("errors", []) or []
         if errors:
@@ -153,7 +153,7 @@ def format_payload(
             f"Candidates {summary.get('candidate_count', 0)} | "
             f"New {summary.get('new_candidate_count', 0)} | "
             f"Already held {summary.get('already_held_count', 0)} | "
-            f"Potential trade setups {summary.get('potential_trade_count', 0)} | "
+            f"Stock candidates {summary.get('stock_candidate_count', 0)} | Potential calendar setups {summary.get('potential_trade_count', 0)} | "
             f"Urgent {summary.get('urgent_count', 0)}"
         )
         for item in watchlist_review.get("items", []) or []:
@@ -688,16 +688,16 @@ def format_html(
     </table>
 
 
-    <h2>Watchlist Candidate Review v1</h2>
-    <p class="muted">Robinhood/manual watchlist tickers reviewed as a watching category for possible stock adds or options/earnings-calendar scans. These are not treated as owned positions.</p>
+    <h2>Watchlist Stock Candidate Review v2</h2>
+    <p class="muted">Robinhood/manual watchlist tickers reviewed primarily as normal stock candidates. Earnings/calendar logic is an overlay only when an actual earnings setup exists. These are not treated as owned positions.</p>
     <table>
         <tr>
             <th>Ticker</th>
-            <th>Score / Category</th>
+            <th>Stock Score / Category</th>
             <th>Portfolio</th>
             <th>Watchlist Source</th>
             <th>Earnings</th>
-            <th>Options / Strategy</th>
+            <th>Earnings / Calendar Overlay</th>
             <th>Reasons / Next</th>
         </tr>
         {watchlist_rows}
@@ -1494,7 +1494,7 @@ def format_watchlist_review_rows(review: dict[str, Any]) -> str:
     if not review:
         return """
         <tr>
-            <td colspan="7" class="empty">Watchlist Candidate Review v1 did not run for this report.</td>
+            <td colspan="7" class="empty">Watchlist Stock Candidate Review v2 did not run for this report.</td>
         </tr>"""
 
     items = review.get("items", []) or []
@@ -1535,20 +1535,31 @@ def format_watchlist_review_rows(review: dict[str, Any]) -> str:
         else:
             earnings_text = f"<span class='empty'>{escape(str(earnings.get('error') or 'No earnings event this run.'))}</span>"
 
-        strategy_bits = []
+        overlay_bits = []
+        overlay = item.get("earnings_calendar_overlay")
+        if overlay:
+            overlay_bits.append(f"Overlay: {escape(str(overlay))}")
         if calendar:
-            strategy_bits.append(
+            overlay_bits.append(
                 f"Calendar candidate score {number(calendar.get('score'), 1)}"
             )
         if strategy:
-            strategy_bits.append(
-                f"Strategy: {escape(str(strategy.get('action') or '—'))}"
+            overlay_bits.append(
+                f"Earnings strategy: {escape(str(strategy.get('action') or '—'))}"
             )
             if strategy.get("score") is not None:
-                strategy_bits.append(f"Strategy score {number(strategy.get('score'), 1)}")
+                overlay_bits.append(f"Strategy score {number(strategy.get('score'), 1)}")
         if item.get("news_article_count"):
-            strategy_bits.append(f"News articles {item.get('news_article_count')}")
-        options_text = "<br>".join(strategy_bits) if strategy_bits else '<span class="empty">No options/strategy signal yet.</span>'
+            overlay_bits.append(f"News articles {item.get('news_article_count')}")
+        tradier_compact = item.get("tradier_snapshot", {}) or {}
+        if tradier_compact.get("has_data"):
+            spread = tradier_compact.get("quote_spread_pct")
+            vol = tradier_compact.get("volume")
+            if spread is not None:
+                overlay_bits.append(f"Stock quote spread {pct(spread)}")
+            if vol is not None:
+                overlay_bits.append(f"Underlying vol {compact_big_number(vol)}")
+        options_text = "<br>".join(overlay_bits) if overlay_bits else '<span class="empty">No earnings/calendar overlay; stock watch only.</span>'
 
         reasons = [str(r) for r in (item.get("reasons", []) or [])]
         risks = [str(r) for r in (item.get("risks", []) or [])]
@@ -1556,7 +1567,7 @@ def format_watchlist_review_rows(review: dict[str, Any]) -> str:
         rows += f"""
         <tr>
             <td><strong>{ticker}</strong></td>
-            <td class="score">{number(item.get('score'), 1)}<br><span class="pill {category_class}">{category}</span></td>
+            <td class="score">Total {number(item.get('score'), 1)}<br>Stock {number(item.get('stock_score'), 1)}<br><span class="pill {category_class}">{category}</span></td>
             <td>{escape(str(item.get('portfolio_status') or 'Unknown'))}</td>
             <td>{escape(watchlists)}<br><span class="muted">{escape(sources)}</span></td>
             <td>{earnings_text}</td>
