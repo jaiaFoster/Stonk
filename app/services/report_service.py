@@ -121,6 +121,7 @@ def format_payload(
     portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
     daily_opportunity = daily_opportunity_from_tradier_snapshot(tradier_snapshot)
+    trade_memory = trade_memory_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -149,6 +150,9 @@ def format_payload(
 
     lines += ["", "=== DAILY OPPORTUNITY ENGINE V1 ==="]
     lines.extend(format_daily_opportunity_text(daily_opportunity))
+
+    lines += ["", "=== TRADE MEMORY V1 ==="]
+    lines.extend(format_trade_memory_text(trade_memory))
 
     lines += ["", "=== STOCK MOMENTUM ADD STRATEGY V1 ==="]
     lines.extend(format_stock_momentum_text(stock_momentum))
@@ -378,6 +382,7 @@ def format_html(
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
     stock_momentum_rows = format_stock_momentum_rows(stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot))
     daily_opportunity_rows = format_daily_opportunity_rows(daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot))
+    trade_memory_rows = format_trade_memory_rows(trade_memory_from_tradier_snapshot(parsed_tradier_snapshot))
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     pipeline_status_rows = format_pipeline_status_rows(pipeline_status)
     pipeline_summary_html = format_pipeline_summary(pipeline_status)
@@ -417,6 +422,20 @@ def format_html(
             <th>Source</th>
         </tr>
         {daily_opportunity_rows}
+    </table>
+
+    <h2>Trade Memory v1</h2>
+    <p class="muted">SQLite-backed manual calendar trade memory. Used to preserve entry debit, targets, notes, and closed-trade history across deploys when stored on a Railway Volume.</p>
+    <table>
+        <tr>
+            <th>Status</th>
+            <th>Trade</th>
+            <th>Entry</th>
+            <th>Targets</th>
+            <th>Close</th>
+            <th>Notes</th>
+        </tr>
+        {trade_memory_rows}
     </table>
 
     <h2>Pipeline Status</h2>
@@ -1592,6 +1611,64 @@ def stock_momentum_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | Non
     raw = tradier_snapshot.get("_stock_momentum_strategy", {}) or {}
     return raw if isinstance(raw, dict) else {}
 
+
+
+def trade_memory_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    data = tradier_snapshot.get("_trade_memory") if isinstance(tradier_snapshot, dict) else {}
+    return data if isinstance(data, dict) else {}
+
+
+def format_trade_memory_text(trade_memory: dict[str, Any] | None) -> list[str]:
+    trade_memory = trade_memory or {}
+    summary = trade_memory.get("summary", {}) or {}
+    errors = trade_memory.get("errors", []) or []
+    lines = [
+        f"Open {summary.get('open_count', 0)} | Watch {summary.get('watch_count', 0)} | Closed {summary.get('closed_count', 0)} | Matches {summary.get('match_count', 0)}",
+        f"DB: {summary.get('db_path') or trade_memory.get('db_path') or 'not configured'}",
+    ]
+    if errors:
+        lines.append("Errors: " + "; ".join(str(e) for e in errors[:3]))
+    trades = list(trade_memory.get("open_trades", []) or []) + list(trade_memory.get("watch_trades", []) or [])
+    if not trades:
+        lines.append("No open/watch calendar trades stored yet. Add one from /trades or /trades/add after entering a spread.")
+        return lines
+    for trade in trades[:12]:
+        lines.append(
+            f"#{trade.get('id')} {str(trade.get('ticker') or '').upper()} {trade.get('strike')} {str(trade.get('option_type') or 'call').upper()} | "
+            f"Short {trade.get('short_expiration')} / Long {trade.get('long_expiration')} | "
+            f"Qty {trade.get('quantity')} | Entry debit {option_money(trade.get('entry_debit'))} | "
+            f"Target {pct(trade.get('profit_target_pct'))} | Max loss {pct(trade.get('max_loss_pct'))} | Status {trade.get('status')}"
+        )
+        if trade.get("notes"):
+            lines.append(f"  Notes: {trade.get('notes')}")
+    return lines
+
+
+def format_trade_memory_rows(trade_memory: dict[str, Any] | None) -> str:
+    trade_memory = trade_memory or {}
+    summary = trade_memory.get("summary", {}) or {}
+    errors = trade_memory.get("errors", []) or []
+    trades = list(trade_memory.get("open_trades", []) or []) + list(trade_memory.get("watch_trades", []) or []) + list(trade_memory.get("closed_trades", []) or [])[:10]
+    if not trades:
+        detail = "No stored trades yet. Use /trades to add manual calendar entries after entering a spread."
+        if errors:
+            detail += " Errors: " + "; ".join(escape(str(e)) for e in errors[:3])
+        return f'<tr><td>Open {summary.get("open_count", 0)}<br>Watch {summary.get("watch_count", 0)}<br>Closed {summary.get("closed_count", 0)}</td><td colspan="5">{escape(detail)}</td></tr>'
+    rows = []
+    for trade in trades:
+        status = escape(str(trade.get("status") or "open"))
+        ticker = escape(str(trade.get("ticker") or ""))
+        option_type = escape(str(trade.get("option_type") or "call").upper())
+        strike = escape(option_money(trade.get("strike")))
+        trade_cell = f"#{trade.get('id')} <strong>{ticker}</strong> {strike} {option_type}<br>Short {escape(str(trade.get('short_expiration') or '—'))}<br>Long {escape(str(trade.get('long_expiration') or '—'))}<br>Qty {escape(str(trade.get('quantity') or 1))}"
+        entry_cell = f"Debit {escape(option_money(trade.get('entry_debit')))}<br>Total {escape(money(trade.get('entry_total')))}<br>Underlying {escape(money(trade.get('entry_underlying_price')))}"
+        target_cell = f"Profit {escape(pct(trade.get('profit_target_pct')))}<br>Max loss {escape(pct(trade.get('max_loss_pct')))}"
+        close_cell = f"Value {escape(option_money(trade.get('close_value')))}<br>Total {escape(money(trade.get('close_total')))}<br>{escape(str(trade.get('closed_at') or '—'))}"
+        notes = escape(str(trade.get("notes") or trade.get("close_notes") or "—"))
+        rows.append(f"<tr><td>{status}</td><td>{trade_cell}</td><td>{entry_cell}</td><td>{target_cell}</td><td>{close_cell}</td><td>{notes}</td></tr>")
+    return "\n".join(rows)
 
 def daily_opportunity_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
     if not tradier_snapshot:

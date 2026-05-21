@@ -208,6 +208,77 @@ def run_result(job_id: str):
 
 
 
+@app.route("/trades")
+def trades_page():
+    token = request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+    try:
+        from app.services.trade_memory_service import ensure_db, list_calendar_trades
+
+        ensure_db()
+        trades = list_calendar_trades()
+        return _render_trades_page(token or "", trades), 200
+    except Exception as e:
+        return error_page("Trade Memory Failed", escape(f"{e}\n{traceback.format_exc()}")), 500
+
+
+@app.route("/trades/add", methods=["GET", "POST"])
+def trades_add():
+    token = request.values.get("token") or request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+    try:
+        from app.services.trade_memory_service import add_calendar_trade
+
+        data = dict(request.values.items())
+        data.pop("token", None)
+        trade = add_calendar_trade(data)
+        if request.method == "POST" or request.args.get("redirect") == "1":
+            return _redirect_html(f"Trade #{trade.get('id')} saved.", f"/trades?token={token}"), 200
+        return jsonify({"status": "ok", "trade": trade}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 400
+
+
+@app.route("/trades/close", methods=["GET", "POST"])
+def trades_close():
+    token = request.values.get("token") or request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+    try:
+        from app.services.trade_memory_service import close_calendar_trade
+
+        trade_id = int(request.values.get("id") or request.values.get("trade_id"))
+        trade = close_calendar_trade(
+            trade_id,
+            close_value=request.values.get("close_value"),
+            notes=request.values.get("notes"),
+        )
+        if request.method == "POST" or request.args.get("redirect") == "1":
+            return _redirect_html(f"Trade #{trade.get('id')} closed.", f"/trades?token={token}"), 200
+        return jsonify({"status": "ok", "trade": trade}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 400
+
+
+@app.route("/trades/delete", methods=["GET", "POST"])
+def trades_delete():
+    token = request.values.get("token") or request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+    try:
+        from app.services.trade_memory_service import delete_trade
+
+        trade_id = int(request.values.get("id") or request.values.get("trade_id"))
+        deleted = delete_trade(trade_id)
+        if request.method == "POST" or request.args.get("redirect") == "1":
+            return _redirect_html(f"Trade #{trade_id} deleted." if deleted else f"Trade #{trade_id} not found.", f"/trades?token={token}"), 200
+        return jsonify({"status": "ok", "deleted": deleted}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e)}), 400
+
+
 @app.route("/config-check")
 def config_check():
     token = request.args.get("token")
@@ -475,6 +546,87 @@ def missing_run_page() -> str:
 </body>
 </html>"""
 
+
+
+def _render_trades_page(token: str, trades: list[dict[str, Any]]) -> str:
+    rows = []
+    for trade in trades:
+        rows.append(
+            f"""<tr>
+                <td>{escape(str(trade.get('id')))}</td>
+                <td>{escape(str(trade.get('status') or 'open'))}</td>
+                <td><strong>{escape(str(trade.get('ticker') or ''))}</strong><br>{escape(str(trade.get('strike') or ''))} {escape(str(trade.get('option_type') or 'call').upper())}</td>
+                <td>Short {escape(str(trade.get('short_expiration') or ''))}<br>Long {escape(str(trade.get('long_expiration') or ''))}</td>
+                <td>Qty {escape(str(trade.get('quantity') or 1))}<br>Debit {escape(str(trade.get('entry_debit') or ''))}<br>Total {escape(str(trade.get('entry_total') or ''))}</td>
+                <td>Target {escape(str(trade.get('profit_target_pct') or ''))}%<br>Max loss {escape(str(trade.get('max_loss_pct') or ''))}%</td>
+                <td>{escape(str(trade.get('notes') or ''))}</td>
+                <td>
+                    <form action="/trades/close" method="post" style="margin-bottom:0.5rem;">
+                        <input type="hidden" name="token" value="{escape(token)}">
+                        <input type="hidden" name="id" value="{escape(str(trade.get('id')))}">
+                        <input name="close_value" placeholder="close debit" style="width:90px;">
+                        <button type="submit">Close</button>
+                    </form>
+                    <form action="/trades/delete" method="post">
+                        <input type="hidden" name="token" value="{escape(token)}">
+                        <input type="hidden" name="id" value="{escape(str(trade.get('id')))}">
+                        <button type="submit">Delete</button>
+                    </form>
+                </td>
+            </tr>"""
+        )
+    rows_html = "\n".join(rows) or '<tr><td colspan="8">No trades stored yet.</td></tr>'
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Stock Advisor — Trade Memory</title>
+    <style>
+        body {{ font-family: monospace; background:#0f0f0f; color:#e0e0e0; padding:2rem; }}
+        h1,h2 {{ color:#00ff88; }}
+        table {{ border-collapse: collapse; width: 100%; margin-top:1rem; }}
+        th,td {{ border:1px solid #333; padding:0.5rem; vertical-align:top; }}
+        input,select,textarea,button {{ font-family: monospace; margin:0.2rem; }}
+        .card {{ background:#1a1a1a; border:1px solid #333; padding:1rem; border-radius:8px; }}
+        .muted {{ color:#aaa; }}
+    </style>
+</head>
+<body>
+    <h1>Trade Memory v1</h1>
+    <p class="muted">Manual SQLite storage for calendar spreads. Store entry debit here after placing a trade so lifecycle checks can use exact targets across deploys.</p>
+    <div class="card">
+        <h2>Add Calendar Trade</h2>
+        <form action="/trades/add" method="post">
+            <input type="hidden" name="token" value="{escape(token)}">
+            <input name="ticker" placeholder="Ticker e.g. PDD" required>
+            <select name="option_type"><option value="call">Call</option><option value="put">Put</option></select>
+            <input name="strike" placeholder="Strike" required>
+            <input name="short_expiration" placeholder="Short YYYY-MM-DD" required>
+            <input name="long_expiration" placeholder="Long YYYY-MM-DD" required>
+            <input name="quantity" placeholder="Qty" value="1">
+            <input name="entry_debit" placeholder="Entry debit">
+            <input name="entry_underlying_price" placeholder="Underlying price">
+            <input name="profit_target_pct" placeholder="Profit target %" value="50">
+            <input name="max_loss_pct" placeholder="Max loss %" value="-35">
+            <input name="notes" placeholder="Notes" style="width: 360px;">
+            <button type="submit">Save</button>
+        </form>
+    </div>
+    <h2>Stored Trades</h2>
+    <table>
+        <tr><th>ID</th><th>Status</th><th>Ticker</th><th>Structure</th><th>Entry</th><th>Targets</th><th>Notes</th><th>Actions</th></tr>
+        {rows_html}
+    </table>
+</body>
+</html>"""
+
+
+def _redirect_html(message: str, url: str) -> str:
+    return f"""<!DOCTYPE html>
+<html><head><meta http-equiv="refresh" content="0;url={escape(url)}"></head>
+<body style="font-family:monospace;background:#0f0f0f;color:#e0e0e0;padding:2rem;">
+<p>{escape(message)}</p><p><a href="{escape(url)}">Return</a></p>
+</body></html>"""
 
 def error_page(title: str, error_log: str) -> str:
     return f"""<!DOCTYPE html>

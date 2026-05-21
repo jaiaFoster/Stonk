@@ -27,6 +27,7 @@ The app currently supports:
 - Earnings-calendar spread discovery and screening
 - Unified Calendar Trade Engine v1
 - Calendar lifecycle checks for detected open Tradier calendars
+- SQLite-backed Trade Memory v1 for manual calendar trade entry debit/targets
 - Daily Opportunity Engine v1
 - Async `/run` endpoint with loading screen and phone-approval messaging
 - Redacted `/config-check` endpoint for deployment debugging
@@ -66,6 +67,10 @@ The top-level action list. It combines:
 - stock momentum add ideas
 - portfolio gap suggestions
 - risk-review names
+
+### Trade Memory v1
+
+SQLite-backed manual calendar trade storage. This preserves entry debit, target profit, max loss, thesis notes, and closed-trade history across deploys when stored on a Railway Volume. Manage it at `/trades?token=YOUR_RUN_TOKEN`.
 
 ### Pipeline Status
 
@@ -148,6 +153,9 @@ MARKET_DATA_USE_TRADIER_FALLBACK=true
 EARNINGS_PROVIDER_ORDER=finnhub,alphavantage
 EARNINGS_MERGE_PROVIDER_EVENTS=true
 REPORT_SHOW_CALENDAR_DEBUG_SECTIONS=false
+TRADE_MEMORY_ENABLED=true
+DATA_DIR=/app/data
+TRADE_MEMORY_DB_PATH=/app/data/trade_memory.sqlite3
 ```
 
 ### Dev mode controls
@@ -236,6 +244,18 @@ STOCK_MOMENTUM_MIN_SCORE_TO_CONSIDER=62
 STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX=6
 ```
 
+### Trade memory controls
+
+```text
+TRADE_MEMORY_ENABLED=true
+DATA_DIR=/app/data
+TRADE_MEMORY_DB_PATH=/app/data/trade_memory.sqlite3
+TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT=50
+TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT=-35
+```
+
+On Railway, attach a Volume to the app service and mount it at `/app/data` so the SQLite file survives deploys and restarts. Railway sets `RAILWAY_VOLUME_MOUNT_PATH` automatically when a volume is attached, but explicitly setting `DATA_DIR=/app/data` and `TRADE_MEMORY_DB_PATH=/app/data/trade_memory.sqlite3` keeps behavior obvious.
+
 ### Daily opportunity controls
 
 ```text
@@ -288,6 +308,7 @@ Open:
 http://localhost:5000/health
 http://localhost:5000/config-check?token=YOUR_RUN_TOKEN
 http://localhost:5000/run?token=YOUR_RUN_TOKEN&mode=dev
+http://localhost:5000/trades?token=YOUR_RUN_TOKEN
 ```
 
 ---
@@ -308,8 +329,8 @@ If Railway logs show Flask’s development server warning, check whether Railway
 
 Near-term high-value items:
 
-1. Persist manual trade memory: entry debit, target profit, max loss, thesis, checkpoints.
-2. Add historical earnings mini-backtest: last 10 earnings moves, gap/fade behavior, post-earnings drift.
+1. Add historical earnings mini-backtest: last 10 earnings moves, gap/fade behavior, post-earnings drift.
+2. Improve Trade Memory with checkpoint reminders, planned exits, and richer closed-trade journal analytics.
 3. Improve calendar ranking with historical move, IV crush, liquidity, and debit/risk scoring.
 4. Add company profile/fundamental data for better watchlist and sector-gap scoring.
 5. Expand UI polish: tabs, cards, badges, saved settings, and stronger auth.

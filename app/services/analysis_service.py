@@ -53,6 +53,7 @@ from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
 from app.services.tradier_service import get_tradier_snapshot_for_positions
+from app.services.trade_memory_service import build_trade_memory_snapshot
 from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
 from app.services.watchlist_review_service import review_watchlist_candidates
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
@@ -138,6 +139,18 @@ EMPTY_LIFECYCLE = {
     },
 }
 
+EMPTY_TRADE_MEMORY = {
+    "source": "sqlite_trade_memory_v1",
+    "enabled": True,
+    "has_data": False,
+    "open_trades": [],
+    "closed_trades": [],
+    "watch_trades": [],
+    "matches": [],
+    "errors": [],
+    "summary": {"open_count": 0, "closed_count": 0, "watch_count": 0, "match_count": 0},
+}
+
 EMPTY_UNIFIED_CALENDAR = {
     "source": "unified_calendar_trade_engine_v1",
     "enabled": True,
@@ -170,6 +183,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     portfolio_gap_analysis: dict[str, Any] = {}
     stock_momentum_strategy: dict[str, Any] = {}
     daily_opportunity_engine: dict[str, Any] = {}
+    trade_memory: dict[str, Any] = dict(EMPTY_TRADE_MEMORY)
 
     clean_mode = normalize_run_mode(run_mode)
     pipeline_status = new_pipeline_status(clean_mode)
@@ -450,6 +464,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_open_options_positions"] = open_options
 
+    trade_memory = run_optional_step(
+        "trade_memory",
+        "Loading Trade Memory v1...",
+        lambda: build_trade_memory_snapshot(open_options=open_options, log_print=log_print),
+        EMPTY_TRADE_MEMORY,
+        lambda result: (
+            f"Trade memory loaded {((result or {}).get('summary', {}) or {}).get('open_count', 0)} open "
+            f"and {((result or {}).get('summary', {}) or {}).get('closed_count', 0)} closed trade(s)."
+        ),
+    )
+    tradier_snapshot["_trade_memory"] = trade_memory
+
     lifecycle_checks = run_optional_step(
         "calendar_lifecycle",
         "Running Calendar Lifecycle Check v1...",
@@ -457,6 +483,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             open_options=open_options,
             tradier_snapshot=tradier_snapshot,
             earnings_events=merge_earnings_events(earnings_events, earnings_trade_discovery),
+            trade_memory=trade_memory,
             log_print=log_print,
         ),
         EMPTY_LIFECYCLE,
@@ -557,7 +584,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     begin_step(pipeline_status, "format_payload", "Formatting payload")
     log_print("Formatting payload...")
     try:
-        finish_pipeline(pipeline_status, "complete")
         attach_status()
         payload = format_payload(positions, news, recommendations, tradier_snapshot)
         if clean_mode == "dev":

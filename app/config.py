@@ -243,3 +243,20 @@ STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX = _int_env("STOCK_MOMENTUM_WATCHLIST_MA
 DAILY_OPPORTUNITY_ENGINE_ENABLED = _bool_env("DAILY_OPPORTUNITY_ENGINE_ENABLED", True)
 DAILY_OPPORTUNITY_MAX_ACTIONS = _int_env("DAILY_OPPORTUNITY_MAX_ACTIONS", 12)
 DAILY_OPPORTUNITY_MIN_SCORE = _int_env("DAILY_OPPORTUNITY_MIN_SCORE", 55)
+
+# --- Trade memory / SQLite persistence ---
+# Stores manually entered calendar trades so lifecycle checks can calculate
+# entry-based targets across deploys/restarts. On Railway, attach a Volume and
+# either mount it to /app/data or set TRADE_MEMORY_DB_PATH explicitly.
+TRADE_MEMORY_ENABLED = _bool_env("TRADE_MEMORY_ENABLED", True)
+DATA_DIR = os.environ.get(
+    "DATA_DIR",
+    os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/app/data"),
+).strip()
+TRADE_MEMORY_DB_PATH = os.environ.get(
+    "TRADE_MEMORY_DB_PATH",
+    os.path.join(DATA_DIR, "trade_memory.sqlite3"),
+).strip()
+TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT = _int_env("TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT", 50)
+TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT = _int_env("TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT", -35)
+TRADE_MEMORY_DEFAULT_STATUS = os.environ.get("TRADE_MEMORY_DEFAULT_STATUS", "open").strip().lower()

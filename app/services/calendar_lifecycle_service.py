@@ -22,6 +22,7 @@ def evaluate_calendar_lifecycle(
     open_options: dict[str, Any] | None,
     tradier_snapshot: dict[str, dict[str, Any]] | None = None,
     earnings_events: dict[str, dict[str, Any]] | None = None,
+    trade_memory: dict[str, Any] | None = None,
     log_print: LogFn | None = None,
 ) -> dict[str, Any]:
     """Evaluate detected open calendars for hold/exit/check actions."""
@@ -29,6 +30,7 @@ def evaluate_calendar_lifecycle(
     open_options = open_options or {}
     tradier_snapshot = tradier_snapshot or {}
     earnings_events = earnings_events or {}
+    trade_memory = trade_memory or {}
 
     result: dict[str, Any] = {
         "source": "calendar_lifecycle_v1",
@@ -55,7 +57,7 @@ def evaluate_calendar_lifecycle(
 
     checks: list[dict[str, Any]] = []
     for calendar in calendars:
-        check = _evaluate_one_calendar(calendar, tradier_snapshot, earnings_events)
+        check = _evaluate_one_calendar(calendar, tradier_snapshot, earnings_events, trade_memory)
         checks.append(check)
         logger(
             f"Lifecycle {check.get('ticker')}: action={check.get('action')} | "
@@ -72,6 +74,7 @@ def _evaluate_one_calendar(
     calendar: dict[str, Any],
     tradier_snapshot: dict[str, dict[str, Any]],
     earnings_events: dict[str, dict[str, Any]],
+    trade_memory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     ticker = str(calendar.get("underlying") or calendar.get("ticker") or "").upper().strip()
     option_type = str(calendar.get("option_type") or "call").lower()
@@ -87,9 +90,15 @@ def _evaluate_one_calendar(
     if underlying_price is None:
         underlying_price = _float_or_none((calendar.get("short_front_leg") or {}).get("underlying_price"))
 
+    memory_trade = _matching_memory_trade(calendar, trade_memory or {})
+
     entry_debit_estimate = None
     pnl_pct = None
-    if cost_basis_estimate is not None and quantity > 0:
+    if memory_trade and _float_or_none(memory_trade.get("entry_debit")) is not None:
+        entry_debit_estimate = _float_or_none(memory_trade.get("entry_debit"))
+        if entry_debit_estimate and entry_debit_estimate > 0 and current_mid_debit is not None:
+            pnl_pct = ((current_mid_debit - entry_debit_estimate) / entry_debit_estimate) * 100.0
+    elif cost_basis_estimate is not None and quantity > 0:
         # Tradier cost-basis sign conventions can vary. Use absolute value and
         # present this as an estimate only.
         entry_debit_estimate = abs(cost_basis_estimate) / (quantity * 100.0)
@@ -117,12 +126,21 @@ def _evaluate_one_calendar(
         risks.append("Current spread value unavailable; one or both leg quotes may be missing.")
 
     if entry_debit_estimate is not None and pnl_pct is not None:
-        reasons.append(f"Estimated entry debit from broker cost basis: {entry_debit_estimate:.2f}.")
-        confidence = "Medium"
-        if pnl_pct >= float(config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT):
+        if memory_trade:
+            reasons.append(f"Entry debit loaded from Trade Memory: {entry_debit_estimate:.2f}.")
+        else:
+            reasons.append(f"Estimated entry debit from broker cost basis: {entry_debit_estimate:.2f}.")
+        confidence = "Medium" if not memory_trade else "Medium-High"
+        target_pct = _float_or_none((memory_trade or {}).get("profit_target_pct"))
+        max_loss_pct = _float_or_none((memory_trade or {}).get("max_loss_pct"))
+        if target_pct is None:
+            target_pct = float(config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT)
+        if max_loss_pct is None:
+            max_loss_pct = float(config.CALENDAR_LIFECYCLE_MAX_LOSS_PCT)
+        if pnl_pct >= target_pct:
             action = "TAKE PROFIT / REVIEW EXIT"
             reasons.append("Estimated gain has reached or exceeded the configured profit target.")
-        elif pnl_pct <= float(config.CALENDAR_LIFECYCLE_MAX_LOSS_PCT):
+        elif pnl_pct <= max_loss_pct:
             action = "CUT / REVIEW EXIT"
             risks.append("Estimated loss has exceeded the configured max-loss threshold.")
     else:
@@ -178,6 +196,9 @@ def _evaluate_one_calendar(
         "entry_debit_estimate": entry_debit_estimate,
         "cost_basis_estimate": cost_basis_estimate,
         "estimated_pnl_pct": pnl_pct,
+        "trade_memory_id": (memory_trade or {}).get("id"),
+        "trade_memory_status": (memory_trade or {}).get("status"),
+        "trade_memory_notes": (memory_trade or {}).get("notes"),
         "earnings_date": earnings_date,
         "earnings_session": earnings_session,
         "days_until_earnings": days_until_earnings,
@@ -189,6 +210,29 @@ def _evaluate_one_calendar(
         "next_check": next_check,
     }
 
+
+
+def _matching_memory_trade(calendar: dict[str, Any], trade_memory: dict[str, Any]) -> dict[str, Any] | None:
+    ticker = str(calendar.get("underlying") or calendar.get("ticker") or "").upper().strip()
+    option_type = str(calendar.get("option_type") or "call").lower().strip()
+    strike = _float_or_none(calendar.get("strike"))
+    front = str(calendar.get("front_expiration") or "").strip()
+    back = str(calendar.get("back_expiration") or "").strip()
+    for trade in trade_memory.get("open_trades", []) or []:
+        if not isinstance(trade, dict):
+            continue
+        if str(trade.get("ticker") or "").upper().strip() != ticker:
+            continue
+        if str(trade.get("option_type") or "call").lower().strip() != option_type:
+            continue
+        if _float_or_none(trade.get("strike")) != strike:
+            continue
+        if str(trade.get("short_expiration") or "").strip() != front:
+            continue
+        if str(trade.get("long_expiration") or "").strip() != back:
+            continue
+        return trade
+    return None
 
 def _underlying_price_for(ticker: str, tradier_snapshot: dict[str, dict[str, Any]]) -> float | None:
     data = tradier_snapshot.get(ticker) or tradier_snapshot.get(str(ticker).upper()) or {}
