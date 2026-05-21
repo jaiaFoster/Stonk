@@ -58,10 +58,30 @@ def get_watchlist_candidates(
 
     if "robinhood" in source_flags:
         try:
+            requested_names = getattr(config, "WATCHLIST_NAMES", []) or []
+            if requested_names:
+                logger("Watchlist Robinhood mode: scanning requested list(s): " + ", ".join(requested_names))
+            else:
+                logger("Watchlist Robinhood mode: discovering and scanning all watchlists.")
+
             rh_result = get_watchlist_tickers(
-                watchlist_names=getattr(config, "WATCHLIST_NAMES", []) or [],
+                watchlist_names=requested_names,
                 max_tickers=max_tickers,
             )
+
+            found_names = rh_result.get("available_watchlist_names", []) or []
+            if found_names:
+                logger("Robinhood watchlist names discovered: " + ", ".join(found_names[:12]))
+            else:
+                logger("Robinhood watchlist names discovered: none")
+
+            for watchlist_record in rh_result.get("watchlists", []) or []:
+                logger(
+                    "Robinhood watchlist "
+                    f"'{watchlist_record.get('name', 'Unknown')}': "
+                    f"{len(watchlist_record.get('tickers', []) or [])} ticker(s)"
+                )
+
             for error in rh_result.get("errors", []) or []:
                 result["errors"].append(str(error))
             for item in rh_result.get("items", []) or []:
@@ -78,8 +98,13 @@ def get_watchlist_candidates(
             safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.RUN_TOKEN])
             result["errors"].append(f"Robinhood watchlist fetch failed: {safe_error}")
 
-    if "manual" in source_flags or getattr(config, "WATCHLIST_TICKERS", []):
-        for ticker in getattr(config, "WATCHLIST_TICKERS", []) or []:
+    # Always merge manual WATCHLIST_TICKERS when present, even if WATCHLIST_SOURCE
+    # is set to robinhood only. This gives a reliable fallback for deploy-day scans.
+    manual_tickers = getattr(config, "WATCHLIST_TICKERS", []) or []
+    if manual_tickers:
+        logger("Manual WATCHLIST_TICKERS fallback present: " + ", ".join(manual_tickers[:20]))
+    if "manual" in source_flags or manual_tickers:
+        for ticker in manual_tickers:
             ticker = _clean_ticker(ticker)
             if not ticker or ticker in CRYPTO_TICKERS:
                 continue
@@ -114,8 +139,13 @@ def get_watchlist_candidates(
         f"{result['summary']['new_candidate_count']} new, "
         f"{result['summary']['already_held_count']} already held."
     )
+    if not items:
+        logger(
+            "Watchlist Candidate Pipeline v1 found no usable tickers. "
+            "Set WATCHLIST_TICKERS as a manual fallback or leave WATCHLIST_NAMES blank to scan all Robinhood lists."
+        )
     if result["errors"]:
-        logger("Watchlist Candidate Pipeline v1 warnings: " + "; ".join(result["errors"][:2]))
+        logger("Watchlist Candidate Pipeline v1 warnings: " + "; ".join(result["errors"][:4]))
 
     return result
 

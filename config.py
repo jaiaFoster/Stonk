@@ -134,11 +134,12 @@ EARNINGS_CALENDAR_UNCONFIRMED_SCORE_CAP = _int_env("EARNINGS_CALENDAR_UNCONFIRME
 EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP = _int_env("EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP", 55)
 
 # --- Watchlist / portfolio gap candidate pipeline ---
+# Leave WATCHLIST_NAMES blank to discover and scan all Robinhood watchlists.
 WATCHLIST_ENABLED = _bool_env("WATCHLIST_ENABLED", True)
 WATCHLIST_SOURCE = os.environ.get("WATCHLIST_SOURCE", "robinhood,manual").strip().lower()
 WATCHLIST_NAMES = [
     name.strip()
-    for name in os.environ.get("WATCHLIST_NAMES", "My First List").split(",")
+    for name in os.environ.get("WATCHLIST_NAMES", "").split(",")
     if name.strip()
 ]
 WATCHLIST_TICKERS = [
