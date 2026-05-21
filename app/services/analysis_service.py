@@ -22,6 +22,7 @@ from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.open_options_service import detect_open_options_positions
 from app.services.earnings_service import get_earnings_for_positions, discover_upcoming_earnings_for_calendar_trades
+from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
 from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
 from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
@@ -29,6 +30,8 @@ from app.services.portfolio_service import get_portfolio_positions
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
 from app.services.watchlist_review_service import review_watchlist_candidates
 from app.services.portfolio_gap_service import build_portfolio_gap_analysis
+from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
+from app.services.daily_opportunity_engine_service import build_daily_opportunity_engine
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
 from app.utils.log_safety import sanitize_for_log
@@ -55,6 +58,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     watchlist_review: dict[str, Any] = {}
     earnings_trade_discovery: dict[str, Any] = {}
     portfolio_gap_analysis: dict[str, Any] = {}
+    earnings_discovery_quality: dict[str, Any] = {}
+    stock_momentum_strategy: dict[str, Any] = {}
+    daily_opportunity_engine: dict[str, Any] = {}
 
     clean_mode = _normalize_run_mode(run_mode)
 
@@ -109,6 +115,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"EARNINGS_DISCOVERY_ENABLED: {config.EARNINGS_DISCOVERY_ENABLED}")
         log_print(f"EARNINGS_DISCOVERY_WINDOW: +{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS} days")
         log_print(f"EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN: {config.EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN}")
+        log_print(f"EARNINGS_DISCOVERY_RAW_EVENT_LIMIT: {config.EARNINGS_DISCOVERY_RAW_EVENT_LIMIT}")
+        log_print(f"EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK: {config.EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK}")
+        log_print(f"EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES: {config.EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES}")
         log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
         log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
         log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
@@ -123,6 +132,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"PORTFOLIO_GAP_TARGET_PROFILE: {config.PORTFOLIO_GAP_TARGET_PROFILE}")
         log_print(f"PORTFOLIO_GAP_MACRO_WINNING_BUCKETS: {config.PORTFOLIO_GAP_MACRO_WINNING_BUCKETS}")
         log_print(f"PORTFOLIO_GAP_MAX_SUGGESTIONS: {config.PORTFOLIO_GAP_MAX_SUGGESTIONS}")
+        log_print(f"STOCK_MOMENTUM_STRATEGY_ENABLED: {config.STOCK_MOMENTUM_STRATEGY_ENABLED}")
+        log_print(f"STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX: {config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX}")
+        log_print(f"DAILY_OPPORTUNITY_ENGINE_ENABLED: {config.DAILY_OPPORTUNITY_ENGINE_ENABLED}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -176,9 +188,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"Watchlist tickers added to scan universe: {watchlist_tickers}")
         log_print(f"Analysis universe tickers: {analysis_tickers}")
 
-    external_tickers = _external_provider_tickers(analysis_tickers, clean_mode)
+    base_external_tickers = _external_provider_tickers(analysis_tickers, clean_mode)
+    stock_momentum_market_tickers = select_stock_momentum_market_data_tickers(
+        positions=positions,
+        watchlist_candidates=watchlist_candidates,
+        run_mode=clean_mode,
+    )
+    external_tickers = _merge_provider_ticker_sets(base_external_tickers, stock_momentum_market_tickers)
     if clean_mode == "dev":
-        log_print(f"DEV MODE external provider ticker subset: {external_tickers}")
+        log_print(f"DEV MODE base external provider ticker subset: {base_external_tickers}")
+        if stock_momentum_market_tickers:
+            log_print(f"DEV MODE stock-momentum market-data additions: {stock_momentum_market_tickers}")
+        log_print(f"DEV MODE final external provider ticker subset: {external_tickers}")
 
     log_print("Fetching relevance-scored news...")
 
@@ -242,6 +263,29 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "summary": {"event_count": 0, "ticker_count": 0},
         }
 
+    log_print("Running Earnings Discovery Quality Filter v1...")
+
+    try:
+        earnings_discovery_quality = filter_earnings_discovery_for_calendar_scan(
+            earnings_trade_discovery=earnings_trade_discovery,
+            log_print=log_print,
+            run_mode=clean_mode,
+        )
+    except Exception as e:
+        log_print(f"ERROR in Earnings Discovery Quality Filter v1: {e}\n{traceback.format_exc()}")
+        earnings_discovery_quality = {
+            "source": "earnings_discovery_quality_filter_v1",
+            "enabled": True,
+            "has_data": False,
+            "items": [],
+            "passed_items": [],
+            "rejected_items": [],
+            "tickers": [],
+            "events_by_ticker": {},
+            "errors": [str(e)],
+            "summary": {"raw_event_count": 0, "checked_count": 0, "passed_count": 0, "rejected_count": 0},
+        }
+
     log_print("Fetching Tradier Provider v1...")
 
     try:
@@ -265,21 +309,22 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "source": config.EARNINGS_PROVIDER,
     }
     tradier_snapshot["_earnings_trade_discovery"] = earnings_trade_discovery
+    tradier_snapshot["_earnings_discovery_quality"] = earnings_discovery_quality
 
     log_print("Running Calendar Spread Screener v1 for earnings-discovery universe...")
 
     try:
         discovery_tickers = [
             str(t).upper().strip()
-            for t in (earnings_trade_discovery or {}).get("tickers", [])
+            for t in (earnings_discovery_quality or {}).get("tickers", [])
             if str(t).strip()
         ]
-        discovery_positions = _positions_from_earnings_discovery(earnings_trade_discovery)
+        discovery_positions = _positions_from_earnings_discovery(earnings_discovery_quality or earnings_trade_discovery)
         if not discovery_positions:
-            log_print("Calendar Spread Screener v1 skipped: no earnings-discovery tickers in configured window.")
+            log_print("Calendar Spread Screener v1 skipped: no earnings-discovery tickers passed quality precheck.")
             calendar_candidates = []
         else:
-            log_print(f"Calendar scanner universe from earnings discovery: {discovery_tickers}")
+            log_print(f"Calendar scanner universe from earnings discovery quality filter: {discovery_tickers}")
             calendar_candidates = scan_calendar_spreads_for_positions(
                 discovery_positions,
                 log_print=log_print,
@@ -445,6 +490,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     try:
         unified_calendar_engine = build_unified_calendar_trade_engine(
             earnings_trade_discovery=earnings_trade_discovery,
+            earnings_discovery_quality=earnings_discovery_quality,
             calendar_candidates=tradier_snapshot.get("_calendar_spread_candidates", {}).get("items", [])
             if isinstance(tradier_snapshot.get("_calendar_spread_candidates", {}), dict) else [],
             earnings_calendar_strategy=tradier_snapshot.get("_earnings_calendar_strategy", {}),
@@ -519,6 +565,52 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "errors": [str(e)],
         }
 
+    log_print("Running Stock Momentum Add Strategy v1...")
+
+    try:
+        stock_momentum_strategy = build_stock_momentum_strategy(
+            positions=positions,
+            watchlist_candidates=watchlist_candidates,
+            recommendations=recommendations,
+            market_metrics=market_metrics,
+            portfolio_gap_analysis=portfolio_gap_analysis,
+            news_map=news,
+            log_print=log_print,
+        )
+        tradier_snapshot["_stock_momentum_strategy"] = stock_momentum_strategy
+    except Exception as e:
+        log_print(f"ERROR in Stock Momentum Add Strategy v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_stock_momentum_strategy"] = {
+            "source": "stock_momentum_add_strategy_v1",
+            "enabled": True,
+            "has_data": False,
+            "items": [],
+            "errors": [str(e)],
+            "summary": {},
+        }
+
+    log_print("Running Daily Opportunity Engine v1...")
+
+    try:
+        daily_opportunity_engine = build_daily_opportunity_engine(
+            unified_calendar_engine=tradier_snapshot.get("_unified_calendar_trade_engine", {}),
+            stock_momentum_strategy=tradier_snapshot.get("_stock_momentum_strategy", {}),
+            portfolio_gap_analysis=tradier_snapshot.get("_portfolio_gap", {}),
+            recommendations=recommendations,
+            log_print=log_print,
+        )
+        tradier_snapshot["_daily_opportunity_engine"] = daily_opportunity_engine
+    except Exception as e:
+        log_print(f"ERROR in Daily Opportunity Engine v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_daily_opportunity_engine"] = {
+            "source": "daily_opportunity_engine_v1",
+            "enabled": True,
+            "has_data": False,
+            "actions": [],
+            "errors": [str(e)],
+            "summary": {},
+        }
+
     log_print("Formatting payload...")
 
     try:
@@ -536,8 +628,10 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
 def _positions_from_earnings_discovery(discovery: dict[str, Any]) -> list[dict[str, Any]]:
     positions: list[dict[str, Any]] = []
-    for event in (discovery or {}).get("items", []) or []:
-        ticker = str(event.get("ticker") or event.get("symbol") or "").upper().strip()
+    source_items = (discovery or {}).get("passed_items") or (discovery or {}).get("items", []) or []
+    for raw in source_items:
+        event = raw.get("event") if isinstance(raw, dict) and isinstance(raw.get("event"), dict) else raw
+        ticker = str((raw or {}).get("ticker") or (event or {}).get("ticker") or (event or {}).get("symbol") or "").upper().strip()
         if not ticker:
             continue
         positions.append(
@@ -550,7 +644,7 @@ def _positions_from_earnings_discovery(discovery: dict[str, Any]) -> list[dict[s
                 "gain_loss_pct": None,
                 "market_value": 0,
                 "account": "Earnings Discovery",
-                "source": "earnings_discovery_v1",
+                "source": str((discovery or {}).get("source") or "earnings_discovery_v2"),
                 "earnings_event": event,
             }
         )
@@ -572,6 +666,15 @@ def _merge_earnings_events(
 def _normalize_run_mode(run_mode: str | None) -> str:
     value = str(run_mode or config.APP_MODE or "prod").strip().lower()
     return "dev" if value in {"dev", "development", "test", "testing"} else "prod"
+
+
+def _merge_provider_ticker_sets(primary: list[str], secondary: list[str]) -> list[str]:
+    merged: list[str] = []
+    for ticker in list(primary or []) + list(secondary or []):
+        clean = str(ticker).upper().strip()
+        if clean and clean not in merged:
+            merged.append(clean)
+    return merged
 
 
 def _external_provider_tickers(tickers: list[str], run_mode: str) -> list[str]:
@@ -603,7 +706,9 @@ def _news_max_tickers_for_mode(run_mode: str) -> int | None:
 
 def _market_max_tickers_for_mode(run_mode: str) -> int | None:
     if run_mode == "dev":
-        return max(1, int(config.DEV_MAX_TICKERS or 1))
+        # Allow a few watchlist momentum names in addition to DEV_TICKERS while
+        # still keeping API usage bounded.
+        return max(1, int(config.DEV_MAX_TICKERS or 1) + int(getattr(config, "STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX", 0) or 0))
     return max(1, int(config.MARKET_DATA_MAX_TICKERS_PER_RUN or 1))
 
 
@@ -615,7 +720,7 @@ def _tradier_max_tickers_for_mode(run_mode: str) -> int | None:
 
 def _calendar_max_tickers_for_mode(run_mode: str) -> int | None:
     if run_mode == "dev":
-        return max(1, int(config.DEV_MAX_TICKERS or 1))
+        return max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES", config.DEV_MAX_TICKERS) or config.DEV_MAX_TICKERS or 1))
     return max(1, int(config.CALENDAR_MAX_TICKERS_PER_RUN or 1))
 
 

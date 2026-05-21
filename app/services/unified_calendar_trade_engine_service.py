@@ -28,10 +28,11 @@ LogFn = Callable[[str], None]
 
 def build_unified_calendar_trade_engine(
     earnings_trade_discovery: dict[str, Any] | None,
-    calendar_candidates: list[dict[str, Any]] | None,
-    earnings_calendar_strategy: dict[str, Any] | None,
-    open_options: dict[str, Any] | None,
-    lifecycle_checks: dict[str, Any] | None,
+    earnings_discovery_quality: dict[str, Any] | None = None,
+    calendar_candidates: list[dict[str, Any]] | None = None,
+    earnings_calendar_strategy: dict[str, Any] | None = None,
+    open_options: dict[str, Any] | None = None,
+    lifecycle_checks: dict[str, Any] | None = None,
     log_print: LogFn | None = None,
 ) -> dict[str, Any]:
     """Build one unified calendar-trading decision object for the report."""
@@ -53,6 +54,7 @@ def build_unified_calendar_trade_engine(
         return _finalize(result)
 
     discovery = earnings_trade_discovery or {}
+    quality = earnings_discovery_quality or {}
     candidates = [item for item in (calendar_candidates or []) if isinstance(item, dict)]
     strategy = earnings_calendar_strategy or {}
     open_options = open_options or {}
@@ -70,8 +72,21 @@ def build_unified_calendar_trade_engine(
     }
 
     discovery_items = [item for item in (discovery.get("items", []) or []) if isinstance(item, dict)]
+    quality_by_ticker = {
+        str(item.get("ticker") or "").upper().strip(): item
+        for item in (quality.get("items", []) or [])
+        if isinstance(item, dict) and str(item.get("ticker") or "").strip()
+    }
+    # Prefer quality rows if present because they include precheck pass/fail
+    # reasons. Include un-checked raw events only when quality rows are absent.
+    events_for_rows = []
+    if quality_by_ticker:
+        events_for_rows = list(quality_by_ticker.values())
+    else:
+        events_for_rows = discovery_items
+
     new_rows = []
-    for event in discovery_items:
+    for event in events_for_rows:
         row = _build_new_trade_row(event, candidates_by_ticker, strategy_by_ticker)
         new_rows.append(row)
 
@@ -111,10 +126,13 @@ def _build_new_trade_row(
     strategy_by_ticker: dict[str, dict[str, Any]],
     fallback_ticker: str | None = None,
 ) -> dict[str, Any]:
-    ticker = str(event.get("ticker") or event.get("symbol") or fallback_ticker or "UNKNOWN").upper().strip()
+    quality_row = event if isinstance(event, dict) and event.get("checks") is not None else {}
+    event_payload = quality_row.get("event") if isinstance(quality_row.get("event"), dict) else event
+    ticker = str(quality_row.get("ticker") or event_payload.get("ticker") or event_payload.get("symbol") or fallback_ticker or "UNKNOWN").upper().strip()
     candidate = candidates_by_ticker.get(ticker) or {}
     strategy = strategy_by_ticker.get(ticker) or {}
 
+    event = event_payload
     has_event = bool(event and (event.get("earnings_date") or event.get("date")))
     has_candidate = bool(candidate)
     has_strategy = bool(strategy)
@@ -141,11 +159,22 @@ def _build_new_trade_row(
     else:
         requirements.append(_req("Earnings timestamp", "FAIL", "Cannot evaluate earnings placement without a timestamp."))
 
+    if quality_row:
+        for check in (quality_row.get("checks") or [])[:6]:
+            requirements.append(
+                _req(
+                    f"Precheck: {check.get('name') or 'quality'}",
+                    str(check.get("status") or "WARN"),
+                    str(check.get("detail") or ""),
+                )
+            )
+
     if has_candidate:
         requirements.append(_req("Tradier calendar structure", "PASS", "Front/back same-strike calendar candidate was generated."))
         requirements.extend(_candidate_requirements(candidate))
     else:
-        requirements.append(_req("Tradier calendar structure", "FAIL", "No front/back expiration pair or eligible options chain matched scanner settings."))
+        rejection = quality_row.get("primary_rejection_reason") if quality_row else None
+        requirements.append(_req("Tradier calendar structure", "FAIL", rejection or "No front/back expiration pair or eligible options chain matched scanner settings."))
         requirements.append(_req("Liquidity / debit / IV", "FAIL", "No proposed spread exists, so liquidity and debit could not be scored."))
 
     if has_strategy:
@@ -173,6 +202,7 @@ def _build_new_trade_row(
         "earnings": _compact_event(event),
         "candidate": candidate,
         "strategy": strategy,
+        "quality_precheck": quality_row,
         "possible_spread": possible_spread,
         "requirements": requirements,
         "reasons": _dedupe((strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),

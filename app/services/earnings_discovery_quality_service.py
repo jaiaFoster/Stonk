@@ -1,0 +1,317 @@
+"""
+app/services/earnings_discovery_quality_service.py — Earnings discovery quality filter.
+
+This service sits between raw earnings-calendar discovery and the expensive
+calendar-spread scanner. It keeps dev mode useful by fetching a broader raw
+earnings universe, then spending a small Tradier budget on optionability checks
+before the app attempts full option-chain/calendar calculations.
+"""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any, Callable
+
+from app import config
+from app.providers.tradier_provider import TradierProvider
+from app.utils.log_safety import sanitize_for_log
+
+LogFn = Callable[[str], None]
+
+
+def filter_earnings_discovery_for_calendar_scan(
+    earnings_trade_discovery: dict[str, Any] | None,
+    log_print: LogFn | None = None,
+    run_mode: str = "prod",
+) -> dict[str, Any]:
+    """Return optionable/liquid-enough earnings events for calendar scanning.
+
+    The output keeps all checked rows with rejection reasons, and exposes a
+    smaller `tickers` list for downstream full calendar-chain scans.
+    """
+    logger = log_print or (lambda msg: print(msg, flush=True))
+    provider = TradierProvider()
+    clean_mode = str(run_mode or "prod").strip().lower()
+    discovery = earnings_trade_discovery or {}
+    raw_items = [item for item in (discovery.get("items") or []) if isinstance(item, dict)]
+
+    max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 12) or 12))
+    if clean_mode == "dev":
+        max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK", max_to_check) or max_to_check))
+    max_final = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES", 6) or 6))
+
+    result: dict[str, Any] = {
+        "source": "earnings_discovery_quality_filter_v1",
+        "enabled": bool(getattr(config, "EARNINGS_DISCOVERY_ENABLED", True)),
+        "has_data": False,
+        "items": [],
+        "passed_items": [],
+        "rejected_items": [],
+        "tickers": [],
+        "events_by_ticker": {},
+        "summary": {
+            "raw_event_count": len(raw_items),
+            "checked_count": 0,
+            "passed_count": 0,
+            "rejected_count": 0,
+            "max_to_check": max_to_check,
+            "max_final": max_final,
+        },
+        "errors": [],
+    }
+
+    if not raw_items:
+        logger("Earnings Discovery Quality Filter v1 skipped: no raw earnings events to check.")
+        return result
+
+    if not provider.is_configured:
+        result["errors"].append("TRADIER_ACCESS_TOKEN is not set; cannot pre-check optionability.")
+        logger("Earnings Discovery Quality Filter v1 skipped: TRADIER_ACCESS_TOKEN is not set.")
+        return result
+
+    selected = _prioritize_raw_events(raw_items)[:max_to_check]
+    tickers = [str(item.get("ticker") or item.get("symbol") or "").upper().strip() for item in selected]
+    tickers = [ticker for ticker in tickers if ticker]
+
+    logger(
+        "Earnings Discovery Quality Filter v1 checking "
+        f"{len(tickers)}/{len(raw_items)} raw earnings event(s); final_limit={max_final}"
+        + (" (dev-mode optionability budget)" if clean_mode == "dev" else "")
+    )
+
+    try:
+        quotes = provider.get_quotes(tickers, greeks=False) if tickers else {}
+    except Exception as e:
+        safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
+        result["errors"].append(str(safe_error))
+        logger(f"Earnings Discovery Quality Filter quote precheck failed: {safe_error}")
+        return result
+
+    rows: list[dict[str, Any]] = []
+    for item in selected:
+        ticker = str(item.get("ticker") or item.get("symbol") or "").upper().strip()
+        if not ticker:
+            continue
+        quote = quotes.get(ticker) or {}
+        row = _quality_row(item, quote)
+        try:
+            expirations = provider.get_expirations(ticker)
+            row["expiration_count"] = len(expirations)
+            pair = _select_calendar_expiration_pair(expirations)
+            if pair:
+                row["front_expiration"] = pair[0]
+                row["back_expiration"] = pair[1]
+                row["front_dte"] = _dte(pair[0])
+                row["back_dte"] = _dte(pair[1])
+                row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
+            else:
+                row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
+        except Exception as e:
+            safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
+            row["checks"].append(_check("Option expirations", "FAIL", f"Expiration lookup failed: {safe_error}"))
+            row["errors"].append(str(safe_error))
+
+        _finalize_quality_row(row)
+        rows.append(row)
+
+    passed = [row for row in rows if row.get("passes_precheck")]
+    # Rank liquid, known-session, closer-window events first.
+    passed.sort(key=lambda row: float(row.get("quality_score") or 0), reverse=True)
+    final = passed[:max_final]
+    rejected = [row for row in rows if not row.get("passes_precheck")]
+
+    result["items"] = rows
+    result["passed_items"] = final
+    result["rejected_items"] = rejected
+    result["tickers"] = [row["ticker"] for row in final]
+    result["events_by_ticker"] = {row["ticker"]: row for row in rows}
+    result["has_data"] = bool(rows)
+    result["summary"] = {
+        "raw_event_count": len(raw_items),
+        "checked_count": len(rows),
+        "passed_count": len(final),
+        "rejected_count": len(rejected),
+        "optionable_count_before_final_cap": len(passed),
+        "max_to_check": max_to_check,
+        "max_final": max_final,
+    }
+    logger(
+        "Earnings Discovery Quality Filter v1 produced "
+        f"{len(final)} final optionable ticker(s), {len(rejected)} rejected, "
+        f"from {len(raw_items)} raw event(s)."
+    )
+    return result
+
+
+def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(event.get("ticker") or event.get("symbol") or "").upper().strip()
+    price = _underlying_price(quote)
+    volume = _number(quote.get("volume"))
+    avg_volume = _number(quote.get("average_volume")) or volume
+    checks: list[dict[str, str]] = []
+    errors: list[str] = []
+
+    if quote:
+        checks.append(_check("Tradier quote", "PASS", f"Quote found; last/mark {price if price is not None else 'unknown'}."))
+    else:
+        checks.append(_check("Tradier quote", "FAIL", "No Tradier quote returned."))
+
+    min_price = float(getattr(config, "EARNINGS_DISCOVERY_MIN_UNDERLYING_PRICE", 5) or 5)
+    if price is None:
+        checks.append(_check("Underlying price", "FAIL", "No usable price."))
+    elif price >= min_price:
+        checks.append(_check("Underlying price", "PASS", f"Price {price:.2f} is above minimum {min_price:.2f}."))
+    else:
+        checks.append(_check("Underlying price", "FAIL", f"Price {price:.2f} is below minimum {min_price:.2f}."))
+
+    min_avg_vol = float(getattr(config, "EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME", 500000) or 500000)
+    if avg_volume is None:
+        checks.append(_check("Stock liquidity", "WARN", "Average volume unavailable."))
+    elif avg_volume >= min_avg_vol:
+        checks.append(_check("Stock liquidity", "PASS", f"Average/recent volume {avg_volume:.0f} is above minimum."))
+    else:
+        checks.append(_check("Stock liquidity", "FAIL", f"Average/recent volume {avg_volume:.0f} is below minimum {min_avg_vol:.0f}."))
+
+    if event.get("is_timestamp_confirmed"):
+        checks.append(_check("Earnings timestamp", "PASS", "Provider marked timestamp/session as confirmed."))
+    else:
+        checks.append(_check("Earnings timestamp", "WARN", "Earnings date/session is unconfirmed or unknown."))
+
+    return {
+        "ticker": ticker,
+        "event": event,
+        "earnings_date": event.get("earnings_date") or event.get("date"),
+        "session_label": event.get("session_label") or "Unknown",
+        "days_until_earnings": event.get("days_until_earnings"),
+        "source": event.get("source"),
+        "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
+        "quote": quote,
+        "underlying_price": price,
+        "volume": volume,
+        "average_volume": avg_volume,
+        "expiration_count": 0,
+        "front_expiration": None,
+        "back_expiration": None,
+        "front_dte": None,
+        "back_dte": None,
+        "checks": checks,
+        "errors": errors,
+        "passes_precheck": False,
+        "quality_score": 0.0,
+        "primary_rejection_reason": None,
+    }
+
+
+def _finalize_quality_row(row: dict[str, Any]) -> None:
+    score = 45.0
+    fail_reasons: list[str] = []
+    for check in row.get("checks", []) or []:
+        status = str(check.get("status") or "").upper()
+        if status == "PASS":
+            score += 8
+        elif status == "WARN":
+            score -= 2
+        elif status == "FAIL":
+            score -= 15
+            fail_reasons.append(f"{check.get('name')}: {check.get('detail')}")
+    if row.get("is_timestamp_confirmed"):
+        score += 4
+    dte = _number(row.get("days_until_earnings"))
+    if dte is not None:
+        if 2 <= dte <= 4:
+            score += 6
+        elif dte <= 1:
+            score -= 5
+    avg_volume = _number(row.get("average_volume")) or 0
+    if avg_volume >= 5_000_000:
+        score += 8
+    elif avg_volume >= 1_000_000:
+        score += 4
+    price = _number(row.get("underlying_price")) or 0
+    if price >= 25:
+        score += 4
+
+    row["quality_score"] = round(max(0.0, min(100.0, score)), 1)
+    hard_fail = any(str(check.get("status") or "").upper() == "FAIL" for check in row.get("checks", []) or [])
+    row["passes_precheck"] = not hard_fail
+    row["primary_rejection_reason"] = fail_reasons[0] if fail_reasons else None
+
+
+def _select_calendar_expiration_pair(expirations: list[str]) -> tuple[str, str] | None:
+    today = date.today()
+    parsed: list[tuple[int, str]] = []
+    for raw in expirations or []:
+        dte = _dte(raw, today=today)
+        if dte is not None:
+            parsed.append((dte, str(raw)))
+    parsed.sort(key=lambda item: item[0])
+    if not parsed:
+        return None
+
+    front_min = int(config.CALENDAR_FRONT_MIN_DTE or 7)
+    front_max = int(config.CALENDAR_FRONT_MAX_DTE or 21)
+    min_gap = int(config.CALENDAR_MIN_EXPIRATION_GAP_DAYS or 14)
+    back_max = int(config.CALENDAR_BACK_MAX_DTE or 70)
+    target_gap = int(config.CALENDAR_TARGET_EXPIRATION_GAP_DAYS or 30)
+
+    front_candidates = [(dte, exp) for dte, exp in parsed if front_min <= dte <= front_max]
+    if not front_candidates:
+        return None
+    best_pair: tuple[int, str, str] | None = None
+    for front_dte, front_exp in front_candidates:
+        for back_dte, back_exp in parsed:
+            gap = back_dte - front_dte
+            if gap < min_gap or back_dte > back_max:
+                continue
+            score = abs(gap - target_gap)
+            if best_pair is None or score < best_pair[0]:
+                best_pair = (score, front_exp, back_exp)
+    if best_pair:
+        return best_pair[1], best_pair[2]
+    return None
+
+
+def _prioritize_raw_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def key(item: dict[str, Any]) -> tuple[int, int, str]:
+        dte = _number(item.get("days_until_earnings"))
+        confirmed = 0 if item.get("is_timestamp_confirmed") else 1
+        # Prefer 2-4 DTE, then earlier dates, then symbol.
+        distance_penalty = 999 if dte is None else abs(int(dte) - 3)
+        return (distance_penalty, confirmed, str(item.get("ticker") or item.get("symbol") or ""))
+    return sorted(events, key=key)
+
+
+def _check(name: str, status: str, detail: str) -> dict[str, str]:
+    return {"name": name, "status": status.upper(), "detail": str(detail)}
+
+
+def _underlying_price(quote: dict[str, Any]) -> float | None:
+    if not quote:
+        return None
+    for key in ["last", "bid", "ask", "close", "prevclose"]:
+        value = _number(quote.get(key))
+        if value is not None and value > 0:
+            return value
+    bid = _number(quote.get("bid"))
+    ask = _number(quote.get("ask"))
+    if bid is not None and ask is not None and bid > 0 and ask > 0:
+        return (bid + ask) / 2.0
+    return None
+
+
+def _number(value: Any) -> float | None:
+    try:
+        if value is None or value == "":
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dte(raw_date: Any, today: date | None = None) -> int | None:
+    try:
+        d = datetime.strptime(str(raw_date)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
+    today = today or date.today()
+    return (d - today).days

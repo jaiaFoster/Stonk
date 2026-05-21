@@ -101,18 +101,20 @@ def discover_upcoming_earnings_for_calendar_trades(
     log_print: LogFn | None = None,
     run_mode: str = "prod",
 ) -> dict[str, Any]:
-    """Discover an independent earnings universe for possible calendar trades.
+    """Discover a broad raw earnings universe for possible calendar trades.
 
-    This is deliberately separate from portfolio and watchlist tickers. The
-    calendar strategy should start from upcoming earnings events, then use
-    Tradier chains to decide whether a trade is interesting.
+    Important v2 behavior: raw provider discovery is *not* capped to DEV_TICKERS.
+    Dev mode limits the later Tradier optionability/chain checks, not the raw
+    earnings list. This prevents the app from grabbing the first two junk names
+    and missing better liquid earnings setups deeper in the provider calendar.
     """
     logger = log_print or (lambda msg: print(msg, flush=True))
     provider = get_provider()
     provider_names = configured_provider_names()
+    clean_mode = str(run_mode or "prod").lower().strip()
 
     result: dict[str, Any] = {
-        "source": "earnings_discovery_v1",
+        "source": "earnings_discovery_v2_raw_universe",
         "provider": "+".join(provider_names) if provider_names else str(config.EARNINGS_PROVIDER or "finnhub"),
         "provider_order": provider_names,
         "enabled": bool(config.EARNINGS_DISCOVERY_ENABLED),
@@ -120,14 +122,17 @@ def discover_upcoming_earnings_for_calendar_trades(
         "window_start": None,
         "window_end": None,
         "items": [],
+        "raw_items": [],
         "events_by_ticker": {},
         "tickers": [],
         "errors": [],
         "summary": {
             "event_count": 0,
+            "raw_event_count": 0,
             "ticker_count": 0,
             "window_start_days": int(config.EARNINGS_DISCOVERY_START_DAYS or 2),
             "window_end_days": int(config.EARNINGS_DISCOVERY_END_DAYS or 4),
+            "raw_limit": int(getattr(config, "EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 100) or 100),
         },
     }
 
@@ -154,17 +159,15 @@ def discover_upcoming_earnings_for_calendar_trades(
     result["window_start"] = start.isoformat()
     result["window_end"] = end.isoformat()
 
-    max_events = max(1, int(config.EARNINGS_DISCOVERY_MAX_EVENTS or 25))
-    max_tickers = max(1, int(config.EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN or 6))
-    if str(run_mode or "prod").lower() == "dev":
-        max_tickers = max(1, int(config.DEV_MAX_TICKERS or 1))
-        max_events = max_tickers
+    raw_limit = max(1, int(getattr(config, "EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 100) or 100))
+    if clean_mode == "dev":
+        raw_limit = max(1, int(getattr(config, "EARNINGS_DISCOVERY_DEV_RAW_EVENT_LIMIT", raw_limit) or raw_limit))
 
     logger(
-        "Fetching Earnings Trade Discovery v1 universe; "
+        "Fetching Earnings Trade Discovery v2 raw universe; "
         f"providers={provider_names or [config.EARNINGS_PROVIDER]}; window={start.isoformat()}..{end.isoformat()}; "
-        f"max_tickers={max_tickers}"
-        + (" (limited by dev/test mode)" if str(run_mode or "prod").lower() == "dev" else "")
+        f"raw_limit={raw_limit}"
+        + (" (dev mode still fetches a broader raw earnings list)" if clean_mode == "dev" else "")
     )
 
     try:
@@ -172,12 +175,12 @@ def discover_upcoming_earnings_for_calendar_trades(
     except EarningsRateLimitError as e:
         safe_error = sanitize_for_log(e, earnings_provider_secret_values())
         result["errors"].append(str(safe_error))
-        logger(f"Earnings Trade Discovery v1 stopped: {safe_error}")
+        logger(f"Earnings Trade Discovery v2 stopped: {safe_error}")
         return result
     except (EarningsAuthError, EarningsProviderError, Exception) as e:
         safe_error = sanitize_for_log(e, earnings_provider_secret_values())
         result["errors"].append(str(safe_error))
-        logger(f"Earnings Trade Discovery v1 unavailable: {safe_error}")
+        logger(f"Earnings Trade Discovery v2 unavailable: {safe_error}")
         return result
 
     events: list[dict[str, Any]] = []
@@ -191,28 +194,34 @@ def discover_upcoming_earnings_for_calendar_trades(
             continue
         selected = dict(selected)
         selected["discovery_reason"] = "Upcoming earnings event in configured discovery window."
+        selected["raw_discovery_rank"] = len(events) + 1
         events.append(selected)
         seen.add(ticker)
-        if len(events) >= max_events or len(seen) >= max_tickers:
+        if len(events) >= raw_limit:
             break
 
     events.sort(key=lambda item: (item.get("earnings_date") or "9999-99-99", str(item.get("ticker") or "")))
-    events = events[:max_tickers]
     tickers = [str(event.get("ticker") or "").upper().strip() for event in events if event.get("ticker")]
 
     result["items"] = events
+    result["raw_items"] = list(events)
     result["events_by_ticker"] = {ticker: event for ticker, event in zip(tickers, events)}
     result["tickers"] = tickers
     result["has_data"] = bool(events)
     result["summary"] = {
         "event_count": len(events),
+        "raw_event_count": len(events),
         "ticker_count": len(tickers),
         "window_start_days": start_offset,
         "window_end_days": end_offset,
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
+        "raw_limit": raw_limit,
+        "dev_mode_raw_fetch": clean_mode == "dev",
     }
-    logger(f"Earnings Trade Discovery v1 found {len(events)} event(s): {tickers}")
+    preview = tickers[:10]
+    suffix = "..." if len(tickers) > len(preview) else ""
+    logger(f"Earnings Trade Discovery v2 raw universe found {len(events)} event(s): {preview}{suffix}")
     return result
 
 

@@ -117,6 +117,8 @@ def format_payload(
     earnings_trade_discovery = earnings_trade_discovery_from_tradier_snapshot(tradier_snapshot)
     unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
+    stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
+    daily_opportunity = daily_opportunity_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -142,6 +144,12 @@ def format_payload(
             f"Value: {money(p.get('market_value'))} | "
             f"Account: {p.get('account', 'Unknown')}"
         )
+
+    lines += ["", "=== DAILY OPPORTUNITY ENGINE V1 ==="]
+    lines.extend(format_daily_opportunity_text(daily_opportunity))
+
+    lines += ["", "=== STOCK MOMENTUM ADD STRATEGY V1 ==="]
+    lines.extend(format_stock_momentum_text(stock_momentum))
 
     lines += ["", "=== WATCHLIST STOCK CANDIDATE REVIEW V2 ==="]
     if not watchlist_review or not watchlist_review.get("items"):
@@ -366,6 +374,8 @@ def format_html(
     earnings_discovery_rows = format_earnings_trade_discovery_rows(earnings_trade_discovery_from_tradier_snapshot(parsed_tradier_snapshot))
     unified_calendar_rows = format_unified_calendar_engine_rows(unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot))
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
+    stock_momentum_rows = format_stock_momentum_rows(stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot))
+    daily_opportunity_rows = format_daily_opportunity_rows(daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -523,6 +533,35 @@ def format_html(
         {position_rows}
     </table>
 
+
+    <h2>Daily Opportunity Engine v1</h2>
+    <p class="muted">One ranked action list combining calendar trades, stock momentum adds, portfolio-gap ideas, and risk review items.</p>
+    <table>
+        <tr>
+            <th>Type</th>
+            <th>Ticker / Score</th>
+            <th>Action</th>
+            <th>Why</th>
+            <th>Next Step</th>
+            <th>Source</th>
+        </tr>
+        {daily_opportunity_rows}
+    </table>
+
+    <h2>Stock Momentum Add Strategy v1</h2>
+    <p class="muted">Normal-stock entry strategy for portfolio and watchlist names. It uses market trend/momentum when available and separates consider-add from add-on-pullback/watch/avoid.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Score / Action</th>
+            <th>Portfolio</th>
+            <th>Trend</th>
+            <th>Reasons</th>
+            <th>Risks</th>
+            <th>Next Check</th>
+        </tr>
+        {stock_momentum_rows}
+    </table>
 
     <h2>Watchlist Stock Candidate Review v2</h2>
     <p class="muted">Robinhood/manual watchlist tickers reviewed primarily as normal stock candidates. Earnings/calendar logic is an overlay only when an actual earnings setup exists. These are not treated as owned positions.</p>
@@ -1566,6 +1605,119 @@ def format_portfolio_gap_rows(gap: dict[str, Any]) -> str:
     <p class="muted"><strong>Notes:</strong></p><ul class="compact">{notes}</ul>
     """
 
+
+
+def stock_momentum_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_stock_momentum_strategy", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def daily_opportunity_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_daily_opportunity_engine", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_daily_opportunity_text(engine: dict[str, Any]) -> list[str]:
+    if not engine:
+        return ["Daily Opportunity Engine did not run for this report."]
+    summary = engine.get("summary", {}) or {}
+    lines = [
+        f"Actions {summary.get('action_count', 0)} | Calendar {summary.get('calendar_count', 0)} | "
+        f"Stock {summary.get('stock_count', 0)} | Gap {summary.get('gap_count', 0)} | Risk {summary.get('risk_count', 0)}"
+    ]
+    actions = engine.get("actions", []) or []
+    if not actions:
+        lines.append("No daily actions cleared the opportunity threshold this run.")
+    for item in actions[:20]:
+        lines.append(
+            f"{item.get('ticker', 'UNKNOWN')}: {item.get('action', 'REVIEW')} | "
+            f"Score {number(item.get('priority_score'), 1)} | Type {item.get('type', 'idea')}"
+        )
+        if item.get("why"):
+            lines.append(f"  Why: {item.get('why')}")
+        if item.get("next_step"):
+            lines.append(f"  Next: {item.get('next_step')}")
+    return lines
+
+
+def format_daily_opportunity_rows(engine: dict[str, Any]) -> str:
+    actions = (engine or {}).get("actions", []) or []
+    if not actions:
+        return '<tr><td colspan="6" class="empty">No daily actions cleared the opportunity threshold this run.</td></tr>'
+    rows = ""
+    for item in actions[:30]:
+        typ = escape(str(item.get("type") or "idea"))
+        ticker = escape(str(item.get("ticker") or "UNKNOWN"))
+        action = str(item.get("action") or "REVIEW")
+        cls = "candidate" if "ADD" in action or "PASS" in action or "CONSIDER" in action else "urgent" if "AVOID" in action or "REDUCE" in action or "FAIL" in action else "action-watch"
+        rows += f"""
+        <tr>
+            <td>{typ}</td>
+            <td class="score"><strong>{ticker}</strong><br>{number(item.get('priority_score'), 1)}</td>
+            <td><span class="pill {cls}">{escape(action)}</span></td>
+            <td>{escape(str(item.get('why') or '—'))}</td>
+            <td>{escape(str(item.get('next_step') or '—'))}</td>
+            <td>{escape(str(item.get('source') or '—'))}</td>
+        </tr>"""
+    return rows
+
+
+def format_stock_momentum_text(strategy: dict[str, Any]) -> list[str]:
+    if not strategy:
+        return ["Stock Momentum Add Strategy did not run for this report."]
+    summary = strategy.get("summary", {}) or {}
+    lines = [
+        f"Candidates {summary.get('candidate_count', 0)} | Consider add {summary.get('consider_add_count', 0)} | "
+        f"Add on pullback {summary.get('pullback_count', 0)} | Watch {summary.get('watch_count', 0)} | Avoid {summary.get('avoid_count', 0)}"
+    ]
+    for item in (strategy.get("items", []) or [])[:20]:
+        lines.append(
+            f"{item.get('ticker', 'UNKNOWN')}: Score {number(item.get('score'), 1)} | "
+            f"{item.get('action', 'WATCH')} | {item.get('portfolio_status', 'Unknown')}"
+        )
+        for reason in (item.get("reasons", []) or [])[:3]:
+            lines.append(f"  + {reason}")
+        for risk in (item.get("risks", []) or [])[:3]:
+            lines.append(f"  - {risk}")
+        if item.get("next_check"):
+            lines.append(f"  Next: {item.get('next_check')}")
+    return lines
+
+
+def format_stock_momentum_rows(strategy: dict[str, Any]) -> str:
+    items = (strategy or {}).get("items", []) or []
+    if not items:
+        return '<tr><td colspan="7" class="empty">No stock momentum candidates generated.</td></tr>'
+    rows = ""
+    for item in items[:30]:
+        ticker = escape(str(item.get("ticker") or "UNKNOWN"))
+        action = str(item.get("action") or "WATCH")
+        cls = "candidate" if action == "CONSIDER ADDING" else "action-watch" if "WATCH" in action or "PULLBACK" in action else "urgent" if "AVOID" in action else "action-hold"
+        metrics = item.get("market_metrics", {}) or {}
+        if metrics.get("has_data"):
+            trend = (
+                f"3M {signed_pct(metrics.get('return_3m_pct'))}<br>"
+                f"6M {signed_pct(metrics.get('return_6m_pct'))}<br>"
+                f"12M {signed_pct(metrics.get('return_12m_pct'))}<br>"
+                f"200D {yes_no(metrics.get('above_sma_200'))}"
+            )
+        else:
+            trend = '<span class="empty">No trend data</span>'
+        rows += f"""
+        <tr>
+            <td><strong>{ticker}</strong></td>
+            <td class="score">{number(item.get('score'), 1)}<br><span class="pill {cls}">{escape(action)}</span></td>
+            <td>{escape(str(item.get('portfolio_status') or 'Unknown'))}<br><span class="muted">Alloc {pct(item.get('allocation_pct'))}</span></td>
+            <td>{trend}</td>
+            <td>{format_compact_list(item.get('reasons', []) or [])}</td>
+            <td>{format_compact_list(item.get('risks', []) or [])}</td>
+            <td>{escape(str(item.get('next_check') or '—'))}</td>
+        </tr>"""
+    return rows
 
 def unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
     if not tradier_snapshot:
