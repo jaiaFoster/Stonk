@@ -24,6 +24,7 @@ from app.services.open_options_service import detect_open_options_positions
 from app.services.earnings_service import get_earnings_for_positions, discover_upcoming_earnings_for_calendar_trades
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
 from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
+from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
 from app.services.watchlist_review_service import review_watchlist_candidates
@@ -104,6 +105,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
         log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
         log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
+        log_print(f"UNIFIED_CALENDAR_ENGINE_ENABLED: {config.UNIFIED_CALENDAR_ENGINE_ENABLED}")
         log_print(f"WATCHLIST_ENABLED: {config.WATCHLIST_ENABLED}")
         log_print(f"WATCHLIST_SOURCE: {config.WATCHLIST_SOURCE}")
         log_print(f"WATCHLIST_NAMES: {config.WATCHLIST_NAMES}")
@@ -423,6 +425,38 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 "urgent_count": 0,
                 "exit_review_count": 0,
                 "has_open_calendars": False,
+            },
+        }
+
+    log_print("Running Unified Calendar Trade Engine v1...")
+
+    try:
+        unified_calendar_engine = build_unified_calendar_trade_engine(
+            earnings_trade_discovery=earnings_trade_discovery,
+            calendar_candidates=tradier_snapshot.get("_calendar_spread_candidates", {}).get("items", [])
+            if isinstance(tradier_snapshot.get("_calendar_spread_candidates", {}), dict) else [],
+            earnings_calendar_strategy=tradier_snapshot.get("_earnings_calendar_strategy", {}),
+            open_options=tradier_snapshot.get("_open_options_positions", {}),
+            lifecycle_checks=tradier_snapshot.get("_calendar_lifecycle_checks", {}),
+            log_print=log_print,
+        )
+        tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
+    except Exception as e:
+        log_print(f"ERROR in Unified Calendar Trade Engine v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_unified_calendar_trade_engine"] = {
+            "source": "unified_calendar_trade_engine_v1",
+            "enabled": True,
+            "has_data": False,
+            "new_trade_rows": [],
+            "open_trade_rows": [],
+            "errors": [str(e)],
+            "summary": {
+                "new_trade_count": 0,
+                "open_trade_count": 0,
+                "pass_count": 0,
+                "watch_count": 0,
+                "fail_count": 0,
+                "urgent_count": 0,
             },
         }
 

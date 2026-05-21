@@ -103,6 +103,12 @@ EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 4)
 EARNINGS_DISCOVERY_MAX_EVENTS = _int_env("EARNINGS_DISCOVERY_MAX_EVENTS", 25)
 EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN", 6)
 
+# --- Unified calendar trade engine ---
+# User-facing orchestration layer that combines earnings discovery, candidate
+# spread screening, earnings-calendar scoring, open-position detection, and
+# lifecycle next actions into one calendar-trade workflow section.
+UNIFIED_CALENDAR_ENGINE_ENABLED = _bool_env("UNIFIED_CALENDAR_ENGINE_ENABLED", True)
+
 # --- Calendar lifecycle checker ---
 # Uses detected open calendars from Tradier positions. It does not require
 # persistence, but exit gain/loss is more useful when broker cost basis or a

@@ -115,6 +115,7 @@ def format_payload(
     earnings_events = earnings_events_from_tradier_snapshot(tradier_snapshot)
     watchlist_review = watchlist_review_from_tradier_snapshot(tradier_snapshot)
     earnings_trade_discovery = earnings_trade_discovery_from_tradier_snapshot(tradier_snapshot)
+    unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -285,6 +286,9 @@ def format_payload(
                 f"DTE {event.get('days_until_earnings') if event.get('days_until_earnings') is not None else 'unknown'} | "
                 f"Confirmed {yes_no(event.get('is_timestamp_confirmed'))}"
             )
+
+    lines += ["", "=== UNIFIED CALENDAR TRADE ENGINE V1 ==="]
+    lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
 
     lines += ["", "=== TRADIER OPTIONS SNAPSHOT ==="]
     if not tradier_snapshot:
@@ -553,6 +557,7 @@ def format_html(
     earnings_rows = format_earnings_rows(earnings_events_from_tradier_snapshot(parsed_tradier_snapshot))
     watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))
     earnings_discovery_rows = format_earnings_trade_discovery_rows(earnings_trade_discovery_from_tradier_snapshot(parsed_tradier_snapshot))
+    unified_calendar_rows = format_unified_calendar_engine_rows(unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -752,6 +757,20 @@ def format_html(
             <th>Source / Notes</th>
         </tr>
         {earnings_discovery_rows}
+    </table>
+
+    <h2>Unified Calendar Trade Engine v1</h2>
+    <p class="muted">One workflow for earnings-calendar trades: discover upcoming earnings, pass/fail requirements, propose spreads when valid, rank entry candidates, and review already-entered calendars.</p>
+    <table>
+        <tr>
+            <th>Type</th>
+            <th>Ticker / Score</th>
+            <th>Earnings / Verdict</th>
+            <th>Possible Spread / Current Position</th>
+            <th>Requirements</th>
+            <th>Entry / Next Action</th>
+        </tr>
+        {unified_calendar_rows}
     </table>
 
     <h2>Tradier Quote / Options Snapshot</h2>
@@ -1654,3 +1673,165 @@ def format_watchlist_review_rows(review: dict[str, Any]) -> str:
             <td>{format_compact_list(reasons + risks)}<br><span class="muted">{next_check}</span></td>
         </tr>"""
     return rows
+
+
+def unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_unified_calendar_trade_engine", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_unified_calendar_engine_text(engine: dict[str, Any]) -> list[str]:
+    if not engine:
+        return ["Unified calendar engine did not run for this report."]
+
+    summary = engine.get("summary", {}) or {}
+    lines = [
+        f"New earnings rows {summary.get('new_trade_count', 0)} | "
+        f"Pass {summary.get('pass_count', 0)} | "
+        f"Watch/manual {summary.get('watch_count', 0)} | "
+        f"Fail {summary.get('fail_count', 0)} | "
+        f"Open calendars {summary.get('open_trade_count', 0)}"
+    ]
+
+    new_rows = engine.get("new_trade_rows", []) or []
+    if not new_rows:
+        lines.append("No new earnings-calendar opportunities were discovered/evaluated.")
+    else:
+        for row in new_rows[:20]:
+            spread = row.get("possible_spread", {}) or {}
+            earnings = row.get("earnings", {}) or {}
+            spread_text = "No proposed spread"
+            if spread:
+                spread_text = (
+                    f"{option_money(spread.get('strike'))} {str(spread.get('option_type') or 'call').upper()} | "
+                    f"short {spread.get('short_expiration') or '—'} / long {spread.get('long_expiration') or '—'} | "
+                    f"debit {option_money(spread.get('conservative_debit'))}"
+                )
+            lines.append(
+                f"{row.get('ticker', 'UNKNOWN')}: Score {number(row.get('score'), 1)} | "
+                f"{row.get('verdict') or 'WATCH'} | "
+                f"Earnings {earnings.get('earnings_date') or 'unknown'} ({earnings.get('session_label') or 'Unknown'}) | "
+                f"{spread_text}"
+            )
+            for req in row.get("requirements", [])[:6]:
+                lines.append(f"  {req.get('status', 'WARN')}: {req.get('name')}: {req.get('detail')}")
+            lines.append(f"  Entry plan: {row.get('entry_plan') or 'Manual review before entry.'}")
+
+    open_rows = engine.get("open_trade_rows", []) or []
+    if not open_rows:
+        lines.append("No open calendars detected for lifecycle action.")
+    else:
+        for row in open_rows:
+            lines.append(
+                f"Open {row.get('ticker', 'UNKNOWN')}: Score {number(row.get('score'), 1)} | "
+                f"{row.get('verdict') or 'HOLD / MONITOR'} | {row.get('structure') or '—'} | "
+                f"{row.get('value') or 'value unavailable'}"
+            )
+            lines.append(f"  Next action: {row.get('next_action') or 'Recheck before market close.'}")
+    return lines
+
+
+def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
+    if not engine:
+        return """
+        <tr>
+            <td colspan="6" class="empty">Unified Calendar Trade Engine v1 did not run for this report.</td>
+        </tr>"""
+
+    errors = engine.get("errors", []) or []
+    new_rows = engine.get("new_trade_rows", []) or []
+    open_rows = engine.get("open_trade_rows", []) or []
+
+    if not new_rows and not open_rows:
+        message = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No new earnings-calendar candidates or open calendars were found.</span>'
+        return f"""
+        <tr>
+            <td colspan="6" class="empty">{message}</td>
+        </tr>"""
+
+    rows = ""
+    for item in new_rows[:30]:
+        ticker = escape(str(item.get("ticker") or "UNKNOWN"))
+        verdict = escape(str(item.get("verdict") or "WATCH"))
+        verdict_class = _calendar_verdict_class(str(item.get("verdict") or ""))
+        earnings = item.get("earnings", {}) or {}
+        spread = item.get("possible_spread", {}) or {}
+        requirements = item.get("requirements", []) or []
+        entry_plan = escape(str(item.get("entry_plan") or "Manual review before entry."))
+
+        earnings_text = (
+            f"{escape(str(earnings.get('earnings_date') or 'Unknown'))}<br>"
+            f"{escape(str(earnings.get('session_label') or 'Unknown'))}<br>"
+            f"<span class='muted'>DTE {escape(str(earnings.get('days_until_earnings') if earnings.get('days_until_earnings') is not None else 'unknown'))}</span><br>"
+            f"<span class='pill {verdict_class}'>{verdict}</span>"
+        )
+
+        if spread:
+            spread_text = (
+                f"Strike {option_money(spread.get('strike'))} {escape(str(spread.get('option_type') or 'call').upper())}<br>"
+                f"Short {escape(str(spread.get('short_expiration') or '—'))} "
+                f"({spread.get('front_dte') if spread.get('front_dte') is not None else '—'} DTE)<br>"
+                f"Long {escape(str(spread.get('long_expiration') or '—'))} "
+                f"({spread.get('back_dte') if spread.get('back_dte') is not None else '—'} DTE)<br>"
+                f"Debit {option_money(spread.get('conservative_debit'))} | Mid {option_money(spread.get('mid_debit'))}<br>"
+                f"<span class='muted'>Spread {pct(spread.get('max_leg_spread_pct'))} | Min OI {compact_big_number(spread.get('min_leg_open_interest'))} | Min Vol {compact_big_number(spread.get('min_leg_volume'))}</span>"
+            )
+        else:
+            spread_text = '<span class="empty">No proposed spread — failed scanner requirements.</span>'
+
+        rows += f"""
+        <tr>
+            <td>New earnings calendar</td>
+            <td class="score"><strong>{ticker}</strong><br>{number(item.get('score'), 1)}</td>
+            <td>{earnings_text}</td>
+            <td>{spread_text}</td>
+            <td>{format_requirement_list(requirements)}</td>
+            <td>{entry_plan}</td>
+        </tr>"""
+
+    for item in open_rows[:30]:
+        ticker = escape(str(item.get("ticker") or "UNKNOWN"))
+        verdict = escape(str(item.get("verdict") or "HOLD / MONITOR"))
+        verdict_class = _calendar_verdict_class(str(item.get("verdict") or ""))
+        next_action = escape(str(item.get("next_action") or "Recheck before market close."))
+        structure = escape(str(item.get("structure") or "—"))
+        value = escape(str(item.get("value") or "Value unavailable"))
+        reasons = [str(r) for r in (item.get("reasons", []) or [])]
+        risks = [str(r) for r in (item.get("risks", []) or [])]
+        rows += f"""
+        <tr>
+            <td>Open calendar</td>
+            <td class="score"><strong>{ticker}</strong><br>{number(item.get('score'), 1)}</td>
+            <td><span class="pill {verdict_class}">{verdict}</span></td>
+            <td>{structure}<br><span class="muted">{value}</span></td>
+            <td>{format_compact_list(reasons + risks)}</td>
+            <td>{next_action}</td>
+        </tr>"""
+
+    return rows
+
+
+def format_requirement_list(requirements: list[dict[str, Any]]) -> str:
+    if not requirements:
+        return '<span class="empty">No requirement details.</span>'
+    items = []
+    for req in requirements:
+        status = escape(str(req.get("status") or "WARN"))
+        name = escape(str(req.get("name") or "Requirement"))
+        detail = escape(str(req.get("detail") or ""))
+        cls = "yes" if status == "PASS" else "no" if status == "FAIL" else "muted"
+        items.append(f"<li><strong class='{cls}'>{status}</strong> — {name}: <span class='muted'>{detail}</span></li>")
+    return '<ul class="compact">' + ''.join(items) + '</ul>'
+
+
+def _calendar_verdict_class(verdict: str) -> str:
+    text = str(verdict or "").upper()
+    if text.startswith("PASS") or "TAKE PROFIT" in text:
+        return "candidate"
+    if text.startswith("FAIL") or "AVOID" in text or "CUT" in text:
+        return "urgent"
+    if "URGENT" in text:
+        return "urgent"
+    return "action-watch"
