@@ -8,6 +8,8 @@ from datetime import date
 from html import escape
 from typing import Any
 
+from app.services.report_assets import REPORT_CSS, collapsible_pre
+
 
 NewsMap = dict[str, list[dict[str, Any]]]
 Recommendations = list[dict[str, Any]]
@@ -376,8 +378,13 @@ def format_html(
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
     stock_momentum_rows = format_stock_momentum_rows(stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot))
     daily_opportunity_rows = format_daily_opportunity_rows(daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot))
+    pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
+    pipeline_status_rows = format_pipeline_status_rows(pipeline_status)
+    pipeline_summary_html = format_pipeline_summary(pipeline_status)
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
+    payload_debug_html = collapsible_pre("Full Advisor Payload", payload, "payload", "payload")
+    log_debug_html = collapsible_pre("Run Log", "\n".join(parsed_log_lines), None, "log")
     today = date.today().strftime("%B %d, %Y")
 
     return f"""<!DOCTYPE html>
@@ -386,93 +393,7 @@ def format_html(
     <meta charset="utf-8">
     <title>Stock Advisor — {today}</title>
     <style>
-        body {{
-            font-family: monospace;
-            background: #0f0f0f;
-            color: #e0e0e0;
-            padding: 2rem;
-            max-width: 1400px;
-            margin: auto;
-        }}
-        h1 {{ color: #00ff88; }}
-        h2 {{
-            color: #888;
-            border-bottom: 1px solid #333;
-            padding-bottom: 4px;
-        }}
-        table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 2rem;
-        }}
-        th {{
-            background: #1a1a1a;
-            color: #aaa;
-            padding: 8px 12px;
-            text-align: left;
-            vertical-align: top;
-        }}
-        td {{
-            padding: 8px 12px;
-            border-bottom: 1px solid #222;
-            vertical-align: top;
-        }}
-        tr:hover td {{ background: #1a1a1a; }}
-        a {{ color: #00ff88; }}
-        pre {{
-            background: #1a1a1a;
-            padding: 1.5rem;
-            border-radius: 6px;
-            white-space: pre-wrap;
-            word-break: break-word;
-            font-size: 0.85rem;
-            line-height: 1.5;
-        }}
-        .payload {{
-            background: #0a1a0a;
-            border: 1px solid #00ff8844;
-            color: #00ff88;
-        }}
-        .log {{
-            background: #1a0a0a;
-            border: 1px solid #ff444444;
-            color: #ff8888;
-            font-size: 0.78rem;
-        }}
-        .copy-btn {{
-            background: #00ff88;
-            color: #000;
-            border: none;
-            padding: 8px 16px;
-            cursor: pointer;
-            border-radius: 4px;
-            font-family: monospace;
-            font-weight: bold;
-            margin-bottom: 1rem;
-        }}
-        .copy-btn:hover {{ background: #00cc66; }}
-        .muted {{ color: #999; font-size: 0.9rem; }}
-        .score {{ font-weight: bold; }}
-        .empty {{ color: #777; font-style: italic; }}
-        .pill {{
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 999px;
-            background: #1f2937;
-            color: #e5e7eb;
-            font-size: 0.78rem;
-            white-space: nowrap;
-        }}
-        .action-add {{ background: #064e3b; color: #a7f3d0; }}
-        .action-hold {{ background: #1e3a8a; color: #bfdbfe; }}
-        .action-watch {{ background: #78350f; color: #fde68a; }}
-        .action-risk {{ background: #7f1d1d; color: #fecaca; }}
-        ul.compact {{ margin: 0; padding-left: 1.2rem; }}
-        .yes {{ color: #00ff88; }}
-        .no {{ color: #ff8888; }}
-        .nowrap {{ white-space: nowrap; }}
-        .urgent {{ background: #7f1d1d; color: #fecaca; font-weight: bold; }}
-        .candidate {{ background: #064e3b; color: #a7f3d0; }}
+        {REPORT_CSS}
     </style>
 </head>
 <body>
@@ -482,6 +403,34 @@ def format_html(
         relevance-scored news, market momentum/trend, watchlist stock review,
         and a unified calendar trade engine that combines earnings discovery, spread screening, open-calendar detection, and lifecycle next actions. Fundamentals, persistence, and full options strategy scoring will be added later.
     </p>
+
+
+    <h2>Daily Opportunity Engine v1</h2>
+    <p class="muted">One ranked action list combining calendar trades, stock momentum adds, portfolio-gap ideas, and risk review items.</p>
+    <table>
+        <tr>
+            <th>Type</th>
+            <th>Ticker / Score</th>
+            <th>Action</th>
+            <th>Why</th>
+            <th>Next Step</th>
+            <th>Source</th>
+        </tr>
+        {daily_opportunity_rows}
+    </table>
+
+    <h2>Pipeline Status</h2>
+    {pipeline_summary_html}
+    <table>
+        <tr>
+            <th>Status</th>
+            <th>Step</th>
+            <th>Message</th>
+            <th>Duration</th>
+            <th>Finished</th>
+        </tr>
+        {pipeline_status_rows}
+    </table>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
     <table>
@@ -534,19 +483,6 @@ def format_html(
     </table>
 
 
-    <h2>Daily Opportunity Engine v1</h2>
-    <p class="muted">One ranked action list combining calendar trades, stock momentum adds, portfolio-gap ideas, and risk review items.</p>
-    <table>
-        <tr>
-            <th>Type</th>
-            <th>Ticker / Score</th>
-            <th>Action</th>
-            <th>Why</th>
-            <th>Next Step</th>
-            <th>Source</th>
-        </tr>
-        {daily_opportunity_rows}
-    </table>
 
     <h2>Stock Momentum Add Strategy v1</h2>
     <p class="muted">Normal-stock entry strategy for portfolio and watchlist names. It uses market trend/momentum when available and separates consider-add from add-on-pullback/watch/avoid.</p>
@@ -609,17 +545,60 @@ def format_html(
         {news_rows}
     </table>
 
-    <h2>Full Advisor Payload</h2>
+    <h2>Debug / Copyable Output</h2>
     <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('payload').innerText)">
-        Copy to Clipboard
+        Copy Advisor Payload
     </button>
-    <pre id="payload" class="payload">{payload_html}</pre>
-
-    <h2>Run Log</h2>
-    <pre class="log">{log_html}</pre>
+    {payload_debug_html}
+    {log_debug_html}
 </body>
 </html>"""
 
+
+
+def pipeline_status_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_pipeline_status", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_pipeline_status_rows(status: dict[str, Any]) -> str:
+    steps = (status or {}).get("steps", []) or []
+    if not steps:
+        return '<tr><td colspan="5" class="empty">Pipeline status was not attached to this run.</td></tr>'
+    rows = ""
+    for step in steps:
+        state = str(step.get("status") or "unknown")
+        label = escape(str(step.get("label") or step.get("key") or "Step"))
+        message = escape(str(step.get("message") or ""))
+        duration = step.get("duration_ms")
+        duration_text = f"{duration} ms" if duration is not None else "—"
+        css = "candidate" if state == "complete" else "urgent" if state == "error" else "action-watch" if state in {"warning", "skipped"} else "action-hold"
+        rows += f"""
+        <tr>
+            <td><span class="pill {css}">{escape(state.upper())}</span></td>
+            <td>{label}</td>
+            <td>{message}</td>
+            <td>{escape(duration_text)}</td>
+            <td class="muted">{escape(str(step.get('finished_at') or '—'))}</td>
+        </tr>"""
+    return rows
+
+
+def format_pipeline_summary(status: dict[str, Any]) -> str:
+    if not status:
+        return '<p class="muted">Pipeline status unavailable.</p>'
+    summary = status.get("summary", {}) or {}
+    mode = escape(str(status.get("run_mode") or "prod").upper())
+    overall = escape(str(status.get("overall_status") or "unknown").upper())
+    return (
+        f'<p class="muted">Mode <strong>{mode}</strong> | Overall <strong>{overall}</strong> | '
+        f"Steps {summary.get('step_count', 0)} | "
+        f"Complete {summary.get('completed_count', 0)} | "
+        f"Warnings {summary.get('warning_count', 0)} | "
+        f"Errors {summary.get('error_count', 0)}</p>"
+    )
 
 def format_position_rows(positions: list[dict[str, Any]]) -> str:
     rows = ""

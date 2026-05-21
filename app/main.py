@@ -59,6 +59,11 @@ def _requested_run_mode() -> str:
     return "prod"
 
 
+def _valid_run_token(token: str | None) -> bool:
+    """Require RUN_TOKEN to be configured and matched by the request."""
+    return bool(config.RUN_TOKEN) and token == config.RUN_TOKEN
+
+
 def run(run_mode: str = "prod") -> PipelineResult:
     """
     Backward-compatible run function.
@@ -82,7 +87,7 @@ def run(run_mode: str = "prod") -> PipelineResult:
 @app.route("/run")
 def trigger():
     token = request.args.get("token")
-    if token != config.RUN_TOKEN:
+    if not _valid_run_token(token):
         abort(403)
 
     run_mode = _requested_run_mode()
@@ -122,7 +127,7 @@ def trigger():
 @app.route("/run/status/<job_id>")
 def run_status(job_id: str):
     token = request.args.get("token")
-    if token != config.RUN_TOKEN:
+    if not _valid_run_token(token):
         abort(403)
 
     job = RUN_JOBS.get(job_id)
@@ -159,7 +164,7 @@ def run_status(job_id: str):
 @app.route("/run/result/<job_id>")
 def run_result(job_id: str):
     token = request.args.get("token")
-    if token != config.RUN_TOKEN:
+    if not _valid_run_token(token):
         abort(403)
 
     job = RUN_JOBS.get(job_id)
@@ -199,6 +204,23 @@ def run_result(job_id: str):
             )
         )
         return error_page("Report Render Failed", error_log), 500
+
+
+
+
+@app.route("/config-check")
+def config_check():
+    token = request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+
+    try:
+        from app.services.config_check_service import build_config_check
+
+        data = build_config_check(run_mode=_requested_run_mode())
+        return jsonify(data), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
 
 
 @app.route("/health")

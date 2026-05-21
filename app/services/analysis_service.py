@@ -1,38 +1,61 @@
 """
 app/services/analysis_service.py — Main pipeline orchestration.
 
-This service runs the portfolio/news/market-data/Tradier/calendar/scoring/report
-pipeline.
+This file intentionally keeps the public return shape stable for app/main.py:
+(payload, positions, news, recommendations, tradier_snapshot, log)
 
-Dev mode is supported for API-budget-safe testing:
-- Robinhood still fetches the full portfolio, because that is the baseline state.
-- External providers such as NewsAPI, Finnhub, earnings, and Tradier are limited
-  to a small ticker subset.
+The pipeline internals are now cleaner and more explicit:
+- pipeline_helpers.py owns run-mode and ticker-limit helpers
+- pipeline_status_service.py records a structured step-by-step status
+- provider/strategy modules remain read-only and independently defensive
 """
 
 from __future__ import annotations
 
 import traceback
-from typing import Any
+from typing import Any, Callable
 
 from app import config
 from app.providers.news_provider import get_news_for_tickers
-from app.services.market_data_service import get_market_metrics_for_positions
-from app.services.tradier_service import get_tradier_snapshot_for_positions
-from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
-from app.services.open_options_service import detect_open_options_positions
-from app.services.earnings_service import get_earnings_for_positions, discover_upcoming_earnings_for_calendar_trades
-from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
-from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
-from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
-from app.services.portfolio_service import get_portfolio_positions
-from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
-from app.services.watchlist_review_service import review_watchlist_candidates
-from app.services.portfolio_gap_service import build_portfolio_gap_analysis
-from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
+from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.daily_opportunity_engine_service import build_daily_opportunity_engine
+from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
+from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+from app.services.earnings_service import discover_upcoming_earnings_for_calendar_trades, get_earnings_for_positions
+from app.services.market_data_service import get_market_metrics_for_positions
+from app.services.open_options_service import detect_open_options_positions
+from app.services.pipeline_helpers import (
+    calendar_max_tickers_for_mode,
+    config_log_lines,
+    config_snapshot,
+    earnings_max_tickers_for_mode,
+    external_provider_tickers,
+    fill_missing_news_keys,
+    market_max_tickers_for_mode,
+    merge_earnings_events,
+    merge_provider_ticker_sets,
+    news_max_tickers_for_mode,
+    normalize_run_mode,
+    positions_from_earnings_discovery,
+    tradier_max_tickers_for_mode,
+)
+from app.services.pipeline_status_service import (
+    begin_step,
+    complete_step,
+    fail_step,
+    finish_pipeline,
+    new_pipeline_status,
+    warn_step,
+)
+from app.services.portfolio_gap_service import build_portfolio_gap_analysis
+from app.services.portfolio_service import get_portfolio_positions
 from app.services.report_service import format_payload
+from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
+from app.services.tradier_service import get_tradier_snapshot_for_positions
+from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
+from app.services.watchlist_review_service import review_watchlist_candidates
+from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
 from app.utils.log_safety import sanitize_for_log
 
@@ -47,6 +70,92 @@ PipelineResult = tuple[
 ]
 
 
+EMPTY_WATCHLIST = {
+    "source": "watchlist_pipeline_v1",
+    "enabled": True,
+    "has_data": False,
+    "items": [],
+    "tickers": [],
+    "errors": [],
+    "summary": {"candidate_count": 0, "new_candidate_count": 0, "already_held_count": 0, "scan_universe_count": 0},
+}
+
+EMPTY_EARNINGS_DISCOVERY = {
+    "source": "earnings_discovery_v1",
+    "enabled": True,
+    "has_data": False,
+    "items": [],
+    "events_by_ticker": {},
+    "tickers": [],
+    "errors": [],
+    "summary": {"event_count": 0, "ticker_count": 0},
+}
+
+EMPTY_EARNINGS_QUALITY = {
+    "source": "earnings_discovery_quality_filter_v1",
+    "enabled": True,
+    "has_data": False,
+    "items": [],
+    "passed_items": [],
+    "rejected_items": [],
+    "tickers": [],
+    "events_by_ticker": {},
+    "errors": [],
+    "summary": {"raw_event_count": 0, "checked_count": 0, "passed_count": 0, "rejected_count": 0},
+}
+
+EMPTY_OPEN_OPTIONS = {
+    "source": "tradier",
+    "has_data": False,
+    "enabled": True,
+    "configured": bool(config.TRADIER_ACCESS_TOKEN),
+    "account_ids": [],
+    "positions": [],
+    "option_legs": [],
+    "calendars": [],
+    "errors": [],
+    "summary": {
+        "account_count": 0,
+        "total_positions": 0,
+        "option_leg_count": 0,
+        "calendar_count": 0,
+        "has_open_options": False,
+        "has_open_calendars": False,
+    },
+}
+
+EMPTY_LIFECYCLE = {
+    "source": "calendar_lifecycle_v1",
+    "enabled": True,
+    "has_data": False,
+    "checks": [],
+    "errors": [],
+    "summary": {
+        "calendar_count": 0,
+        "urgent_count": 0,
+        "exit_review_count": 0,
+        "has_open_calendars": False,
+    },
+}
+
+EMPTY_UNIFIED_CALENDAR = {
+    "source": "unified_calendar_trade_engine_v1",
+    "enabled": True,
+    "has_data": False,
+    "new_trade_rows": [],
+    "open_trade_rows": [],
+    "errors": [],
+    "summary": {
+        "new_trade_count": 0,
+        "open_trade_count": 0,
+        "pass_count": 0,
+        "watch_count": 0,
+        "fail_count": 0,
+        "urgent_count": 0,
+    },
+}
+
+
 def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log: list[str] = []
     news: dict[str, list[dict[str, Any]]] = {}
@@ -54,15 +163,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     recommendations: list[dict[str, Any]] = []
     tradier_snapshot: dict[str, dict[str, Any]] = {}
     earnings_events: dict[str, dict[str, Any]] = {}
-    watchlist_candidates: dict[str, Any] = {}
+    watchlist_candidates: dict[str, Any] = dict(EMPTY_WATCHLIST)
     watchlist_review: dict[str, Any] = {}
-    earnings_trade_discovery: dict[str, Any] = {}
+    earnings_trade_discovery: dict[str, Any] = dict(EMPTY_EARNINGS_DISCOVERY)
+    earnings_discovery_quality: dict[str, Any] = dict(EMPTY_EARNINGS_QUALITY)
     portfolio_gap_analysis: dict[str, Any] = {}
-    earnings_discovery_quality: dict[str, Any] = {}
     stock_momentum_strategy: dict[str, Any] = {}
     daily_opportunity_engine: dict[str, Any] = {}
 
-    clean_mode = _normalize_run_mode(run_mode)
+    clean_mode = normalize_run_mode(run_mode)
+    pipeline_status = new_pipeline_status(clean_mode)
 
     def log_print(msg: str) -> None:
         safe_msg = sanitize_for_log(
@@ -80,106 +190,78 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         print(safe_msg, flush=True)
         log.append(safe_msg)
 
+    def attach_status() -> None:
+        tradier_snapshot["_pipeline_status"] = pipeline_status
+
+    def run_optional_step(
+        key: str,
+        label: str,
+        func: Callable[[], Any],
+        fallback: Any,
+        success_message: Callable[[Any], str] | str = "Complete.",
+    ) -> Any:
+        begin_step(pipeline_status, key, label)
+        log_print(label)
+        try:
+            result = func()
+            message = success_message(result) if callable(success_message) else success_message
+            complete_step(pipeline_status, key, message)
+            return result
+        except Exception as exc:
+            message = f"{label} failed: {exc}"
+            log_print(f"ERROR in {label}: {exc}\n{traceback.format_exc()}")
+            fail_step(pipeline_status, key, message, {"error": str(exc)})
+            fallback_copy = dict(fallback) if isinstance(fallback, dict) else fallback
+            if isinstance(fallback_copy, dict):
+                fallback_copy.setdefault("errors", []).append(str(exc))
+            return fallback_copy
+
     log_print("=== RUN STARTED ===")
 
+    begin_step(pipeline_status, "config", "Load configuration")
     try:
-        log_print("robinhood imported OK")
-        log_print("news imported OK")
-        log_print("market data imported OK")
-        log_print("tradier imported OK")
-        log_print("config imported OK")
-        log_print(f"APP_MODE: {config.APP_MODE}")
-        log_print(f"Run mode: {clean_mode}")
-        log_print(f"ROBINHOOD_USERNAME set: {bool(config.ROBINHOOD_USERNAME)}")
-        log_print(f"ROBINHOOD_PASSWORD set: {bool(config.ROBINHOOD_PASSWORD)}")
-        log_print(f"NEWS_API_KEY set: {bool(config.NEWS_API_KEY)}")
-        log_print(f"NEWS_MAX_TICKERS_PER_RUN: {getattr(config, 'NEWS_MAX_TICKERS_PER_RUN', 8)}")
-        log_print(f"FINNHUB_API_KEY set: {bool(config.FINNHUB_API_KEY)}")
-        log_print(f"ALPHA_VANTAGE_API_KEY set: {bool(config.ALPHA_VANTAGE_API_KEY)}")
-        log_print(f"MARKET_BENCHMARK_TICKER: {config.MARKET_BENCHMARK_TICKER}")
-        log_print(f"MARKET_DATA_USE_TRADIER_FALLBACK: {config.MARKET_DATA_USE_TRADIER_FALLBACK}")
-        log_print(f"MARKET_DATA_MAX_TICKERS_PER_RUN: {config.MARKET_DATA_MAX_TICKERS_PER_RUN}")
-        log_print(f"TRADIER_ACCESS_TOKEN set: {bool(config.TRADIER_ACCESS_TOKEN)}")
-        log_print(f"TRADIER_ENV: {config.TRADIER_ENV}")
-        log_print(f"TRADIER_MAX_TICKERS_PER_RUN: {config.TRADIER_MAX_TICKERS_PER_RUN}")
-        log_print(f"CALENDAR_SCANNER_ENABLED: {config.CALENDAR_SCANNER_ENABLED}")
-        log_print(f"CALENDAR_MAX_TICKERS_PER_RUN: {config.CALENDAR_MAX_TICKERS_PER_RUN}")
-        log_print(f"OPEN_OPTIONS_DETECTOR_ENABLED: {config.OPEN_OPTIONS_DETECTOR_ENABLED}")
-        log_print(f"TRADIER_ACCOUNT_ID set: {bool(config.TRADIER_ACCOUNT_ID)}")
-        log_print(f"EARNINGS_PROVIDER_ENABLED: {config.EARNINGS_PROVIDER_ENABLED}")
-        log_print(f"EARNINGS_PROVIDER: {config.EARNINGS_PROVIDER}")
-        log_print(f"EARNINGS_PROVIDER_ORDER: {config.EARNINGS_PROVIDER_ORDER}")
-        log_print(f"EARNINGS_MERGE_PROVIDER_EVENTS: {config.EARNINGS_MERGE_PROVIDER_EVENTS}")
-        log_print(f"ALPHA_VANTAGE_EARNINGS_HORIZON: {config.ALPHA_VANTAGE_EARNINGS_HORIZON}")
-        log_print(f"EARNINGS_LOOKAHEAD_DAYS: {config.EARNINGS_LOOKAHEAD_DAYS}")
-        log_print(f"EARNINGS_DISCOVERY_ENABLED: {config.EARNINGS_DISCOVERY_ENABLED}")
-        log_print(f"EARNINGS_DISCOVERY_WINDOW: +{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS} days")
-        log_print(f"EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN: {config.EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN}")
-        log_print(f"EARNINGS_DISCOVERY_RAW_EVENT_LIMIT: {config.EARNINGS_DISCOVERY_RAW_EVENT_LIMIT}")
-        log_print(f"EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK: {config.EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK}")
-        log_print(f"EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES: {config.EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES}")
-        log_print(f"CALENDAR_LIFECYCLE_ENABLED: {config.CALENDAR_LIFECYCLE_ENABLED}")
-        log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
-        log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
-        log_print(f"UNIFIED_CALENDAR_ENGINE_ENABLED: {config.UNIFIED_CALENDAR_ENGINE_ENABLED}")
-        log_print(f"REPORT_SHOW_CALENDAR_DEBUG_SECTIONS: {config.REPORT_SHOW_CALENDAR_DEBUG_SECTIONS}")
-        log_print(f"WATCHLIST_ENABLED: {config.WATCHLIST_ENABLED}")
-        log_print(f"WATCHLIST_SOURCE: {config.WATCHLIST_SOURCE}")
-        log_print(f"WATCHLIST_NAMES: {config.WATCHLIST_NAMES}")
-        log_print(f"WATCHLIST_MAX_TICKERS_PER_RUN: {config.WATCHLIST_MAX_TICKERS_PER_RUN}")
-        log_print(f"WATCHLIST_PRIORITIZE_FOR_SCANS: {config.WATCHLIST_PRIORITIZE_FOR_SCANS}")
-        log_print(f"PORTFOLIO_GAP_ENABLED: {config.PORTFOLIO_GAP_ENABLED}")
-        log_print(f"PORTFOLIO_GAP_TARGET_PROFILE: {config.PORTFOLIO_GAP_TARGET_PROFILE}")
-        log_print(f"PORTFOLIO_GAP_MACRO_WINNING_BUCKETS: {config.PORTFOLIO_GAP_MACRO_WINNING_BUCKETS}")
-        log_print(f"PORTFOLIO_GAP_MAX_SUGGESTIONS: {config.PORTFOLIO_GAP_MAX_SUGGESTIONS}")
-        log_print(f"STOCK_MOMENTUM_STRATEGY_ENABLED: {config.STOCK_MOMENTUM_STRATEGY_ENABLED}")
-        log_print(f"STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX: {config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX}")
-        log_print(f"DAILY_OPPORTUNITY_ENGINE_ENABLED: {config.DAILY_OPPORTUNITY_ENGINE_ENABLED}")
-        if clean_mode == "dev":
-            log_print(
-                "DEV MODE active: Robinhood will fetch all positions, but external "
-                "provider calls are limited."
-            )
-            log_print(f"DEV_TICKERS: {config.DEV_TICKERS}; DEV_MAX_TICKERS: {config.DEV_MAX_TICKERS}")
-    except Exception as e:
-        log_print(f"IMPORT ERROR config: {e}\n{traceback.format_exc()}")
+        snapshot = config_snapshot(clean_mode)
+        pipeline_status["config_snapshot"] = snapshot
+        for line in ["robinhood imported OK", "news imported OK", "market data imported OK", "tradier imported OK", *config_log_lines(snapshot)]:
+            log_print(line)
+        complete_step(pipeline_status, "config", "Configuration loaded.")
+    except Exception as exc:
+        log_print(f"IMPORT ERROR config: {exc}\n{traceback.format_exc()}")
+        fail_step(pipeline_status, "config", f"Configuration failed: {exc}")
+        finish_pipeline(pipeline_status, "error")
+        attach_status()
         return None, [], news, recommendations, tradier_snapshot, log
 
+    begin_step(pipeline_status, "positions", "Fetch Robinhood positions")
     log_print("Fetching Robinhood positions...")
-
     try:
         positions = get_portfolio_positions()
         log_print(f"get_positions returned {len(positions)} positions")
-    except Exception as e:
-        log_print(f"ERROR in get_positions: {e}\n{traceback.format_exc()}")
-        return None, [], news, recommendations, tradier_snapshot, log
-
-    if not positions:
-        log_print("No positions found or login failed.")
+        if not positions:
+            warn_step(pipeline_status, "positions", "No positions found or login failed.")
+            finish_pipeline(pipeline_status, "error")
+            attach_status()
+            log_print("No positions found or login failed.")
+            return None, [], news, recommendations, tradier_snapshot, log
+        complete_step(pipeline_status, "positions", f"Fetched {len(positions)} position(s).")
+    except Exception as exc:
+        log_print(f"ERROR in get_positions: {exc}\n{traceback.format_exc()}")
+        fail_step(pipeline_status, "positions", f"Robinhood positions failed: {exc}")
+        finish_pipeline(pipeline_status, "error")
+        attach_status()
         return None, [], news, recommendations, tradier_snapshot, log
 
     portfolio_tickers = list(dict.fromkeys(p.get("ticker") for p in positions if p.get("ticker")))
     log_print(f"Tickers: {portfolio_tickers}")
 
-    try:
-        watchlist_candidates = get_watchlist_candidates(
-            positions=positions,
-            log_print=log_print,
-            run_mode=clean_mode,
-        )
-        tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
-    except Exception as e:
-        log_print(f"ERROR in Watchlist Candidate Pipeline v1: {e}\n{traceback.format_exc()}")
-        watchlist_candidates = {
-            "source": "watchlist_pipeline_v1",
-            "enabled": True,
-            "has_data": False,
-            "items": [],
-            "tickers": [],
-            "errors": [str(e)],
-            "summary": {"candidate_count": 0, "new_candidate_count": 0, "already_held_count": 0, "scan_universe_count": 0},
-        }
-        tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
+    watchlist_candidates = run_optional_step(
+        "watchlist_candidates",
+        "Fetching Watchlist Candidate Pipeline v1...",
+        lambda: get_watchlist_candidates(positions=positions, log_print=log_print, run_mode=clean_mode),
+        EMPTY_WATCHLIST,
+        lambda result: f"Watchlist pipeline produced {len((result or {}).get('items', []) or [])} candidate(s).",
+    )
+    tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
 
     analysis_positions = merge_watchlist_universe_positions(positions, watchlist_candidates)
     analysis_tickers = list(dict.fromkeys(p.get("ticker") for p in analysis_positions if p.get("ticker")))
@@ -188,120 +270,97 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"Watchlist tickers added to scan universe: {watchlist_tickers}")
         log_print(f"Analysis universe tickers: {analysis_tickers}")
 
-    base_external_tickers = _external_provider_tickers(analysis_tickers, clean_mode)
+    base_external_tickers = external_provider_tickers(analysis_tickers, clean_mode)
     stock_momentum_market_tickers = select_stock_momentum_market_data_tickers(
         positions=positions,
         watchlist_candidates=watchlist_candidates,
         run_mode=clean_mode,
     )
-    external_tickers = _merge_provider_ticker_sets(base_external_tickers, stock_momentum_market_tickers)
+    external_tickers = merge_provider_ticker_sets(base_external_tickers, stock_momentum_market_tickers)
+    pipeline_status["ticker_universe"] = {
+        "portfolio_tickers": portfolio_tickers,
+        "analysis_tickers": analysis_tickers,
+        "base_external_tickers": base_external_tickers,
+        "stock_momentum_market_tickers": stock_momentum_market_tickers,
+        "external_tickers": external_tickers,
+    }
     if clean_mode == "dev":
         log_print(f"DEV MODE base external provider ticker subset: {base_external_tickers}")
         if stock_momentum_market_tickers:
             log_print(f"DEV MODE stock-momentum market-data additions: {stock_momentum_market_tickers}")
         log_print(f"DEV MODE final external provider ticker subset: {external_tickers}")
 
-    log_print("Fetching relevance-scored news...")
+    news = run_optional_step(
+        "news",
+        "Fetching relevance-scored news...",
+        lambda: fill_missing_news_keys(
+            analysis_tickers,
+            get_news_for_tickers(external_tickers, max_tickers=news_max_tickers_for_mode(clean_mode)),
+        ),
+        fill_missing_news_keys(analysis_tickers, {}),
+        lambda result: f"News map prepared for {len(result or {})} ticker(s); {sum(len(v) for v in (result or {}).values())} article(s).",
+    )
 
-    try:
-        news = get_news_for_tickers(
-            external_tickers,
-            max_tickers=_news_max_tickers_for_mode(clean_mode),
-        )
-        news = _fill_missing_news_keys(analysis_tickers, news)
-        article_count = sum(len(articles) for articles in news.values())
-        log_print(f"News fetched for {len(news)} tickers; {article_count} relevant article(s)")
-    except Exception as e:
-        log_print(f"ERROR in get_news_for_tickers: {e}\n{traceback.format_exc()}")
-        news = _fill_missing_news_keys(analysis_tickers, {})
-
-    log_print("Fetching Finnhub Market Data v1...")
-
-    try:
-        market_metrics = get_market_metrics_for_positions(
+    market_metrics = run_optional_step(
+        "market_data",
+        "Fetching market data / Tradier fallback...",
+        lambda: get_market_metrics_for_positions(
             analysis_positions,
             log_print=log_print,
-            max_tickers=_market_max_tickers_for_mode(clean_mode),
+            max_tickers=market_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
-        )
-    except Exception as e:
-        log_print(f"ERROR in Market Data v1: {e}\n{traceback.format_exc()}")
-        market_metrics = {}
+        ),
+        {},
+        lambda result: f"Market metrics available for {sum(1 for item in (result or {}).values() if item.get('has_data'))}/{len(result or {})} ticker(s).",
+    )
 
-    log_print("Fetching Earnings Timestamp Provider v1...")
-
-    try:
-        earnings_events = get_earnings_for_positions(
+    earnings_events = run_optional_step(
+        "earnings_timestamp",
+        "Fetching Earnings Timestamp Provider v1...",
+        lambda: get_earnings_for_positions(
             analysis_positions,
             log_print=log_print,
-            max_tickers=_earnings_max_tickers_for_mode(clean_mode),
+            max_tickers=earnings_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
-        )
-        fetched_count = sum(1 for item in earnings_events.values() if item.get("has_data"))
-        log_print(f"Earnings Timestamp Provider v1 fetched {fetched_count}/{len(earnings_events)} event(s)")
-    except Exception as e:
-        log_print(f"ERROR in Earnings Timestamp Provider v1: {e}\n{traceback.format_exc()}")
-        earnings_events = {}
+        ),
+        {},
+        lambda result: f"Earnings timestamp events available for {sum(1 for item in (result or {}).values() if item.get('has_data'))}/{len(result or {})} ticker(s).",
+    )
 
-    log_print("Fetching Earnings Trade Discovery v1...")
+    earnings_trade_discovery = run_optional_step(
+        "earnings_discovery",
+        "Fetching Earnings Trade Discovery v1...",
+        lambda: discover_upcoming_earnings_for_calendar_trades(log_print=log_print, run_mode=clean_mode),
+        EMPTY_EARNINGS_DISCOVERY,
+        lambda result: f"Earnings discovery found {len((result or {}).get('items', []) or [])} raw event row(s).",
+    )
 
-    try:
-        earnings_trade_discovery = discover_upcoming_earnings_for_calendar_trades(
-            log_print=log_print,
-            run_mode=clean_mode,
-        )
-    except Exception as e:
-        log_print(f"ERROR in Earnings Trade Discovery v1: {e}\n{traceback.format_exc()}")
-        earnings_trade_discovery = {
-            "source": "earnings_discovery_v1",
-            "enabled": True,
-            "has_data": False,
-            "items": [],
-            "events_by_ticker": {},
-            "tickers": [],
-            "errors": [str(e)],
-            "summary": {"event_count": 0, "ticker_count": 0},
-        }
-
-    log_print("Running Earnings Discovery Quality Filter v1...")
-
-    try:
-        earnings_discovery_quality = filter_earnings_discovery_for_calendar_scan(
+    earnings_discovery_quality = run_optional_step(
+        "earnings_quality_filter",
+        "Running Earnings Discovery Quality Filter v1...",
+        lambda: filter_earnings_discovery_for_calendar_scan(
             earnings_trade_discovery=earnings_trade_discovery,
             log_print=log_print,
             run_mode=clean_mode,
-        )
-    except Exception as e:
-        log_print(f"ERROR in Earnings Discovery Quality Filter v1: {e}\n{traceback.format_exc()}")
-        earnings_discovery_quality = {
-            "source": "earnings_discovery_quality_filter_v1",
-            "enabled": True,
-            "has_data": False,
-            "items": [],
-            "passed_items": [],
-            "rejected_items": [],
-            "tickers": [],
-            "events_by_ticker": {},
-            "errors": [str(e)],
-            "summary": {"raw_event_count": 0, "checked_count": 0, "passed_count": 0, "rejected_count": 0},
-        }
+        ),
+        EMPTY_EARNINGS_QUALITY,
+        lambda result: f"Quality filter passed {len((result or {}).get('passed_items', []) or [])} optionable ticker(s).",
+    )
 
-    log_print("Fetching Tradier Provider v1...")
-
-    try:
-        tradier_snapshot = get_tradier_snapshot_for_positions(
+    tradier_snapshot = run_optional_step(
+        "tradier_snapshot",
+        "Fetching Tradier Provider v1...",
+        lambda: get_tradier_snapshot_for_positions(
             analysis_positions,
             log_print=log_print,
-            max_tickers=_tradier_max_tickers_for_mode(clean_mode),
+            max_tickers=tradier_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
-        )
-        tradier_count = sum(1 for item in tradier_snapshot.values() if item.get("has_data"))
-        log_print(f"Tradier Provider v1 fetched {tradier_count}/{len(tradier_snapshot)} ticker snapshot(s)")
-    except Exception as e:
-        log_print(f"ERROR in Tradier Provider v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot = {}
+        ),
+        {},
+        lambda result: f"Tradier snapshots available for {sum(1 for item in (result or {}).values() if isinstance(item, dict) and item.get('has_data'))}/{len(result or {})} entries.",
+    )
 
-    # Re-attach non-provider metadata after Tradier Provider v1 replaces the snapshot dict.
+    # Re-attach metadata after the Tradier provider replaces the snapshot dict.
     tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
     tradier_snapshot["_earnings_events"] = {
         "items": earnings_events,
@@ -311,231 +370,136 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     tradier_snapshot["_earnings_trade_discovery"] = earnings_trade_discovery
     tradier_snapshot["_earnings_discovery_quality"] = earnings_discovery_quality
 
-    log_print("Running Calendar Spread Screener v1 for earnings-discovery universe...")
-
-    try:
-        discovery_tickers = [
-            str(t).upper().strip()
-            for t in (earnings_discovery_quality or {}).get("tickers", [])
-            if str(t).strip()
-        ]
-        discovery_positions = _positions_from_earnings_discovery(earnings_discovery_quality or earnings_trade_discovery)
+    def run_calendar_scan() -> list[dict[str, Any]]:
+        discovery_tickers = [str(t).upper().strip() for t in (earnings_discovery_quality or {}).get("tickers", []) if str(t).strip()]
+        discovery_positions = positions_from_earnings_discovery(earnings_discovery_quality or earnings_trade_discovery)
         if not discovery_positions:
             log_print("Calendar Spread Screener v1 skipped: no earnings-discovery tickers passed quality precheck.")
-            calendar_candidates = []
-        else:
-            log_print(f"Calendar scanner universe from earnings discovery quality filter: {discovery_tickers}")
-            calendar_candidates = scan_calendar_spreads_for_positions(
-                discovery_positions,
-                log_print=log_print,
-                max_tickers=_calendar_max_tickers_for_mode(clean_mode),
-                allowed_tickers=discovery_tickers,
-            )
-        tradier_snapshot["_calendar_spread_candidates"] = {
-            "items": calendar_candidates,
-            "has_data": bool(calendar_candidates),
-            "source": "tradier",
-            "universe_source": "earnings_discovery_v1",
-        }
-        log_print(f"Calendar Spread Screener v1 produced {len(calendar_candidates)} earnings-discovery candidate(s)")
-    except Exception as e:
-        log_print(f"ERROR in Calendar Spread Screener v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_calendar_spread_candidates"] = {
-            "items": [],
-            "has_data": False,
-            "source": "tradier",
-            "universe_source": "earnings_discovery_v1",
-            "error": str(e),
-        }
-
-    log_print("Running Earnings Calendar Strategy v1...")
-
-    try:
-        earnings_calendar_strategy = evaluate_earnings_calendar_candidates(
-            calendar_candidates=tradier_snapshot.get("_calendar_spread_candidates", {}).get("items", [])
-            if isinstance(tradier_snapshot.get("_calendar_spread_candidates", {}), dict) else [],
-            earnings_events=_merge_earnings_events(earnings_events, earnings_trade_discovery),
+            return []
+        log_print(f"Calendar scanner universe from earnings discovery quality filter: {discovery_tickers}")
+        return scan_calendar_spreads_for_positions(
+            discovery_positions,
             log_print=log_print,
+            max_tickers=calendar_max_tickers_for_mode(clean_mode),
+            allowed_tickers=discovery_tickers,
         )
-        tradier_snapshot["_earnings_calendar_strategy"] = earnings_calendar_strategy
-        summary = earnings_calendar_strategy.get("summary", {}) if isinstance(earnings_calendar_strategy, dict) else {}
-        log_print(
-            "Earnings Calendar Strategy v1 produced "
-            f"{summary.get('candidate_count', 0)} evaluation(s), "
-            f"{summary.get('preferred_count', 0)} preferred, "
-            f"{summary.get('urgent_count', 0)} urgent-review."
-        )
-    except Exception as e:
-        log_print(f"ERROR in Earnings Calendar Strategy v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_earnings_calendar_strategy"] = {
+
+    calendar_candidates = run_optional_step(
+        "calendar_spread_scan",
+        "Running Calendar Spread Screener v1 for earnings-discovery universe...",
+        run_calendar_scan,
+        [],
+        lambda result: f"Calendar scanner produced {len(result or [])} earnings-discovery candidate(s).",
+    )
+    tradier_snapshot["_calendar_spread_candidates"] = {
+        "items": calendar_candidates,
+        "has_data": bool(calendar_candidates),
+        "source": "tradier",
+        "universe_source": "earnings_discovery_v1",
+    }
+
+    earnings_calendar_strategy = run_optional_step(
+        "earnings_calendar_strategy",
+        "Running Earnings Calendar Strategy v1...",
+        lambda: evaluate_earnings_calendar_candidates(
+            calendar_candidates=calendar_candidates,
+            earnings_events=merge_earnings_events(earnings_events, earnings_trade_discovery),
+            log_print=log_print,
+        ),
+        {
             "source": "earnings_calendar_strategy_v1",
             "enabled": True,
             "has_data": False,
             "items": [],
-            "errors": [str(e)],
-            "summary": {
-                "candidate_count": 0,
-                "preferred_count": 0,
-                "urgent_count": 0,
-                "avoid_count": 0,
-                "manual_review_count": 0,
-                "has_candidates": False,
-            },
-        }
+            "errors": [],
+            "summary": {"candidate_count": 0, "preferred_count": 0, "urgent_count": 0, "avoid_count": 0, "manual_review_count": 0, "has_candidates": False},
+        },
+        lambda result: f"Earnings strategy evaluated {((result or {}).get('summary', {}) or {}).get('candidate_count', 0)} candidate(s).",
+    )
+    tradier_snapshot["_earnings_calendar_strategy"] = earnings_calendar_strategy
 
-    log_print("Running Watchlist Stock Candidate Review v2...")
-
-    try:
-        watchlist_review = review_watchlist_candidates(
+    watchlist_review = run_optional_step(
+        "watchlist_review",
+        "Running Watchlist Stock Candidate Review v2...",
+        lambda: review_watchlist_candidates(
             watchlist_result=watchlist_candidates,
             tradier_snapshot=tradier_snapshot,
             earnings_events=earnings_events,
             news_map=news,
             positions=positions,
             log_print=log_print,
-        )
-        tradier_snapshot["_watchlist_review"] = watchlist_review
-        summary = watchlist_review.get("summary", {}) if isinstance(watchlist_review, dict) else {}
-        log_print(
-            "Watchlist Stock Candidate Review v2 produced "
-            f"{summary.get('candidate_count', 0)} review(s), "
-            f"{summary.get('potential_trade_count', 0)} potential trade setup(s), "
-            f"{summary.get('urgent_count', 0)} urgent."
-        )
-    except Exception as e:
-        log_print(f"ERROR in Watchlist Stock Candidate Review v2: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_watchlist_review"] = {
+        ),
+        {
             "source": "watchlist_stock_candidate_review_v2",
             "enabled": True,
             "has_data": False,
             "items": [],
-            "errors": [str(e)],
-            "summary": {
-                "candidate_count": 0,
-                "new_candidate_count": 0,
-                "already_held_count": 0,
-                "potential_trade_count": 0,
-                "urgent_count": 0,
-            },
-        }
+            "errors": [],
+            "summary": {"candidate_count": 0, "new_candidate_count": 0, "already_held_count": 0, "potential_trade_count": 0, "urgent_count": 0},
+        },
+        lambda result: f"Watchlist review produced {((result or {}).get('summary', {}) or {}).get('candidate_count', 0)} row(s).",
+    )
+    tradier_snapshot["_watchlist_review"] = watchlist_review
 
-    log_print("Detecting Open Options Positions v1...")
+    open_options = run_optional_step(
+        "open_options",
+        "Detecting Open Options Positions v1...",
+        lambda: detect_open_options_positions(log_print=log_print),
+        EMPTY_OPEN_OPTIONS,
+        lambda result: f"Detected {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} open calendar(s).",
+    )
+    tradier_snapshot["_open_options_positions"] = open_options
 
-    try:
-        open_options = detect_open_options_positions(log_print=log_print)
-        tradier_snapshot["_open_options_positions"] = open_options
-        summary = open_options.get("summary", {}) if isinstance(open_options, dict) else {}
-        log_print(
-            "Open Options Position Detector v1 produced "
-            f"{summary.get('option_leg_count', 0)} option leg(s) and "
-            f"{summary.get('calendar_count', 0)} detected calendar(s)."
-        )
-    except Exception as e:
-        log_print(f"ERROR in Open Options Position Detector v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_open_options_positions"] = {
-            "source": "tradier",
-            "has_data": False,
-            "enabled": True,
-            "configured": bool(config.TRADIER_ACCESS_TOKEN),
-            "account_ids": [],
-            "positions": [],
-            "option_legs": [],
-            "calendars": [],
-            "errors": [str(e)],
-            "summary": {
-                "account_count": 0,
-                "total_positions": 0,
-                "option_leg_count": 0,
-                "calendar_count": 0,
-                "has_open_options": False,
-                "has_open_calendars": False,
-            },
-        }
-
-    log_print("Running Calendar Lifecycle Check v1...")
-
-    try:
-        lifecycle_checks = evaluate_calendar_lifecycle(
-            open_options=tradier_snapshot.get("_open_options_positions", {}),
+    lifecycle_checks = run_optional_step(
+        "calendar_lifecycle",
+        "Running Calendar Lifecycle Check v1...",
+        lambda: evaluate_calendar_lifecycle(
+            open_options=open_options,
             tradier_snapshot=tradier_snapshot,
-            earnings_events=_merge_earnings_events(earnings_events, earnings_trade_discovery),
+            earnings_events=merge_earnings_events(earnings_events, earnings_trade_discovery),
             log_print=log_print,
-        )
-        tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
-        summary = lifecycle_checks.get("summary", {}) if isinstance(lifecycle_checks, dict) else {}
-        log_print(
-            "Calendar Lifecycle Check v1 produced "
-            f"{summary.get('calendar_count', 0)} check(s), "
-            f"{summary.get('urgent_count', 0)} urgent, "
-            f"{summary.get('exit_review_count', 0)} exit-review."
-        )
-    except Exception as e:
-        log_print(f"ERROR in Calendar Lifecycle Check v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_calendar_lifecycle_checks"] = {
-            "source": "calendar_lifecycle_v1",
-            "enabled": True,
-            "has_data": False,
-            "checks": [],
-            "errors": [str(e)],
-            "summary": {
-                "calendar_count": 0,
-                "urgent_count": 0,
-                "exit_review_count": 0,
-                "has_open_calendars": False,
-            },
-        }
+        ),
+        EMPTY_LIFECYCLE,
+        lambda result: f"Lifecycle checker produced {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} check(s).",
+    )
+    tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
 
-    log_print("Running Unified Calendar Trade Engine v1...")
-
-    try:
-        unified_calendar_engine = build_unified_calendar_trade_engine(
+    unified_calendar_engine = run_optional_step(
+        "unified_calendar_engine",
+        "Running Unified Calendar Trade Engine v1...",
+        lambda: build_unified_calendar_trade_engine(
             earnings_trade_discovery=earnings_trade_discovery,
             earnings_discovery_quality=earnings_discovery_quality,
-            calendar_candidates=tradier_snapshot.get("_calendar_spread_candidates", {}).get("items", [])
-            if isinstance(tradier_snapshot.get("_calendar_spread_candidates", {}), dict) else [],
-            earnings_calendar_strategy=tradier_snapshot.get("_earnings_calendar_strategy", {}),
-            open_options=tradier_snapshot.get("_open_options_positions", {}),
-            lifecycle_checks=tradier_snapshot.get("_calendar_lifecycle_checks", {}),
+            calendar_candidates=calendar_candidates,
+            earnings_calendar_strategy=earnings_calendar_strategy,
+            open_options=open_options,
+            lifecycle_checks=lifecycle_checks,
             log_print=log_print,
-        )
-        tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
-    except Exception as e:
-        log_print(f"ERROR in Unified Calendar Trade Engine v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_unified_calendar_trade_engine"] = {
-            "source": "unified_calendar_trade_engine_v1",
-            "enabled": True,
-            "has_data": False,
-            "new_trade_rows": [],
-            "open_trade_rows": [],
-            "errors": [str(e)],
-            "summary": {
-                "new_trade_count": 0,
-                "open_trade_count": 0,
-                "pass_count": 0,
-                "watch_count": 0,
-                "fail_count": 0,
-                "urgent_count": 0,
-            },
-        }
+        ),
+        EMPTY_UNIFIED_CALENDAR,
+        lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
+    )
+    tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
 
+    begin_step(pipeline_status, "portfolio_scoring", "Running Portfolio Scoring v2 inputs...")
     log_print("Running Portfolio Scoring v2 inputs...")
-
     try:
-        strategy = PortfolioSnapshotStrategy()
-        recommendations = strategy.evaluate_portfolio(
+        recommendations = PortfolioSnapshotStrategy().evaluate_portfolio(
             positions=positions,
             news_map=news,
             market_metrics=market_metrics,
         )
         log_print(f"Portfolio scoring generated {len(recommendations)} recommendation(s)")
-    except Exception as e:
-        log_print(f"ERROR in Portfolio Scoring: {e}\n{traceback.format_exc()}")
+        complete_step(pipeline_status, "portfolio_scoring", f"Generated {len(recommendations)} recommendation(s).")
+    except Exception as exc:
+        log_print(f"ERROR in Portfolio Scoring: {exc}\n{traceback.format_exc()}")
         recommendations = []
+        fail_step(pipeline_status, "portfolio_scoring", f"Portfolio scoring failed: {exc}")
 
-    log_print("Running Portfolio Gap / Sector Suggestions v1...")
-
-    try:
-        portfolio_gap_analysis = build_portfolio_gap_analysis(
+    portfolio_gap_analysis = run_optional_step(
+        "portfolio_gap",
+        "Running Portfolio Gap / Sector Suggestions v1...",
+        lambda: build_portfolio_gap_analysis(
             positions=positions,
             watchlist_candidates=watchlist_candidates,
             watchlist_review=watchlist_review,
@@ -543,18 +507,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             market_metrics=market_metrics,
             news_map=news,
             log_print=log_print,
-        )
-        tradier_snapshot["_portfolio_gap"] = portfolio_gap_analysis
-        summary = portfolio_gap_analysis.get("summary", {}) if isinstance(portfolio_gap_analysis, dict) else {}
-        log_print(
-            "Portfolio Gap / Sector Suggestions v1 summary: "
-            f"{summary.get('suggestion_count', 0)} suggestion(s), "
-            f"{summary.get('underweight_count', 0)} underweight/missing bucket(s), "
-            f"{summary.get('overweight_count', 0)} overweight/high bucket(s)."
-        )
-    except Exception as e:
-        log_print(f"ERROR in Portfolio Gap / Sector Suggestions v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_portfolio_gap"] = {
+        ),
+        {
             "source": "portfolio_gap_sector_suggestions_v1",
             "enabled": True,
             "has_data": False,
@@ -562,13 +516,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "exposure_rows": [],
             "risk_rows": [],
             "suggestions": [],
-            "errors": [str(e)],
-        }
+            "errors": [],
+        },
+        lambda result: f"Portfolio gap produced {len((result or {}).get('suggestions', []) or [])} suggestion(s).",
+    )
+    tradier_snapshot["_portfolio_gap"] = portfolio_gap_analysis
 
-    log_print("Running Stock Momentum Add Strategy v1...")
-
-    try:
-        stock_momentum_strategy = build_stock_momentum_strategy(
+    stock_momentum_strategy = run_optional_step(
+        "stock_momentum",
+        "Running Stock Momentum Add Strategy v1...",
+        lambda: build_stock_momentum_strategy(
             positions=positions,
             watchlist_candidates=watchlist_candidates,
             recommendations=recommendations,
@@ -576,165 +533,45 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             portfolio_gap_analysis=portfolio_gap_analysis,
             news_map=news,
             log_print=log_print,
-        )
-        tradier_snapshot["_stock_momentum_strategy"] = stock_momentum_strategy
-    except Exception as e:
-        log_print(f"ERROR in Stock Momentum Add Strategy v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_stock_momentum_strategy"] = {
-            "source": "stock_momentum_add_strategy_v1",
-            "enabled": True,
-            "has_data": False,
-            "items": [],
-            "errors": [str(e)],
-            "summary": {},
-        }
+        ),
+        {"source": "stock_momentum_add_strategy_v1", "enabled": True, "has_data": False, "items": [], "errors": [], "summary": {}},
+        lambda result: f"Stock momentum produced {len((result or {}).get('items', []) or [])} candidate(s).",
+    )
+    tradier_snapshot["_stock_momentum_strategy"] = stock_momentum_strategy
 
-    log_print("Running Daily Opportunity Engine v1...")
-
-    try:
-        daily_opportunity_engine = build_daily_opportunity_engine(
-            unified_calendar_engine=tradier_snapshot.get("_unified_calendar_trade_engine", {}),
-            stock_momentum_strategy=tradier_snapshot.get("_stock_momentum_strategy", {}),
-            portfolio_gap_analysis=tradier_snapshot.get("_portfolio_gap", {}),
+    daily_opportunity_engine = run_optional_step(
+        "daily_opportunity",
+        "Running Daily Opportunity Engine v1...",
+        lambda: build_daily_opportunity_engine(
+            unified_calendar_engine=unified_calendar_engine,
+            stock_momentum_strategy=stock_momentum_strategy,
+            portfolio_gap_analysis=portfolio_gap_analysis,
             recommendations=recommendations,
             log_print=log_print,
-        )
-        tradier_snapshot["_daily_opportunity_engine"] = daily_opportunity_engine
-    except Exception as e:
-        log_print(f"ERROR in Daily Opportunity Engine v1: {e}\n{traceback.format_exc()}")
-        tradier_snapshot["_daily_opportunity_engine"] = {
-            "source": "daily_opportunity_engine_v1",
-            "enabled": True,
-            "has_data": False,
-            "actions": [],
-            "errors": [str(e)],
-            "summary": {},
-        }
+        ),
+        {"source": "daily_opportunity_engine_v1", "enabled": True, "has_data": False, "actions": [], "errors": [], "summary": {}},
+        lambda result: f"Daily opportunity engine produced {len((result or {}).get('actions', []) or [])} action(s).",
+    )
+    tradier_snapshot["_daily_opportunity_engine"] = daily_opportunity_engine
 
+    begin_step(pipeline_status, "format_payload", "Formatting payload")
     log_print("Formatting payload...")
-
     try:
+        finish_pipeline(pipeline_status, "complete")
+        attach_status()
         payload = format_payload(positions, news, recommendations, tradier_snapshot)
         if clean_mode == "dev":
             payload = "MODE: DEV — external provider calls limited for API-budget-safe testing.\n\n" + payload
         log_print(f"Payload length: {len(payload)} chars")
-    except Exception as e:
-        log_print(f"ERROR in format_payload: {e}\n{traceback.format_exc()}")
+        complete_step(pipeline_status, "format_payload", f"Payload formatted: {len(payload)} chars.")
+        finish_pipeline(pipeline_status, "complete")
+        attach_status()
+    except Exception as exc:
+        log_print(f"ERROR in format_payload: {exc}\n{traceback.format_exc()}")
+        fail_step(pipeline_status, "format_payload", f"Report payload formatting failed: {exc}")
+        finish_pipeline(pipeline_status, "error")
+        attach_status()
         return None, positions, news, recommendations, tradier_snapshot, log
 
     log_print("=== RUN COMPLETE ===")
     return payload, positions, news, recommendations, tradier_snapshot, log
-
-
-def _positions_from_earnings_discovery(discovery: dict[str, Any]) -> list[dict[str, Any]]:
-    positions: list[dict[str, Any]] = []
-    source_items = (discovery or {}).get("passed_items") or (discovery or {}).get("items", []) or []
-    for raw in source_items:
-        event = raw.get("event") if isinstance(raw, dict) and isinstance(raw.get("event"), dict) else raw
-        ticker = str((raw or {}).get("ticker") or (event or {}).get("ticker") or (event or {}).get("symbol") or "").upper().strip()
-        if not ticker:
-            continue
-        positions.append(
-            {
-                "ticker": ticker,
-                "quantity": 0,
-                "avg_buy_price": None,
-                "current_price": None,
-                "gain_loss": None,
-                "gain_loss_pct": None,
-                "market_value": 0,
-                "account": "Earnings Discovery",
-                "source": str((discovery or {}).get("source") or "earnings_discovery_v2"),
-                "earnings_event": event,
-            }
-        )
-    return positions
-
-
-def _merge_earnings_events(
-    earnings_events: dict[str, dict[str, Any]],
-    discovery: dict[str, Any],
-) -> dict[str, dict[str, Any]]:
-    merged = dict(earnings_events or {})
-    for ticker, event in ((discovery or {}).get("events_by_ticker", {}) or {}).items():
-        clean = str(ticker).upper().strip()
-        if clean:
-            merged[clean] = event
-    return merged
-
-
-def _normalize_run_mode(run_mode: str | None) -> str:
-    value = str(run_mode or config.APP_MODE or "prod").strip().lower()
-    return "dev" if value in {"dev", "development", "test", "testing"} else "prod"
-
-
-def _merge_provider_ticker_sets(primary: list[str], secondary: list[str]) -> list[str]:
-    merged: list[str] = []
-    for ticker in list(primary or []) + list(secondary or []):
-        clean = str(ticker).upper().strip()
-        if clean and clean not in merged:
-            merged.append(clean)
-    return merged
-
-
-def _external_provider_tickers(tickers: list[str], run_mode: str) -> list[str]:
-    normalized = [str(t).upper().strip() for t in tickers if str(t).strip()]
-    if run_mode != "dev":
-        return normalized
-
-    preferred = [str(t).upper().strip() for t in config.DEV_TICKERS if str(t).strip()]
-    selected: list[str] = []
-
-    for ticker in preferred:
-        if ticker in normalized and ticker not in selected:
-            selected.append(ticker)
-
-    for ticker in normalized:
-        if len(selected) >= max(1, int(config.DEV_MAX_TICKERS or 1)):
-            break
-        if ticker not in selected:
-            selected.append(ticker)
-
-    return selected[: max(1, int(config.DEV_MAX_TICKERS or 1))]
-
-
-def _news_max_tickers_for_mode(run_mode: str) -> int | None:
-    if run_mode == "dev":
-        return max(1, int(config.DEV_MAX_TICKERS or 1))
-    return None
-
-
-def _market_max_tickers_for_mode(run_mode: str) -> int | None:
-    if run_mode == "dev":
-        # Allow a few watchlist momentum names in addition to DEV_TICKERS while
-        # still keeping API usage bounded.
-        return max(1, int(config.DEV_MAX_TICKERS or 1) + int(getattr(config, "STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX", 0) or 0))
-    return max(1, int(config.MARKET_DATA_MAX_TICKERS_PER_RUN or 1))
-
-
-def _tradier_max_tickers_for_mode(run_mode: str) -> int | None:
-    if run_mode == "dev":
-        return max(1, int(config.DEV_MAX_TICKERS or 1))
-    return max(1, int(config.TRADIER_MAX_TICKERS_PER_RUN or 1))
-
-
-def _calendar_max_tickers_for_mode(run_mode: str) -> int | None:
-    if run_mode == "dev":
-        return max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES", config.DEV_MAX_TICKERS) or config.DEV_MAX_TICKERS or 1))
-    return max(1, int(config.CALENDAR_MAX_TICKERS_PER_RUN or 1))
-
-
-def _earnings_max_tickers_for_mode(run_mode: str) -> int | None:
-    if run_mode == "dev":
-        return max(1, int(config.DEV_MAX_TICKERS or 1))
-    return max(1, int(config.EARNINGS_MAX_TICKERS_PER_RUN or 1))
-
-
-def _fill_missing_news_keys(
-    all_tickers: list[str],
-    news: dict[str, list[dict[str, Any]]],
-) -> dict[str, list[dict[str, Any]]]:
-    filled = {str(t).upper().strip(): [] for t in all_tickers if str(t).strip()}
-    for ticker, articles in news.items():
-        filled[str(ticker).upper().strip()] = articles or []
-    return filled

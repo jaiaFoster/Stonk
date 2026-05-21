@@ -6,7 +6,7 @@ continue using `python main.py`, while the real application code lives in
 `app/main.py`.
 """
 
-from app.main import app, health, run, run_result, run_status, trigger
+from app.main import app, config_check, health, run, run_result, run_status, trigger
 
 
 if __name__ == "__main__":
