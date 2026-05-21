@@ -28,6 +28,7 @@ from app.services.unified_calendar_trade_engine_service import build_unified_cal
 from app.services.portfolio_service import get_portfolio_positions
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
 from app.services.watchlist_review_service import review_watchlist_candidates
+from app.services.portfolio_gap_service import build_portfolio_gap_analysis
 from app.services.report_service import format_payload
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
 from app.utils.log_safety import sanitize_for_log
@@ -53,6 +54,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     watchlist_candidates: dict[str, Any] = {}
     watchlist_review: dict[str, Any] = {}
     earnings_trade_discovery: dict[str, Any] = {}
+    portfolio_gap_analysis: dict[str, Any] = {}
 
     clean_mode = _normalize_run_mode(run_mode)
 
@@ -63,6 +65,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 config.ROBINHOOD_PASSWORD,
                 config.NEWS_API_KEY,
                 config.FINNHUB_API_KEY,
+                config.ALPHA_VANTAGE_API_KEY,
                 config.TRADIER_ACCESS_TOKEN,
                 config.RUN_TOKEN,
                 config.NTFY_TOPIC,
@@ -86,6 +89,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"NEWS_API_KEY set: {bool(config.NEWS_API_KEY)}")
         log_print(f"NEWS_MAX_TICKERS_PER_RUN: {getattr(config, 'NEWS_MAX_TICKERS_PER_RUN', 8)}")
         log_print(f"FINNHUB_API_KEY set: {bool(config.FINNHUB_API_KEY)}")
+        log_print(f"ALPHA_VANTAGE_API_KEY set: {bool(config.ALPHA_VANTAGE_API_KEY)}")
         log_print(f"MARKET_BENCHMARK_TICKER: {config.MARKET_BENCHMARK_TICKER}")
         log_print(f"MARKET_DATA_USE_TRADIER_FALLBACK: {config.MARKET_DATA_USE_TRADIER_FALLBACK}")
         log_print(f"MARKET_DATA_MAX_TICKERS_PER_RUN: {config.MARKET_DATA_MAX_TICKERS_PER_RUN}")
@@ -98,6 +102,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"TRADIER_ACCOUNT_ID set: {bool(config.TRADIER_ACCOUNT_ID)}")
         log_print(f"EARNINGS_PROVIDER_ENABLED: {config.EARNINGS_PROVIDER_ENABLED}")
         log_print(f"EARNINGS_PROVIDER: {config.EARNINGS_PROVIDER}")
+        log_print(f"EARNINGS_PROVIDER_ORDER: {config.EARNINGS_PROVIDER_ORDER}")
+        log_print(f"EARNINGS_MERGE_PROVIDER_EVENTS: {config.EARNINGS_MERGE_PROVIDER_EVENTS}")
+        log_print(f"ALPHA_VANTAGE_EARNINGS_HORIZON: {config.ALPHA_VANTAGE_EARNINGS_HORIZON}")
         log_print(f"EARNINGS_LOOKAHEAD_DAYS: {config.EARNINGS_LOOKAHEAD_DAYS}")
         log_print(f"EARNINGS_DISCOVERY_ENABLED: {config.EARNINGS_DISCOVERY_ENABLED}")
         log_print(f"EARNINGS_DISCOVERY_WINDOW: +{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS} days")
@@ -106,11 +113,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT}")
         log_print(f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {config.EARNINGS_CALENDAR_STRATEGY_ENABLED}")
         log_print(f"UNIFIED_CALENDAR_ENGINE_ENABLED: {config.UNIFIED_CALENDAR_ENGINE_ENABLED}")
+        log_print(f"REPORT_SHOW_CALENDAR_DEBUG_SECTIONS: {config.REPORT_SHOW_CALENDAR_DEBUG_SECTIONS}")
         log_print(f"WATCHLIST_ENABLED: {config.WATCHLIST_ENABLED}")
         log_print(f"WATCHLIST_SOURCE: {config.WATCHLIST_SOURCE}")
         log_print(f"WATCHLIST_NAMES: {config.WATCHLIST_NAMES}")
         log_print(f"WATCHLIST_MAX_TICKERS_PER_RUN: {config.WATCHLIST_MAX_TICKERS_PER_RUN}")
         log_print(f"WATCHLIST_PRIORITIZE_FOR_SCANS: {config.WATCHLIST_PRIORITIZE_FOR_SCANS}")
+        log_print(f"PORTFOLIO_GAP_ENABLED: {config.PORTFOLIO_GAP_ENABLED}")
+        log_print(f"PORTFOLIO_GAP_TARGET_PROFILE: {config.PORTFOLIO_GAP_TARGET_PROFILE}")
+        log_print(f"PORTFOLIO_GAP_MACRO_WINNING_BUCKETS: {config.PORTFOLIO_GAP_MACRO_WINNING_BUCKETS}")
+        log_print(f"PORTFOLIO_GAP_MAX_SUGGESTIONS: {config.PORTFOLIO_GAP_MAX_SUGGESTIONS}")
         if clean_mode == "dev":
             log_print(
                 "DEV MODE active: Robinhood will fetch all positions, but external "
@@ -473,6 +485,39 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     except Exception as e:
         log_print(f"ERROR in Portfolio Scoring: {e}\n{traceback.format_exc()}")
         recommendations = []
+
+    log_print("Running Portfolio Gap / Sector Suggestions v1...")
+
+    try:
+        portfolio_gap_analysis = build_portfolio_gap_analysis(
+            positions=positions,
+            watchlist_candidates=watchlist_candidates,
+            watchlist_review=watchlist_review,
+            recommendations=recommendations,
+            market_metrics=market_metrics,
+            news_map=news,
+            log_print=log_print,
+        )
+        tradier_snapshot["_portfolio_gap"] = portfolio_gap_analysis
+        summary = portfolio_gap_analysis.get("summary", {}) if isinstance(portfolio_gap_analysis, dict) else {}
+        log_print(
+            "Portfolio Gap / Sector Suggestions v1 summary: "
+            f"{summary.get('suggestion_count', 0)} suggestion(s), "
+            f"{summary.get('underweight_count', 0)} underweight/missing bucket(s), "
+            f"{summary.get('overweight_count', 0)} overweight/high bucket(s)."
+        )
+    except Exception as e:
+        log_print(f"ERROR in Portfolio Gap / Sector Suggestions v1: {e}\n{traceback.format_exc()}")
+        tradier_snapshot["_portfolio_gap"] = {
+            "source": "portfolio_gap_sector_suggestions_v1",
+            "enabled": True,
+            "has_data": False,
+            "summary": {},
+            "exposure_rows": [],
+            "risk_rows": [],
+            "suggestions": [],
+            "errors": [str(e)],
+        }
 
     log_print("Formatting payload...")
 

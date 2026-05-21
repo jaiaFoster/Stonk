@@ -1,16 +1,22 @@
 """
 app/providers/earnings_provider.py — Earnings timestamp/data provider.
 
-Earnings Provider v1 is intentionally read-only and defensive. It currently
-uses Finnhub's earnings calendar endpoint when FINNHUB_API_KEY is available.
-If Finnhub denies access, returns no data, or does not include an earnings
-hour, the app still completes and marks the event as unavailable/unknown.
+Earnings Provider v2 is intentionally read-only and defensive. It can use
+multiple provider sources and merge/dedupe their results:
+
+- Finnhub: JSON earnings calendar, often includes session/hour when available.
+- Alpha Vantage: CSV earnings calendar, useful as a secondary universe source.
+
+If one provider fails, rate-limits, or returns no data, the app still completes
+and falls back to the next configured provider when possible.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+import csv
+import io
+from datetime import date, datetime, timezone
+from typing import Any, Protocol
 
 import requests
 
@@ -32,9 +38,21 @@ class EarningsRateLimitError(EarningsProviderError):
     """Raised when the configured earnings provider rate limits requests."""
 
 
+class EarningsProvider(Protocol):
+    name: str
+
+    @property
+    def is_configured(self) -> bool: ...
+
+    def get_earnings_calendar(self, symbol: str, start_date: date, end_date: date) -> list[dict[str, Any]]: ...
+
+    def get_earnings_calendar_range(self, start_date: date, end_date: date) -> list[dict[str, Any]]: ...
+
+
 class FinnhubEarningsProvider:
     """Small client for Finnhub earnings calendar data."""
 
+    name = "finnhub"
     base_url = "https://finnhub.io/api/v1"
 
     def __init__(self, api_key: str | None = None):
@@ -67,7 +85,6 @@ class FinnhubEarningsProvider:
         if isinstance(data, dict):
             raw_items = _as_list(data.get("earningsCalendar"))
         return [self._normalize_item(symbol, item) for item in raw_items if isinstance(item, dict)]
-
 
     def get_earnings_calendar_range(
         self,
@@ -104,7 +121,7 @@ class FinnhubEarningsProvider:
         url = f"{self.base_url}{path}"
         headers = {
             "Accept": "application/json",
-            # Finnhub supports token-based auth; header form avoids logging query tokens.
+            # Header form avoids logging query tokens.
             "X-Finnhub-Token": self.api_key,
         }
 
@@ -118,7 +135,7 @@ class FinnhubEarningsProvider:
             )
         except requests.RequestException as e:
             raise EarningsProviderError(
-                sanitize_for_log(f"Earnings provider request failed before response: {e}", [self.api_key])
+                sanitize_for_log(f"Finnhub earnings request failed before response: {e}", [self.api_key])
             ) from e
 
         if response.status_code in {401, 403}:
@@ -167,6 +184,183 @@ class FinnhubEarningsProvider:
         }
 
 
+class AlphaVantageEarningsProvider:
+    """Client for Alpha Vantage earnings calendar CSV data."""
+
+    name = "alphavantage"
+    base_url = "https://www.alphavantage.co/query"
+
+    def __init__(self, api_key: str | None = None):
+        self.api_key = api_key or config.ALPHA_VANTAGE_API_KEY
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.api_key)
+
+    def get_earnings_calendar(
+        self,
+        symbol: str,
+        start_date: date,
+        end_date: date,
+    ) -> list[dict[str, Any]]:
+        symbol = str(symbol or "").upper().strip()
+        if not symbol:
+            return []
+        rows = self._download_calendar_rows(symbol=symbol)
+        return [self._normalize_item(row) for row in rows if self._row_in_window(row, start_date, end_date)]
+
+    def get_earnings_calendar_range(
+        self,
+        start_date: date,
+        end_date: date,
+    ) -> list[dict[str, Any]]:
+        rows = self._download_calendar_rows(symbol=None)
+        return [self._normalize_item(row) for row in rows if self._row_in_window(row, start_date, end_date)]
+
+    def _download_calendar_rows(self, symbol: str | None = None) -> list[dict[str, Any]]:
+        if not self.api_key:
+            raise EarningsAuthError("ALPHA_VANTAGE_API_KEY is not set.")
+
+        params = {
+            "function": "EARNINGS_CALENDAR",
+            "horizon": _safe_alpha_horizon(config.ALPHA_VANTAGE_EARNINGS_HORIZON),
+            "apikey": self.api_key,
+        }
+        if symbol:
+            params["symbol"] = symbol
+
+        try:
+            response = requests.get(
+                self.base_url,
+                params=params,
+                headers={"Accept": "text/csv,application/json;q=0.9,*/*;q=0.8"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+        except requests.RequestException as e:
+            raise EarningsProviderError(
+                sanitize_for_log(f"Alpha Vantage earnings request failed before response: {e}", [self.api_key])
+            ) from e
+
+        if response.status_code in {401, 403}:
+            raise EarningsAuthError(f"Alpha Vantage earnings calendar returned HTTP {response.status_code}.")
+        if response.status_code == 429:
+            raise EarningsRateLimitError("Alpha Vantage earnings calendar returned HTTP 429 Too Many Requests.")
+        if response.status_code >= 400:
+            raise EarningsProviderError(
+                sanitize_for_log(
+                    f"Alpha Vantage earnings calendar returned HTTP {response.status_code}: {response.text[:300]}",
+                    [self.api_key],
+                )
+            )
+
+        text = response.text or ""
+        stripped = text.strip()
+        if not stripped:
+            return []
+        # Alpha Vantage sometimes returns JSON-ish error/rate-limit payloads.
+        lowered = stripped.lower()
+        if stripped.startswith("{") or "thank you for using alpha vantage" in lowered or "our standard api call frequency" in lowered:
+            if "standard api call frequency" in lowered or "thank you" in lowered:
+                raise EarningsRateLimitError("Alpha Vantage earnings calendar returned an API frequency/limit message.")
+            raise EarningsProviderError(f"Alpha Vantage earnings calendar returned non-CSV payload: {stripped[:200]}")
+
+        reader = csv.DictReader(io.StringIO(text))
+        return [row for row in reader if isinstance(row, dict)]
+
+    @staticmethod
+    def _row_in_window(row: dict[str, Any], start_date: date, end_date: date) -> bool:
+        event_date = _parse_date(row.get("reportDate") or row.get("date") or row.get("earnings_date"))
+        if not event_date:
+            return False
+        return start_date <= event_date <= end_date
+
+    @staticmethod
+    def _normalize_item(raw: dict[str, Any]) -> dict[str, Any]:
+        symbol = str(raw.get("symbol") or raw.get("ticker") or "").upper().strip()
+        earnings_date = raw.get("reportDate") or raw.get("date") or raw.get("earnings_date")
+        return {
+            "ticker": symbol,
+            "symbol": symbol,
+            "source": "alphavantage",
+            "earnings_date": earnings_date,
+            "date": earnings_date,
+            "hour": None,
+            "time_of_day": "unknown",
+            "session_label": "Unknown",
+            # Alpha Vantage's earnings-calendar endpoint gives dates, but not a
+            # before-open/after-close timestamp in this v1 integration.
+            "is_timestamp_confirmed": False,
+            "quarter": None,
+            "year": None,
+            "company_name": raw.get("name"),
+            "fiscal_date_ending": raw.get("fiscalDateEnding"),
+            "eps_estimate": _float_or_none(raw.get("estimate")),
+            "eps_actual": None,
+            "revenue_estimate": None,
+            "revenue_actual": None,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "raw": raw,
+        }
+
+
+class CompositeEarningsProvider:
+    """Provider that merges/falls back across configured earnings sources."""
+
+    name = "composite"
+
+    def __init__(self, providers: list[EarningsProvider]):
+        self.providers = [provider for provider in providers if provider.is_configured]
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.providers)
+
+    @property
+    def provider_names(self) -> list[str]:
+        return [provider.name for provider in self.providers]
+
+    def get_earnings_calendar(self, symbol: str, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        return self._call_and_merge("get_earnings_calendar", symbol, start_date, end_date)
+
+    def get_earnings_calendar_range(self, start_date: date, end_date: date) -> list[dict[str, Any]]:
+        return self._call_and_merge("get_earnings_calendar_range", start_date, end_date)
+
+    def _call_and_merge(self, method_name: str, *args: Any) -> list[dict[str, Any]]:
+        if not self.providers:
+            raise EarningsAuthError("No earnings providers are configured.")
+
+        collected: list[dict[str, Any]] = []
+        provider_errors: list[str] = []
+
+        for provider in self.providers:
+            try:
+                items = getattr(provider, method_name)(*args)
+            except EarningsRateLimitError as e:
+                provider_errors.append(f"{provider.name}: {e}")
+                continue
+            except EarningsProviderError as e:
+                provider_errors.append(f"{provider.name}: {e}")
+                continue
+            except Exception as e:
+                provider_errors.append(f"{provider.name}: {e}")
+                continue
+
+            if items:
+                collected.extend(items)
+                if not config.EARNINGS_MERGE_PROVIDER_EVENTS:
+                    break
+
+        if collected:
+            return _merge_dedupe_events(collected)
+
+        # Avoid hard-failing the whole run just because both calendars are empty.
+        # Raise only when every configured provider errored, which helps logs show
+        # access/limit problems clearly.
+        if provider_errors and len(provider_errors) >= len(self.providers):
+            raise EarningsProviderError("; ".join(provider_errors[:3]))
+        return []
+
+
 def normalize_earnings_hour(hour: str | None) -> tuple[str, str]:
     """Normalize provider hour strings into stable app categories."""
     value = str(hour or "").lower().strip()
@@ -179,15 +373,90 @@ def normalize_earnings_hour(hour: str | None) -> tuple[str, str]:
     return "unknown", "Unknown"
 
 
-def get_provider() -> FinnhubEarningsProvider:
+def get_provider() -> CompositeEarningsProvider:
     """Return the configured earnings provider client."""
-    # Provider switch exists so a later FMP/Benzinga implementation can be added
-    # without changing analysis_service/report_service.
-    provider_name = str(config.EARNINGS_PROVIDER or "finnhub").strip().lower()
-    if provider_name not in {"finnhub", "default"}:
-        # For now, unsupported provider names gracefully fall back to Finnhub.
-        return FinnhubEarningsProvider()
-    return FinnhubEarningsProvider()
+    providers_by_name: dict[str, EarningsProvider] = {
+        "finnhub": FinnhubEarningsProvider(),
+        "alphavantage": AlphaVantageEarningsProvider(),
+        "alpha_vantage": AlphaVantageEarningsProvider(),
+        "av": AlphaVantageEarningsProvider(),
+    }
+
+    ordered: list[EarningsProvider] = []
+    for name in config.EARNINGS_PROVIDER_ORDER or [config.EARNINGS_PROVIDER or "finnhub"]:
+        provider = providers_by_name.get(str(name).strip().lower())
+        if provider and provider not in ordered:
+            ordered.append(provider)
+
+    # Backward compatibility: if EARNINGS_PROVIDER_ORDER is misconfigured, use
+    # the legacy EARNINGS_PROVIDER value.
+    if not ordered:
+        ordered.append(providers_by_name.get(config.EARNINGS_PROVIDER, FinnhubEarningsProvider()))
+
+    return CompositeEarningsProvider(ordered)
+
+
+def configured_provider_names() -> list[str]:
+    provider = get_provider()
+    return provider.provider_names
+
+
+def earnings_provider_secret_values() -> list[str | None]:
+    return [
+        config.FINNHUB_API_KEY,
+        config.ALPHA_VANTAGE_API_KEY,
+        config.RUN_TOKEN,
+    ]
+
+
+def _merge_dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for event in events:
+        ticker = str(event.get("ticker") or event.get("symbol") or "").upper().strip()
+        event_date = str(event.get("earnings_date") or event.get("date") or "")[:10]
+        if not ticker or not event_date:
+            continue
+        key = (ticker, event_date)
+        existing = merged.get(key)
+        if not existing:
+            merged[key] = dict(event)
+            merged[key]["sources_seen"] = [str(event.get("source") or "unknown")]
+            continue
+
+        source = str(event.get("source") or "unknown")
+        sources = list(existing.get("sources_seen") or [])
+        if source not in sources:
+            sources.append(source)
+        existing["sources_seen"] = sources
+
+        # Prefer entries with confirmed session/hour data; otherwise keep the
+        # earlier provider result and fill missing estimate/company fields.
+        if event.get("is_timestamp_confirmed") and not existing.get("is_timestamp_confirmed"):
+            replacement = dict(event)
+            replacement["sources_seen"] = sources
+            replacement["secondary_sources"] = [s for s in sources if s != str(replacement.get("source") or "unknown")]
+            merged[key] = replacement
+        else:
+            for field in ["eps_estimate", "company_name", "fiscal_date_ending"]:
+                if existing.get(field) in {None, ""} and event.get(field) not in {None, ""}:
+                    existing[field] = event.get(field)
+            existing["secondary_sources"] = [s for s in sources if s != str(existing.get("source") or "unknown")]
+
+    return sorted(merged.values(), key=lambda item: (str(item.get("earnings_date") or "9999-99-99"), str(item.get("ticker") or "")))
+
+
+def _safe_alpha_horizon(value: str | None) -> str:
+    normalized = str(value or "3month").strip().lower()
+    if normalized in {"3month", "6month", "12month"}:
+        return normalized
+    return "3month"
+
+
+def _parse_date(value: Any) -> date | None:
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except Exception:
+        return None
 
 
 def _as_list(value: Any) -> list[Any]:

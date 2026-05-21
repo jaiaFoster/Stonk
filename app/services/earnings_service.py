@@ -16,6 +16,8 @@ from app.providers.earnings_provider import (
     EarningsAuthError,
     EarningsProviderError,
     EarningsRateLimitError,
+    configured_provider_names,
+    earnings_provider_secret_values,
     get_provider,
 )
 from app.utils.log_safety import sanitize_for_log
@@ -34,6 +36,7 @@ def get_earnings_for_positions(
     """Return upcoming earnings data keyed by ticker."""
     logger = log_print or (lambda msg: print(msg, flush=True))
     provider = get_provider()
+    provider_names = configured_provider_names()
     result: dict[str, dict[str, Any]] = {}
 
     tickers = _equity_tickers_from_positions(positions)
@@ -49,15 +52,15 @@ def get_earnings_for_positions(
         return _fill_unavailable(_all_equity_tickers_from_positions(positions), {}, "Earnings provider disabled.")
 
     if not provider.is_configured:
-        logger("Earnings Timestamp Provider v1 skipped: FINNHUB_API_KEY is not set.")
-        return _fill_unavailable(_all_equity_tickers_from_positions(positions), {}, "FINNHUB_API_KEY is not set.")
+        logger("Earnings Timestamp Provider v1 skipped: no earnings provider keys are configured.")
+        return _fill_unavailable(_all_equity_tickers_from_positions(positions), {}, "No earnings provider keys are configured.")
 
     start = date.today() - timedelta(days=max(0, int(config.EARNINGS_LOOKBACK_DAYS or 0)))
     end = date.today() + timedelta(days=max(1, int(config.EARNINGS_LOOKAHEAD_DAYS or 45)))
 
     logger(
         "Fetching Earnings Timestamp Provider v1 for "
-        f"{len(tickers)} equity ticker(s); provider={config.EARNINGS_PROVIDER}; "
+        f"{len(tickers)} equity ticker(s); providers={provider_names or [config.EARNINGS_PROVIDER]}; "
         f"window={start.isoformat()}..{end.isoformat()}"
         + (" (limited by dev/test mode)" if allowed_tickers is not None else "")
     )
@@ -67,12 +70,12 @@ def get_earnings_for_positions(
         try:
             events = provider.get_earnings_calendar(ticker, start, end)
         except EarningsRateLimitError as e:
-            safe_error = sanitize_for_log(e, [config.FINNHUB_API_KEY, config.RUN_TOKEN])
+            safe_error = sanitize_for_log(e, earnings_provider_secret_values())
             logger(f"Earnings fetch stopped: {safe_error}")
             access_error = str(safe_error)
             break
         except (EarningsAuthError, EarningsProviderError, Exception) as e:
-            safe_error = sanitize_for_log(e, [config.FINNHUB_API_KEY, config.RUN_TOKEN])
+            safe_error = sanitize_for_log(e, earnings_provider_secret_values())
             result[ticker] = _unavailable_event(ticker, str(safe_error))
             logger(f"Earnings {ticker}: unavailable — {safe_error}")
             continue
@@ -106,10 +109,12 @@ def discover_upcoming_earnings_for_calendar_trades(
     """
     logger = log_print or (lambda msg: print(msg, flush=True))
     provider = get_provider()
+    provider_names = configured_provider_names()
 
     result: dict[str, Any] = {
         "source": "earnings_discovery_v1",
-        "provider": str(config.EARNINGS_PROVIDER or "finnhub"),
+        "provider": "+".join(provider_names) if provider_names else str(config.EARNINGS_PROVIDER or "finnhub"),
+        "provider_order": provider_names,
         "enabled": bool(config.EARNINGS_DISCOVERY_ENABLED),
         "has_data": False,
         "window_start": None,
@@ -136,8 +141,8 @@ def discover_upcoming_earnings_for_calendar_trades(
         return result
 
     if not provider.is_configured:
-        result["errors"].append("FINNHUB_API_KEY is not set.")
-        logger("Earnings Trade Discovery v1 skipped: FINNHUB_API_KEY is not set.")
+        result["errors"].append("No earnings provider keys are configured.")
+        logger("Earnings Trade Discovery v1 skipped: no earnings provider keys are configured.")
         return result
 
     start_offset = int(config.EARNINGS_DISCOVERY_START_DAYS or 2)
@@ -157,7 +162,7 @@ def discover_upcoming_earnings_for_calendar_trades(
 
     logger(
         "Fetching Earnings Trade Discovery v1 universe; "
-        f"provider={config.EARNINGS_PROVIDER}; window={start.isoformat()}..{end.isoformat()}; "
+        f"providers={provider_names or [config.EARNINGS_PROVIDER]}; window={start.isoformat()}..{end.isoformat()}; "
         f"max_tickers={max_tickers}"
         + (" (limited by dev/test mode)" if str(run_mode or "prod").lower() == "dev" else "")
     )
@@ -165,12 +170,12 @@ def discover_upcoming_earnings_for_calendar_trades(
     try:
         raw_events = provider.get_earnings_calendar_range(start, end)
     except EarningsRateLimitError as e:
-        safe_error = sanitize_for_log(e, [config.FINNHUB_API_KEY, config.RUN_TOKEN])
+        safe_error = sanitize_for_log(e, earnings_provider_secret_values())
         result["errors"].append(str(safe_error))
         logger(f"Earnings Trade Discovery v1 stopped: {safe_error}")
         return result
     except (EarningsAuthError, EarningsProviderError, Exception) as e:
-        safe_error = sanitize_for_log(e, [config.FINNHUB_API_KEY, config.RUN_TOKEN])
+        safe_error = sanitize_for_log(e, earnings_provider_secret_values())
         result["errors"].append(str(safe_error))
         logger(f"Earnings Trade Discovery v1 unavailable: {safe_error}")
         return result
@@ -247,7 +252,7 @@ def _unavailable_event(ticker: str, reason: str) -> dict[str, Any]:
     return {
         "ticker": ticker,
         "symbol": ticker,
-        "source": str(config.EARNINGS_PROVIDER or "finnhub"),
+        "source": "+".join(config.EARNINGS_PROVIDER_ORDER or [config.EARNINGS_PROVIDER or "finnhub"]),
         "has_data": False,
         "earnings_date": None,
         "date": None,

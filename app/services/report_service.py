@@ -116,6 +116,7 @@ def format_payload(
     watchlist_review = watchlist_review_from_tradier_snapshot(tradier_snapshot)
     earnings_trade_discovery = earnings_trade_discovery_from_tradier_snapshot(tradier_snapshot)
     unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot)
+    portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -185,6 +186,9 @@ def format_payload(
             if item.get("next_check"):
                 lines.append(f"  Next check: {item.get('next_check')}")
 
+    lines += ["", "=== PORTFOLIO GAP / SECTOR SUGGESTIONS V1 ==="]
+    lines.extend(format_portfolio_gap_text(portfolio_gap))
+
     lines += ["", "=== PORTFOLIO SCORING V2 ==="]
 
     if not recommendations:
@@ -250,205 +254,8 @@ def format_payload(
                 f"AvgVol30 {compact_big_number(metrics.get('avg_volume_30d'))}"
             )
 
-    lines += ["", "=== EARNINGS TIMESTAMP PROVIDER V1 ==="]
-    if not earnings_events:
-        lines.append("No earnings timestamp data available for this run.")
-    else:
-        for ticker, event in earnings_events.items():
-            if event.get("has_data"):
-                dte = event.get("days_until_earnings")
-                dte_text = f"{dte} days" if dte is not None else "unknown DTE"
-                lines.append(
-                    f"{ticker}: {event.get('earnings_date') or 'Unknown date'} | "
-                    f"{event.get('session_label') or 'Unknown'} | {dte_text} | "
-                    f"Confirmed timestamp: {yes_no(event.get('is_timestamp_confirmed'))} | Source: {event.get('source') or 'unknown'}"
-                )
-            else:
-                lines.append(f"{ticker}: earnings unavailable — {event.get('error') or 'No event returned.'}")
-
-    lines += ["", "=== EARNINGS TRADE DISCOVERY V1 ==="]
-    if not earnings_trade_discovery or not earnings_trade_discovery.get("has_data"):
-        errors = (earnings_trade_discovery or {}).get("errors", []) or []
-        if errors:
-            lines.append("No earnings-discovery universe available: " + "; ".join(str(e) for e in errors[:3]))
-        else:
-            lines.append("No upcoming earnings events found in the configured discovery window.")
-    else:
-        summary = earnings_trade_discovery.get("summary", {}) or {}
-        lines.append(
-            f"Window {earnings_trade_discovery.get('window_start') or '—'}..{earnings_trade_discovery.get('window_end') or '—'} | "
-            f"Events {summary.get('event_count', 0)} | Tickers {summary.get('ticker_count', 0)}"
-        )
-        for event in (earnings_trade_discovery.get("items", []) or [])[:20]:
-            lines.append(
-                f"{event.get('ticker', 'UNKNOWN')}: {event.get('earnings_date') or 'Unknown date'} | "
-                f"{event.get('session_label') or 'Unknown'} | "
-                f"DTE {event.get('days_until_earnings') if event.get('days_until_earnings') is not None else 'unknown'} | "
-                f"Confirmed {yes_no(event.get('is_timestamp_confirmed'))}"
-            )
-
     lines += ["", "=== UNIFIED CALENDAR TRADE ENGINE V1 ==="]
     lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
-
-    lines += ["", "=== TRADIER OPTIONS SNAPSHOT ==="]
-    if not tradier_snapshot:
-        lines.append("No Tradier quote/options data available for this run.")
-    else:
-        for ticker, data in tradier_snapshot.items():
-            if str(ticker).startswith("_"):
-                continue
-            quote = data.get("quote", {}) or {}
-            atm_call = data.get("atm_call") or {}
-            atm_put = data.get("atm_put") or {}
-            if not data.get("has_data"):
-                lines.append(f"{ticker}: unavailable — {data.get('error') or 'No Tradier data returned.'}")
-                continue
-
-            lines.append(
-                f"{ticker}: quote last {money(quote.get('last'))} | "
-                f"bid {money(quote.get('bid'))} | ask {money(quote.get('ask'))} | "
-                f"expirations {data.get('expiration_count', 0)} | "
-                f"sample expiration {data.get('selected_expiration') or 'N/A'} | "
-                f"contracts {data.get('chain_contract_count', 0)} "
-                f"({data.get('call_count', 0)} calls / {data.get('put_count', 0)} puts)"
-            )
-            if atm_call:
-                lines.append(
-                    f"  ATM call: {atm_call.get('symbol') or 'N/A'} | strike {option_money(atm_call.get('strike'))} | "
-                    f"bid/ask {option_money(atm_call.get('bid'))}/{option_money(atm_call.get('ask'))} | "
-                    f"mid {option_money(atm_call.get('mid'))} | vol {atm_call.get('volume') or 0} | "
-                    f"OI {atm_call.get('open_interest') or 0} | delta {option_money(atm_call.get('delta'))} | "
-                    f"theta {option_money(atm_call.get('theta'))} | IV {option_money(atm_call.get('iv'))}"
-                )
-            if atm_put:
-                lines.append(
-                    f"  ATM put: {atm_put.get('symbol') or 'N/A'} | strike {option_money(atm_put.get('strike'))} | "
-                    f"bid/ask {option_money(atm_put.get('bid'))}/{option_money(atm_put.get('ask'))} | "
-                    f"mid {option_money(atm_put.get('mid'))} | vol {atm_put.get('volume') or 0} | "
-                    f"OI {atm_put.get('open_interest') or 0} | delta {option_money(atm_put.get('delta'))} | "
-                    f"theta {option_money(atm_put.get('theta'))} | IV {option_money(atm_put.get('iv'))}"
-                )
-
-    lines += ["", "=== CALENDAR SPREAD SCREENER V1 ==="]
-    if not calendar_candidates:
-        lines.append("No calendar spread candidates generated for this run.")
-    else:
-        for cand in calendar_candidates:
-            lines.append(
-                f"{cand.get('ticker', 'UNKNOWN')} {cand.get('strategy', 'Calendar')}: "
-                f"Score {number(cand.get('score'), 1)} | Action: {cand.get('action', 'WATCH')} | "
-                f"Strike {option_money(cand.get('strike'))} {str(cand.get('option_type') or 'call').upper()} | "
-                f"Short {cand.get('front_expiration')} ({cand.get('front_dte')} DTE) / "
-                f"Long {cand.get('back_expiration')} ({cand.get('back_dte')} DTE) | "
-                f"Debit conservative {option_money(cand.get('conservative_debit'))} | "
-                f"Mid debit {option_money(cand.get('mid_debit'))} | "
-                f"Max leg spread {pct(cand.get('max_leg_spread_pct'))} | "
-                f"Min OI {compact_big_number(cand.get('min_leg_open_interest'))} | "
-                f"Min Vol {compact_big_number(cand.get('min_leg_volume'))}"
-            )
-            for reason in cand.get("reasons", []) or []:
-                lines.append(f"  + {reason}")
-            for risk in cand.get("risks", []) or []:
-                lines.append(f"  - {risk}")
-            lines.append(f"  Next check: {cand.get('next_check') or 'Recheck before entry.'}")
-
-    lines += ["", "=== EARNINGS CALENDAR STRATEGY V1 ==="]
-    if not earnings_calendar_strategy:
-        lines.append("Earnings calendar strategy did not run for this report.")
-    else:
-        summary = earnings_calendar_strategy.get("summary", {}) or {}
-        lines.append(
-            f"Candidates evaluated: {summary.get('candidate_count', 0)} | "
-            f"Preferred earnings setups: {summary.get('preferred_count', 0)} | "
-            f"Urgent review: {summary.get('urgent_count', 0)} | "
-            f"Avoid: {summary.get('avoid_count', 0)}"
-        )
-        items = earnings_calendar_strategy.get("items", []) or []
-        if not items:
-            lines.append("No earnings-calendar candidates evaluated.")
-        else:
-            for item in items:
-                earnings = item.get("earnings", {}) or {}
-                lines.append(
-                    f"{item.get('ticker', 'UNKNOWN')} Earnings Long Call Calendar: "
-                    f"Score {number(item.get('score'), 1)} | Action: {item.get('action', 'MANUAL REVIEW')} | "
-                    f"Strike {option_money(item.get('strike'))} {str(item.get('option_type') or 'call').upper()} | "
-                    f"Short {item.get('front_expiration')} ({item.get('front_dte')} DTE) / "
-                    f"Long {item.get('back_expiration')} ({item.get('back_dte')} DTE) | "
-                    f"Earnings {earnings.get('earnings_date') or 'unknown'} ({earnings.get('session_label') or 'Unknown'}) | "
-                    f"Relation {item.get('earnings_relation') or 'unknown'}"
-                )
-                for reason in item.get("reasons", []) or []:
-                    lines.append(f"  + {reason}")
-                for risk in item.get("risks", []) or []:
-                    lines.append(f"  - {risk}")
-                lines.append(f"  Next check: {item.get('next_check') or 'Manual review before entry.'}")
-
-    lines += ["", "=== OPEN OPTIONS POSITION DETECTOR V1 ==="]
-    if not open_options:
-        lines.append("Open options detector did not run for this report.")
-    else:
-        summary = open_options.get("summary", {}) or {}
-        errors = open_options.get("errors", []) or []
-        lines.append(
-            f"Accounts checked: {summary.get('account_count', 0)} | "
-            f"Total Tradier positions: {summary.get('total_positions', 0)} | "
-            f"Option legs: {summary.get('option_leg_count', 0)} | "
-            f"Detected calendars: {summary.get('calendar_count', 0)}"
-        )
-        if errors:
-            for error in errors[:3]:
-                lines.append(f"  - {error}")
-        calendars = open_options.get("calendars", []) or []
-        if calendars:
-            lines.append("Detected calendar spreads:")
-            for cal in calendars:
-                lines.append(
-                    f"  - {cal.get('underlying', 'UNKNOWN')} {option_money(cal.get('strike'))} "
-                    f"{str(cal.get('option_type') or 'call').upper()} calendar | "
-                    f"Qty {option_money(cal.get('quantity'))} | "
-                    f"Short {cal.get('front_expiration')} ({cal.get('front_dte')} DTE) / "
-                    f"Long {cal.get('back_expiration')} ({cal.get('back_dte')} DTE) | "
-                    f"Current mid debit {option_money(cal.get('current_mid_debit'))} | "
-                    f"Action: {cal.get('action', 'MONITOR')}"
-                )
-                for risk in cal.get('risks', []) or []:
-                    lines.append(f"    - {risk}")
-                lines.append(f"    Next check: {cal.get('next_check') or 'Monitor daily.'}")
-        else:
-            lines.append("No open calendar spreads detected from Tradier positions.")
-
-    lines += ["", "=== CALENDAR LIFECYCLE CHECK V1 ==="]
-    if not lifecycle_checks:
-        lines.append("Calendar lifecycle checker did not run for this report.")
-    else:
-        summary = lifecycle_checks.get("summary", {}) or {}
-        lines.append(
-            f"Open calendars checked: {summary.get('calendar_count', 0)} | "
-            f"Urgent: {summary.get('urgent_count', 0)} | "
-            f"Exit-review: {summary.get('exit_review_count', 0)}"
-        )
-        checks = lifecycle_checks.get("checks", []) or []
-        if not checks:
-            lines.append("No open calendars to lifecycle-check.")
-        else:
-            for check in checks:
-                lines.append(
-                    f"{check.get('ticker', 'UNKNOWN')} {option_money(check.get('strike'))} "
-                    f"{str(check.get('option_type') or 'call').upper()} calendar | "
-                    f"Action: {check.get('action', 'HOLD / MONITOR')} | "
-                    f"Current debit {option_money(check.get('current_mid_debit'))} | "
-                    f"Entry debit est. {option_money(check.get('entry_debit_estimate'))} | "
-                    f"P/L est. {signed_pct(check.get('estimated_pnl_pct'))} | "
-                    f"Short DTE {check.get('front_dte')} | "
-                    f"Short moneyness {signed_pct(check.get('short_leg_moneyness_pct'))} | "
-                    f"Earnings {check.get('earnings_date') or 'unknown'} ({check.get('earnings_session') or 'Unknown'})"
-                )
-                for reason in check.get("reasons", []) or []:
-                    lines.append(f"  + {reason}")
-                for risk in check.get("risks", []) or []:
-                    lines.append(f"  - {risk}")
-                lines.append(f"  Next check: {check.get('next_check') or 'Monitor daily.'}")
 
     lines += ["", "=== STRUCTURED NEWS ==="]
 
@@ -478,10 +285,10 @@ def format_payload(
         "",
         "=== ADVISOR CONTEXT ===",
         "This project gathers portfolio data, current prices, gain/loss, market value,",
-        "account grouping, relevance-scored news, Finnhub price-history metrics,",
-        "and Tradier quote/options-chain snapshots, including an earnings-discovery calendar screener,",
-        "watchlist candidate review, read-only open options-position detection,",
-        "earnings timestamp context, and calendar lifecycle checks for Tradier-held option legs",
+        "account grouping, relevance-scored news, market trend/momentum metrics,",
+        "watchlist candidate review, and one unified calendar trade engine",
+        "that combines earnings discovery, spread screening, open-position detection,",
+        "and lifecycle checks for Tradier-held option legs",
         "so the portfolio can be evaluated using numerical and strategic qualifiers.",
         "",
         "Current scoring style: Aggressive Quality-Momentum Snapshot v2.",
@@ -490,9 +297,9 @@ def format_payload(
         "trend state, 52-week high/low distance, volatility, and liquidity.",
         "It does not yet include fundamentals, earnings surprises, analyst revisions,",
         "or persistent trade-memory yet. Tradier data is now used for",
-        "quote/options liquidity, earnings-driven long-call calendar candidate screening,",
-        "watchlist idea triage, detecting existing Tradier-held calendar spreads,",
-        "and basic hold/exit review checks.",
+        "market-data fallback, quote/options liquidity, earnings-driven long-call",
+        "calendar candidate screening, watchlist idea triage, detecting existing",
+        "Tradier-held calendar spreads, and basic hold/exit review checks.",
         "",
         "Provide a practical daily portfolio briefing based only on the data above.",
         "Include: overall portfolio summary, strongest add/hold candidates, names to",
@@ -558,6 +365,7 @@ def format_html(
     watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))
     earnings_discovery_rows = format_earnings_trade_discovery_rows(earnings_trade_discovery_from_tradier_snapshot(parsed_tradier_snapshot))
     unified_calendar_rows = format_unified_calendar_engine_rows(unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot))
+    portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
     payload_html = escape(payload)
     log_html = escape("\n".join(parsed_log_lines))
     today = date.today().strftime("%B %d, %Y")
@@ -661,8 +469,8 @@ def format_html(
     <h1>📈 Stock Advisor — {today}</h1>
     <p class="muted">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
-        relevance-scored news, Finnhub momentum, relative strength, trend,
-        volatility, liquidity, Tradier quote/options snapshots, calendar candidates, earnings timestamps, earnings-calendar strategy scoring, watchlist candidate review, open-options detection, and calendar lifecycle checks. Fundamentals, persistence, and full options strategy scoring will be added later.
+        relevance-scored news, market momentum/trend, watchlist stock review,
+        and a unified calendar trade engine that combines earnings discovery, spread screening, open-calendar detection, and lifecycle next actions. Fundamentals, persistence, and full options strategy scoring will be added later.
     </p>
 
     <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
@@ -731,33 +539,9 @@ def format_html(
         {watchlist_rows}
     </table>
 
-    <h2>Earnings Timestamp Provider v1</h2>
-    <p class="muted">Read-only earnings-date context for portfolio tickers. Uses the configured earnings provider when available and does not block the run if data is unavailable.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Earnings Date</th>
-            <th>Session</th>
-            <th>DTE</th>
-            <th>Confirmed?</th>
-            <th>EPS / Revenue</th>
-            <th>Status</th>
-        </tr>
-        {earnings_rows}
-    </table>
-
-    <h2>Earnings Trade Discovery v1</h2>
-    <p class="muted">Independent earnings-calendar trade universe. This starts from upcoming earnings events, not your watchlist. Calendar strategy candidates are generated only from this universe.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Earnings</th>
-            <th>DTE</th>
-            <th>Confirmed?</th>
-            <th>Source / Notes</th>
-        </tr>
-        {earnings_discovery_rows}
-    </table>
+    <h2>Portfolio Gap / Sector Suggestions v1</h2>
+    <p class="muted">Aggressive-growth sector/theme exposure, macro-priority buckets, risk buckets, and watchlist suggestions. This is stock-focused and separate from the calendar trade engine.</p>
+    {portfolio_gap_rows}
 
     <h2>Unified Calendar Trade Engine v1</h2>
     <p class="muted">One workflow for earnings-calendar trades: discover upcoming earnings, pass/fail requirements, propose spreads when valid, rank entry candidates, and review already-entered calendars.</p>
@@ -771,79 +555,6 @@ def format_html(
             <th>Entry / Next Action</th>
         </tr>
         {unified_calendar_rows}
-    </table>
-
-    <h2>Tradier Quote / Options Snapshot</h2>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Quote</th>
-            <th>Expirations</th>
-            <th>Sample Chain</th>
-            <th>ATM Call</th>
-            <th>ATM Put</th>
-            <th>Liquidity</th>
-        </tr>
-        {tradier_rows}
-    </table>
-
-    <h2>Calendar Spread Screener v1</h2>
-    <p class="muted">Read-only scan for possible new long call calendars. This does not detect open positions or recommend exits yet.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Score / Action</th>
-            <th>Structure</th>
-            <th>Debit</th>
-            <th>Liquidity</th>
-            <th>IV / Spread</th>
-            <th>Reasons</th>
-            <th>Risks / Next</th>
-        </tr>
-        {calendar_rows}
-    </table>
-
-    <h2>Earnings Calendar Strategy v1</h2>
-    <p class="muted">Earnings-aware review of calendar candidates. This flags whether the structure captures earnings, whether the short leg spans the event, and whether manual review is urgent.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Score / Action</th>
-            <th>Structure</th>
-            <th>Earnings Fit</th>
-            <th>Debit / Liquidity</th>
-            <th>Reasons</th>
-            <th>Risks / Next</th>
-        </tr>
-        {earnings_calendar_rows}
-    </table>
-
-    <h2>Open Options Position Detector v1</h2>
-    <p class="muted">Read-only Tradier account-position parser. Detects existing calendar spreads only when TRADIER_ACCOUNT_ID/profile access is available.</p>
-    <table>
-        <tr>
-            <th>Status</th>
-            <th>Detected Calendar</th>
-            <th>Legs</th>
-            <th>Current Value</th>
-            <th>Risks / Next</th>
-        </tr>
-        {open_options_rows}
-    </table>
-
-    <h2>Calendar Lifecycle Check v1</h2>
-    <p class="muted">Read-only hold/exit review for detected open calendars. Exact P/L requires broker cost basis or a later persistent trade-memory module.</p>
-    <table>
-        <tr>
-            <th>Status</th>
-            <th>Calendar</th>
-            <th>Value / P&L</th>
-            <th>Risk State</th>
-            <th>Earnings</th>
-            <th>Reasons / Risks</th>
-            <th>Next Check</th>
-        </tr>
-        {lifecycle_rows}
     </table>
 
     <h2>Relevant News</h2>
@@ -1673,6 +1384,187 @@ def format_watchlist_review_rows(review: dict[str, Any]) -> str:
             <td>{format_compact_list(reasons + risks)}<br><span class="muted">{next_check}</span></td>
         </tr>"""
     return rows
+
+
+def portfolio_gap_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not isinstance(tradier_snapshot, dict):
+        return {}
+    raw = tradier_snapshot.get("_portfolio_gap", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def format_portfolio_gap_text(gap: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    if not gap or not gap.get("enabled", True):
+        return ["Portfolio gap analysis disabled."]
+    if not gap.get("has_data"):
+        errors = gap.get("errors", []) or []
+        if errors:
+            return ["Portfolio gap analysis unavailable: " + "; ".join(str(e) for e in errors[:3])]
+        return ["Portfolio gap analysis unavailable for this run."]
+
+    summary = gap.get("summary", {}) or {}
+    lines.append(
+        f"Profile {gap.get('target_profile', 'aggressive_macro_growth')} | "
+        f"Suggestions {summary.get('suggestion_count', 0)} | "
+        f"Underweight/missing {summary.get('underweight_count', 0)} | "
+        f"Overweight/high {summary.get('overweight_count', 0)}"
+    )
+
+    exposure_rows = gap.get("exposure_rows", []) or []
+    if exposure_rows:
+        lines.append("Exposure gaps / macro buckets:")
+        for row in exposure_rows[:10]:
+            lines.append(
+                f"  {row.get('bucket', 'Unknown')}: current {pct(row.get('current_pct'))} | "
+                f"target {pct(row.get('target_pct'))} | gap {signed_pct(row.get('gap_pct'))} | "
+                f"{row.get('status', 'REVIEW')} | {row.get('macro_bias', 'Neutral')}"
+            )
+
+    risk_rows = gap.get("risk_rows", []) or []
+    if risk_rows:
+        lines.append("Risk buckets:")
+        for row in risk_rows[:8]:
+            lines.append(
+                f"  {row.get('bucket', 'Unknown')}: current {pct(row.get('current_pct'))} | "
+                f"target/max {pct(row.get('target_pct'))} | {row.get('status', 'REVIEW')}"
+            )
+
+    suggestions = gap.get("suggestions", []) or []
+    if suggestions:
+        lines.append("Suggested watchlist candidates:")
+        for item in suggestions[:10]:
+            lines.append(
+                f"  {item.get('ticker', 'UNKNOWN')}: Score {number(item.get('score'), 1)} | "
+                f"{item.get('category', 'WATCH')} | "
+                f"Buckets: {', '.join(item.get('core_buckets', []) or []) or 'Unknown'}"
+            )
+            for reason in (item.get("reasons", []) or [])[:2]:
+                lines.append(f"    + {reason}")
+            for risk in (item.get("risks", []) or [])[:2]:
+                lines.append(f"    - {risk}")
+            if item.get("next_check"):
+                lines.append(f"    Next: {item.get('next_check')}")
+    else:
+        lines.append("No watchlist candidates cleared the portfolio-gap suggestion threshold this run.")
+
+    for note in (gap.get("notes", []) or [])[:4]:
+        lines.append(f"Note: {note}")
+    return lines
+
+
+def format_portfolio_gap_rows(gap: dict[str, Any]) -> str:
+    if not gap or not gap.get("enabled", True):
+        return '<p class="empty">Portfolio gap analysis disabled.</p>'
+    if not gap.get("has_data"):
+        errors = gap.get("errors", []) or []
+        msg = "; ".join(str(e) for e in errors[:3]) if errors else "Portfolio gap analysis unavailable."
+        return f'<p class="empty">{escape(msg)}</p>'
+
+    summary = gap.get("summary", {}) or {}
+    exposure_rows = gap.get("exposure_rows", []) or []
+    risk_rows = gap.get("risk_rows", []) or []
+    suggestions = gap.get("suggestions", []) or []
+
+    exposure_html = ""
+    for row in exposure_rows[:12]:
+        status = str(row.get("status", "REVIEW"))
+        cls = "candidate" if status in {"UNDERWEIGHT", "MISSING"} else ("urgent" if status in {"OVERWEIGHT", "HIGH / MONITOR"} else "")
+        exposure_html += f"""
+        <tr>
+            <td><strong>{escape(str(row.get('bucket', 'Unknown')))}</strong></td>
+            <td>{pct(row.get('current_pct'))}</td>
+            <td>{pct(row.get('target_pct'))}</td>
+            <td>{signed_pct(row.get('gap_pct'))}</td>
+            <td><span class="pill {cls}">{escape(status)}</span></td>
+            <td>{escape(str(row.get('macro_bias', 'Neutral')))}</td>
+            <td>{escape(str(row.get('guidance', '—')))}</td>
+        </tr>"""
+
+    if not exposure_html:
+        exposure_html = '<tr><td colspan="7" class="empty">No exposure rows generated.</td></tr>'
+
+    risk_html = ""
+    for row in risk_rows[:10]:
+        status = str(row.get("status", "REVIEW"))
+        cls = "urgent" if "ABOVE" in status else ""
+        risk_html += f"""
+        <tr>
+            <td><strong>{escape(str(row.get('bucket', 'Unknown')))}</strong></td>
+            <td>{pct(row.get('current_pct'))}</td>
+            <td>{pct(row.get('target_pct'))}</td>
+            <td><span class="pill {cls}">{escape(status)}</span></td>
+            <td>{escape(str(row.get('guidance', '—')))}</td>
+        </tr>"""
+
+    if not risk_html:
+        risk_html = '<tr><td colspan="5" class="empty">No risk bucket rows generated.</td></tr>'
+
+    suggestion_html = ""
+    for item in suggestions[:10]:
+        category = str(item.get("category", "WATCH"))
+        cls = "candidate" if "CONSIDER" in category or "HIGH" in category else ""
+        reasons = format_compact_list(item.get("reasons", []) or [])
+        risks = format_compact_list(item.get("risks", []) or [])
+        core = ", ".join(str(b) for b in (item.get("core_buckets", []) or [])) or "Unknown"
+        risk = ", ".join(str(b) for b in (item.get("risk_buckets", []) or [])) or "—"
+        suggestion_html += f"""
+        <tr>
+            <td><strong>{escape(str(item.get('ticker', 'UNKNOWN')))}</strong></td>
+            <td class="score">{number(item.get('score'), 1)}<br><span class="pill {cls}">{escape(category)}</span></td>
+            <td>{escape(core)}<br><span class="muted">Risk: {escape(risk)}</span></td>
+            <td>{'Already held' if item.get('already_held') else 'New candidate'}<br><span class="muted">{escape(', '.join(item.get('watchlists', []) or []) or '—')}</span></td>
+            <td>{reasons}</td>
+            <td>{risks}</td>
+            <td>{escape(str(item.get('next_check', '—') or '—'))}</td>
+        </tr>"""
+
+    if not suggestion_html:
+        suggestion_html = '<tr><td colspan="7" class="empty">No portfolio-gap suggestions cleared the score threshold this run.</td></tr>'
+
+    notes = "".join(f"<li>{escape(str(note))}</li>" for note in (gap.get("notes", []) or [])[:4])
+
+    return f"""
+    <p class="muted">Profile: {escape(str(gap.get('target_profile', 'aggressive_macro_growth')))} | Suggestions: {summary.get('suggestion_count', 0)} | Underweight/missing: {summary.get('underweight_count', 0)} | Overweight/high: {summary.get('overweight_count', 0)}</p>
+    <h3>Core Sector / Theme Exposure</h3>
+    <table>
+        <tr>
+            <th>Bucket</th>
+            <th>Current</th>
+            <th>Target</th>
+            <th>Gap</th>
+            <th>Status</th>
+            <th>Macro Bias</th>
+            <th>Guidance</th>
+        </tr>
+        {exposure_html}
+    </table>
+    <h3>Risk Buckets</h3>
+    <table>
+        <tr>
+            <th>Risk Bucket</th>
+            <th>Current</th>
+            <th>Target / Max</th>
+            <th>Status</th>
+            <th>Guidance</th>
+        </tr>
+        {risk_html}
+    </table>
+    <h3>Suggested Watchlist Candidates</h3>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Score / Category</th>
+            <th>Buckets</th>
+            <th>Portfolio / Source</th>
+            <th>Reasons</th>
+            <th>Risks</th>
+            <th>Next Check</th>
+        </tr>
+        {suggestion_html}
+    </table>
+    <p class="muted"><strong>Notes:</strong></p><ul class="compact">{notes}</ul>
+    """
 
 
 def unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:

@@ -36,6 +36,9 @@ NEWS_PAGE_SIZE = _int_env("NEWS_PAGE_SIZE", 5)
 # --- Finnhub market data ---
 # Currently optional. Finnhub stock/candle may be plan-restricted depending on the key.
 FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
+# Optional secondary earnings-calendar provider. Alpha Vantage returns a CSV
+# earnings calendar and is used as a fallback/merge source when configured.
+ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
 MARKET_BENCHMARK_TICKER = os.environ.get("MARKET_BENCHMARK_TICKER", "QQQ")
 MARKET_DATA_USE_TRADIER_FALLBACK = _bool_env("MARKET_DATA_USE_TRADIER_FALLBACK", True)
 TRADIER_HISTORICAL_LOOKBACK_DAYS = _int_env("TRADIER_HISTORICAL_LOOKBACK_DAYS", 460)
@@ -89,7 +92,17 @@ OPEN_OPTIONS_MAX_ACCOUNTS = _int_env("OPEN_OPTIONS_MAX_ACCOUNTS", 3)
 # If Finnhub denies or returns no data, the run still completes and earnings
 # fields show as unavailable.
 EARNINGS_PROVIDER_ENABLED = _bool_env("EARNINGS_PROVIDER_ENABLED", True)
+# Primary provider name kept for backward compatibility.
 EARNINGS_PROVIDER = os.environ.get("EARNINGS_PROVIDER", "finnhub").strip().lower()
+# Ordered provider list. With ALPHA_VANTAGE_API_KEY set, default behavior is to
+# use Finnhub + Alpha Vantage and merge/dedupe results.
+EARNINGS_PROVIDER_ORDER = [
+    provider.strip().lower()
+    for provider in os.environ.get("EARNINGS_PROVIDER_ORDER", "finnhub,alphavantage").split(",")
+    if provider.strip()
+]
+EARNINGS_MERGE_PROVIDER_EVENTS = _bool_env("EARNINGS_MERGE_PROVIDER_EVENTS", True)
+ALPHA_VANTAGE_EARNINGS_HORIZON = os.environ.get("ALPHA_VANTAGE_EARNINGS_HORIZON", "3month").strip().lower()
 EARNINGS_LOOKAHEAD_DAYS = _int_env("EARNINGS_LOOKAHEAD_DAYS", 45)
 EARNINGS_LOOKBACK_DAYS = _int_env("EARNINGS_LOOKBACK_DAYS", 7)
 EARNINGS_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_MAX_TICKERS_PER_RUN", 8)
@@ -108,6 +121,9 @@ EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_DISCOVERY_MAX_TICKER
 # spread screening, earnings-calendar scoring, open-position detection, and
 # lifecycle next actions into one calendar-trade workflow section.
 UNIFIED_CALENDAR_ENGINE_ENABLED = _bool_env("UNIFIED_CALENDAR_ENGINE_ENABLED", True)
+# Main report should show the unified calendar engine by default. Set this true
+# only when debugging the lower-level calendar modules.
+REPORT_SHOW_CALENDAR_DEBUG_SECTIONS = _bool_env("REPORT_SHOW_CALENDAR_DEBUG_SECTIONS", False)
 
 # --- Calendar lifecycle checker ---
 # Uses detected open calendars from Tradier positions. It does not require
@@ -172,3 +188,29 @@ WATCHLIST_TICKERS = [
 WATCHLIST_MAX_TICKERS_PER_RUN = _int_env("WATCHLIST_MAX_TICKERS_PER_RUN", 20)
 WATCHLIST_PRIORITIZE_FOR_SCANS = _bool_env("WATCHLIST_PRIORITIZE_FOR_SCANS", True)
 WATCHLIST_INCLUDE_ALREADY_HELD = _bool_env("WATCHLIST_INCLUDE_ALREADY_HELD", True)
+
+# --- Portfolio gap / sector suggestions ---
+# Rule-based v1. This is stock-focused and separate from options/calendar logic.
+# Targets are intentionally aggressive-growth oriented rather than classic balanced allocation.
+# Later versions can adjust these dynamically from macro/sector-strength data.
+PORTFOLIO_GAP_ENABLED = _bool_env("PORTFOLIO_GAP_ENABLED", True)
+PORTFOLIO_GAP_TARGET_PROFILE = os.environ.get("PORTFOLIO_GAP_TARGET_PROFILE", "aggressive_macro_growth").strip().lower()
+PORTFOLIO_GAP_CORE_TARGETS = os.environ.get(
+    "PORTFOLIO_GAP_CORE_TARGETS",
+    "AI / Semiconductors:18,Mega-cap Tech / Cloud:18,Software / Fintech:12,Energy / Utilities / Infrastructure:12,Healthcare / Biotech:10,Industrials / Defense / Robotics:10,Financials:8,Consumer / Retail:7,International / ADR:5",
+)
+PORTFOLIO_GAP_MACRO_WINNING_BUCKETS = [
+    bucket.strip()
+    for bucket in os.environ.get(
+        "PORTFOLIO_GAP_MACRO_WINNING_BUCKETS",
+        "AI / Semiconductors,Mega-cap Tech / Cloud,Energy / Utilities / Infrastructure,Industrials / Defense / Robotics,Healthcare / Biotech",
+    ).split(",")
+    if bucket.strip()
+]
+PORTFOLIO_GAP_RISK_TARGETS = os.environ.get(
+    "PORTFOLIO_GAP_RISK_TARGETS",
+    "Crypto / Digital Assets:5,Speculative / High Beta:12,Leveraged ETFs:4,Single-Name Max:15",
+)
+PORTFOLIO_GAP_MAX_SUGGESTIONS = _int_env("PORTFOLIO_GAP_MAX_SUGGESTIONS", 10)
+PORTFOLIO_GAP_MIN_SUGGESTION_SCORE = _int_env("PORTFOLIO_GAP_MIN_SUGGESTION_SCORE", 55)
+PORTFOLIO_GAP_INCLUDE_ALREADY_HELD = _bool_env("PORTFOLIO_GAP_INCLUDE_ALREADY_HELD", True)
