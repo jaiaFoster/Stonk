@@ -84,6 +84,12 @@ def run(run_mode: str = "prod") -> PipelineResult:
         return None, [], {}, [], {}, error_log
 
 
+
+
+@app.route("/")
+def home():
+    return _render_home_page(), 200
+
 @app.route("/run")
 def trigger():
     token = request.args.get("token")
@@ -379,6 +385,136 @@ def run_sync_response(run_mode: str = "prod"):
         RUN_LOCK.release()
 
 
+
+
+def _render_home_page() -> str:
+    """Small mobile-friendly endpoint menu for the Railway base URL."""
+    return """<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Algo Stock Advisor</title>
+    <style>
+        :root { color-scheme: dark; }
+        * { box-sizing: border-box; }
+        body {
+            font-family: monospace;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            padding: 1.25rem;
+            max-width: 900px;
+            margin: auto;
+            line-height: 1.45;
+        }
+        h1 { color: #00ff88; font-size: clamp(1.5rem, 5vw, 2.2rem); }
+        .card {
+            background: #141414;
+            border: 1px solid #333;
+            border-radius: 14px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        label { display: block; color: #aaa; margin-bottom: 0.35rem; }
+        input {
+            width: 100%;
+            background: #0b0b0b;
+            color: #e0e0e0;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 0.7rem;
+            font-family: monospace;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+            margin-top: 1rem;
+        }
+        button, a.button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 44px;
+            background: #00ff88;
+            color: #00140a;
+            border: none;
+            border-radius: 10px;
+            padding: 0.7rem 0.9rem;
+            font-family: monospace;
+            font-weight: bold;
+            text-decoration: none;
+            cursor: pointer;
+            text-align: center;
+        }
+        a.secondary, button.secondary { background: #1f2937; color: #e5e7eb; border: 1px solid #333; }
+        .muted { color: #999; font-size: 0.9rem; }
+        .tiny { color: #777; font-size: 0.8rem; }
+        @media (max-width: 620px) {
+            body { padding: 0.85rem; }
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <h1>📈 Algo Stock Advisor</h1>
+    <p class="muted">Mobile-friendly endpoint menu. Your token is stored only in this browser's localStorage.</p>
+
+    <div class="card">
+        <label for="token">RUN_TOKEN</label>
+        <input id="token" type="password" placeholder="Paste your RUN_TOKEN here" autocomplete="off">
+        <div class="grid">
+            <button onclick="saveToken()">Save Token</button>
+            <button class="secondary" onclick="clearToken()">Clear Token</button>
+        </div>
+        <p id="tokenStatus" class="tiny">Token not loaded yet.</p>
+    </div>
+
+    <div class="card">
+        <h2>Run / Review</h2>
+        <div class="grid">
+            <a class="button" href="#" onclick="go('/run?mode=dev'); return false;">Run DEV Report</a>
+            <a class="button" href="#" onclick="go('/run'); return false;">Run PROD Report</a>
+            <a class="button secondary" href="#" onclick="go('/trades'); return false;">Trade Memory</a>
+            <a class="button secondary" href="#" onclick="go('/config-check'); return false;">Config Check</a>
+            <a class="button secondary" href="/health">Health</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Notes</h2>
+        <p class="muted">Use DEV for normal testing. Use PROD only when you want the wider configured scan and are comfortable spending more API calls.</p>
+    </div>
+
+    <script>
+        const input = document.getElementById('token');
+        const status = document.getElementById('tokenStatus');
+        const saved = localStorage.getItem('runToken') || '';
+        input.value = saved;
+        status.innerText = saved ? 'Token loaded from this browser.' : 'Paste your token and save it.';
+
+        function saveToken() {
+            localStorage.setItem('runToken', input.value.trim());
+            status.innerText = input.value.trim() ? 'Token saved in this browser.' : 'No token saved.';
+        }
+        function clearToken() {
+            localStorage.removeItem('runToken');
+            input.value = '';
+            status.innerText = 'Token cleared.';
+        }
+        function go(path) {
+            const token = (input.value || localStorage.getItem('runToken') || '').trim();
+            if (!token) {
+                alert('Paste and save your RUN_TOKEN first.');
+                return;
+            }
+            const sep = path.includes('?') ? '&' : '?';
+            window.location.href = path + sep + 'token=' + encodeURIComponent(token);
+        }
+    </script>
+</body>
+</html>"""
+
 def loading_page(
     job_id: str,
     token: str | None,
@@ -408,6 +544,7 @@ def loading_page(
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Stock Advisor — Loading</title>
     <style>
         body {{
@@ -447,6 +584,11 @@ def loading_page(
             min-height: 80px;
         }}
         a {{ color: #00ff88; }}
+        @media (max-width: 700px) {{
+            body {{ padding: 1rem; }}
+            .card {{ padding: 1rem; }}
+            pre {{ font-size: 0.78rem; max-height: 45vh; overflow: auto; }}
+        }}
     </style>
 </head>
 <body>

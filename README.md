@@ -334,3 +334,29 @@ Near-term high-value items:
 3. Improve calendar ranking with historical move, IV crush, liquidity, and debit/risk scoring.
 4. Add company profile/fundamental data for better watchlist and sector-gap scoring.
 5. Expand UI polish: tabs, cards, badges, saved settings, and stronger auth.
+
+## Mobile Friendly UI v1
+
+This patch makes the app easier to use from the Railway production URL and on mobile screens.
+
+### Added
+
+- `/` root endpoint now renders a small endpoint menu.
+- The menu stores `RUN_TOKEN` locally in the browser so you do not need to type endpoint URLs manually.
+- Report pages now include a mobile viewport tag.
+- The main report has quick navigation chips near the top.
+- Tables become horizontally scrollable on narrow screens instead of breaking the page.
+- The Pipeline Status table has moved down into the Debug / Copyable Output area.
+- Loading pages are easier to read on mobile.
+
+### Main URLs
+
+```text
+/
+/run?token=YOUR_RUN_TOKEN&mode=dev
+/trades?token=YOUR_RUN_TOKEN
+/config-check?token=YOUR_RUN_TOKEN
+/health
+```
+
+Open the base Railway URL on your phone and paste your token once.

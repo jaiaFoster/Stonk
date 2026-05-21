@@ -396,6 +396,7 @@ def format_html(
 <html>
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Stock Advisor — {today}</title>
     <style>
         {REPORT_CSS}
@@ -403,14 +404,24 @@ def format_html(
 </head>
 <body>
     <h1>📈 Stock Advisor — {today}</h1>
-    <p class="muted">
+    <p class="muted top-note">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, market momentum/trend, watchlist stock review,
         and a unified calendar trade engine that combines earnings discovery, spread screening, open-calendar detection, and lifecycle next actions. Fundamentals, persistence, and full options strategy scoring will be added later.
     </p>
 
+    <nav class="quick-nav" aria-label="Report sections">
+        <a href="#daily-opportunity">Daily</a>
+        <a href="#trade-memory">Trades</a>
+        <a href="#portfolio-scores">Portfolio</a>
+        <a href="#stock-momentum">Stock Ideas</a>
+        <a href="#portfolio-gap">Sector Gaps</a>
+        <a href="#calendar-engine">Calendars</a>
+        <a href="#monitor-details">Monitor</a>
+        <a href="#debug-output">Debug</a>
+    </nav>
 
-    <h2>Daily Opportunity Engine v1</h2>
+    <h2 id="daily-opportunity">Daily Opportunity Engine v1</h2>
     <p class="muted">One ranked action list combining calendar trades, stock momentum adds, portfolio-gap ideas, and risk review items.</p>
     <table>
         <tr>
@@ -424,7 +435,7 @@ def format_html(
         {daily_opportunity_rows}
     </table>
 
-    <h2>Trade Memory v1</h2>
+    <h2 id="trade-memory">Trade Memory v1</h2>
     <p class="muted">SQLite-backed manual calendar trade memory. Used to preserve entry debit, targets, notes, and closed-trade history across deploys when stored on a Railway Volume.</p>
     <table>
         <tr>
@@ -438,20 +449,7 @@ def format_html(
         {trade_memory_rows}
     </table>
 
-    <h2>Pipeline Status</h2>
-    {pipeline_summary_html}
-    <table>
-        <tr>
-            <th>Status</th>
-            <th>Step</th>
-            <th>Message</th>
-            <th>Duration</th>
-            <th>Finished</th>
-        </tr>
-        {pipeline_status_rows}
-    </table>
-
-    <h2>Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
+    <h2 id="portfolio-scores">Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
     <table>
         <tr>
             <th>Ticker</th>
@@ -467,6 +465,9 @@ def format_html(
         </tr>
         {recommendation_rows}
     </table>
+
+    <h2 id="monitor-details">Monitor Details</h2>
+    <p class="muted">Detailed market, position, watchlist, and news tables. These are primarily for verification and deeper review.</p>
 
     <h2>Market Momentum / Trend</h2>
     <table>
@@ -503,7 +504,7 @@ def format_html(
 
 
 
-    <h2>Stock Momentum Add Strategy v1</h2>
+    <h2 id="stock-momentum">Stock Momentum Add Strategy v1</h2>
     <p class="muted">Normal-stock entry strategy for portfolio and watchlist names. It uses market trend/momentum when available and separates consider-add from add-on-pullback/watch/avoid.</p>
     <table>
         <tr>
@@ -533,11 +534,11 @@ def format_html(
         {watchlist_rows}
     </table>
 
-    <h2>Portfolio Gap / Sector Suggestions v1</h2>
+    <h2 id="portfolio-gap">Portfolio Gap / Sector Suggestions v1</h2>
     <p class="muted">Aggressive-growth sector/theme exposure, macro-priority buckets, risk buckets, and watchlist suggestions. This is stock-focused and separate from the calendar trade engine.</p>
     {portfolio_gap_rows}
 
-    <h2>Unified Calendar Trade Engine v1</h2>
+    <h2 id="calendar-engine">Unified Calendar Trade Engine v1</h2>
     <p class="muted">One workflow for earnings-calendar trades: discover upcoming earnings, pass/fail requirements, propose spreads when valid, rank entry candidates, and review already-entered calendars.</p>
     <table>
         <tr>
@@ -564,12 +565,28 @@ def format_html(
         {news_rows}
     </table>
 
-    <h2>Debug / Copyable Output</h2>
-    <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('payload').innerText)">
-        Copy Advisor Payload
-    </button>
-    {payload_debug_html}
-    {log_debug_html}
+    <div class="debug-section" id="debug-output">
+        <h2>Debug / Copyable Output</h2>
+        <details class="section-details">
+            <summary>Pipeline Status</summary>
+            {pipeline_summary_html}
+            <table>
+                <tr>
+                    <th>Status</th>
+                    <th>Step</th>
+                    <th>Message</th>
+                    <th>Duration</th>
+                    <th>Finished</th>
+                </tr>
+                {pipeline_status_rows}
+            </table>
+        </details>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('payload').innerText)">
+            Copy Advisor Payload
+        </button>
+        {payload_debug_html}
+        {log_debug_html}
+    </div>
 </body>
 </html>"""
 
