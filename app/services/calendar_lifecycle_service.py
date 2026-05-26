@@ -4,9 +4,9 @@ app/services/calendar_lifecycle_service.py — Calendar Lifecycle Check v1.
 Evaluates detected open calendar spreads from the Open Options Position Detector.
 This is read-only and advisory. It does not place or close trades.
 
-Without persistence, entry debit may be unavailable or only estimated from broker
-cost basis. A later trade-memory module should store exact entry debit and target
-rules for higher-confidence exit decisions.
+Entry debit may be unavailable or only estimated from broker cost basis. The
+project intentionally avoids manual trade entry; lifecycle confidence improves
+when the broker exposes reliable option cost basis and current quotes.
 """
 
 from __future__ import annotations
@@ -127,7 +127,7 @@ def _evaluate_one_calendar(
 
     if entry_debit_estimate is not None and pnl_pct is not None:
         if memory_trade:
-            reasons.append(f"Entry debit loaded from Trade Memory: {entry_debit_estimate:.2f}.")
+            reasons.append(f"Entry debit loaded from legacy trade memory: {entry_debit_estimate:.2f}.")
         else:
             reasons.append(f"Estimated entry debit from broker cost basis: {entry_debit_estimate:.2f}.")
         confidence = "Medium" if not memory_trade else "Medium-High"
@@ -196,10 +196,7 @@ def _evaluate_one_calendar(
         "entry_debit_estimate": entry_debit_estimate,
         "cost_basis_estimate": cost_basis_estimate,
         "estimated_pnl_pct": pnl_pct,
-        "trade_memory_id": (memory_trade or {}).get("id"),
-        "trade_memory_status": (memory_trade or {}).get("status"),
-        "trade_memory_notes": (memory_trade or {}).get("notes"),
-        "earnings_date": earnings_date,
+                "earnings_date": earnings_date,
         "earnings_session": earnings_session,
         "days_until_earnings": days_until_earnings,
         "earnings_known": earnings_known,

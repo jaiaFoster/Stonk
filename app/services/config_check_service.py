@@ -44,12 +44,12 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "run_token": {
             "ready": bool(config.RUN_TOKEN),
             "required": True,
-            "details": "Protects /run, /config-check, and /trades routes.",
+            "details": "Protects /run and /config-check routes. Manual /trades routes are disabled.",
         },
-        "trade_memory": {
-            "ready": bool(getattr(config, "TRADE_MEMORY_ENABLED", True)),
+        "robinhood_options": {
+            "ready": bool(getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True) and config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
             "required": False,
-            "details": f"db_path={getattr(config, 'TRADE_MEMORY_DB_PATH', 'unset')}; railway_volume={bool(getattr(config, 'DATA_DIR', ''))}",
+            "details": f"auto_detect={getattr(config, 'ROBINHOOD_OPTIONS_DETECTOR_ENABLED', True)}; infer_calendars={getattr(config, 'ROBINHOOD_OPTIONS_INFER_CALENDARS', True)}",
         },
     }
 
@@ -64,10 +64,6 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         warnings.append("ALPHA_VANTAGE_API_KEY is missing; earnings discovery relies primarily on Finnhub.")
     if not config.MARKET_DATA_USE_TRADIER_FALLBACK:
         warnings.append("MARKET_DATA_USE_TRADIER_FALLBACK is off; Finnhub candle restrictions may leave momentum blank.")
-    if getattr(config, "TRADE_MEMORY_ENABLED", True) and not str(getattr(config, "TRADE_MEMORY_DB_PATH", "")).strip():
-        warnings.append("TRADE_MEMORY_DB_PATH is empty; manual trade memory will not persist reliably.")
-    if getattr(config, "TRADE_MEMORY_ENABLED", True) and "RAILWAY_VOLUME_MOUNT_PATH" not in __import__("os").environ and str(getattr(config, "TRADE_MEMORY_DB_PATH", "")).startswith("/app/data"):
-        warnings.append("No Railway volume env var detected. Attach a Railway Volume mounted to /app/data for persistent SQLite trade memory.")
 
     limits = {
         "run_mode": clean_mode,
@@ -83,8 +79,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "earnings_discovery_dev_max_optionable_to_check": config.EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK,
         "earnings_discovery_max_final_candidates": config.EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES,
         "stock_momentum_watchlist_market_data_max": config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX,
-        "trade_memory_db_path": getattr(config, "TRADE_MEMORY_DB_PATH", ""),
-        "data_dir": getattr(config, "DATA_DIR", ""),
+        "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
+        "robinhood_options_infer_calendars": getattr(config, "ROBINHOOD_OPTIONS_INFER_CALENDARS", True),
     }
 
     enabled_modules = {
@@ -98,7 +94,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "portfolio_gap": config.PORTFOLIO_GAP_ENABLED,
         "stock_momentum": config.STOCK_MOMENTUM_STRATEGY_ENABLED,
         "daily_opportunity": config.DAILY_OPPORTUNITY_ENGINE_ENABLED,
-        "trade_memory": getattr(config, "TRADE_MEMORY_ENABLED", True),
+        "robinhood_options_detector": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
     }
 
     ready_count = sum(1 for provider in providers.values() if provider["ready"])

@@ -27,7 +27,7 @@ The app currently supports:
 - Earnings-calendar spread discovery and screening
 - Unified Calendar Trade Engine v1
 - Calendar lifecycle checks for detected open Tradier calendars
-- SQLite-backed Trade Memory v1 for manual calendar trade entry debit/targets
+- Automatic Robinhood + Tradier open-options detection for active calendar lifecycle checks
 - Daily Opportunity Engine v1
 - Async `/run` endpoint with loading screen and phone-approval messaging
 - Redacted `/config-check` endpoint for deployment debugging
@@ -68,9 +68,9 @@ The top-level action list. It combines:
 - portfolio gap suggestions
 - risk-review names
 
-### Trade Memory v1
+### Automatic Active Calendar Detection
 
-SQLite-backed manual calendar trade storage. This preserves entry debit, target profit, max loss, thesis notes, and closed-trade history across deploys when stored on a Railway Volume. Manage it at `/trades?token=YOUR_RUN_TOKEN`.
+Manual trade tracking is intentionally out of scope. The app is a read-only viewing/discovery tool: open calendars should be detected from broker option positions. Robinhood options and Tradier options are normalized into common option legs, grouped into calendar spreads, repriced when possible, and evaluated by the lifecycle checker.
 
 ### Pipeline Status
 
@@ -86,7 +86,7 @@ Normal-stock strategy for portfolio and watchlist names. It uses available marke
 
 ### Watchlist Stock Candidate Review v2
 
-Robinhood/manual watchlist tickers scored as normal stock ideas, not as calendar trades.
+Robinhood watchlist tickers scored as normal stock ideas, not as calendar trades. Optional `WATCHLIST_TICKERS` remains only as a fallback scan list, not a trade-entry workflow.
 
 ### Portfolio Gap / Sector Suggestions v1
 
@@ -215,7 +215,7 @@ WATCHLIST_PRIORITIZE_FOR_SCANS=true
 WATCHLIST_INCLUDE_ALREADY_HELD=true
 ```
 
-Leave `WATCHLIST_NAMES` blank to discover and scan all Robinhood watchlists. Use `WATCHLIST_TICKERS` as a manual fallback.
+Leave `WATCHLIST_NAMES` blank to discover and scan all Robinhood watchlists. Use `WATCHLIST_TICKERS` only as an optional fallback scan list.
 
 ### Portfolio gap controls
 
@@ -254,7 +254,7 @@ TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT=50
 TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT=-35
 ```
 
-On Railway, attach a Volume to the app service and mount it at `/app/data` so the SQLite file survives deploys and restarts. Railway sets `RAILWAY_VOLUME_MOUNT_PATH` automatically when a volume is attached, but explicitly setting `DATA_DIR=/app/data` and `TRADE_MEMORY_DB_PATH=/app/data/trade_memory.sqlite3` keeps behavior obvious.
+Railway Volumes are not required for the current read-only workflow. The app should create value by automatically detecting positions and opportunities every time you view it, not by relying on manual state entry.
 
 ### Daily opportunity controls
 
@@ -308,7 +308,6 @@ Open:
 http://localhost:5000/health
 http://localhost:5000/config-check?token=YOUR_RUN_TOKEN
 http://localhost:5000/run?token=YOUR_RUN_TOKEN&mode=dev
-http://localhost:5000/trades?token=YOUR_RUN_TOKEN
 ```
 
 ---
@@ -330,7 +329,7 @@ If Railway logs show Flask’s development server warning, check whether Railway
 Near-term high-value items:
 
 1. Add historical earnings mini-backtest: last 10 earnings moves, gap/fade behavior, post-earnings drift.
-2. Improve Trade Memory with checkpoint reminders, planned exits, and richer closed-trade journal analytics.
+2. Improve automatic Robinhood options/calendar detection, including better side inference and exact P/L from broker cost basis when available.
 3. Improve calendar ranking with historical move, IV crush, liquidity, and debit/risk scoring.
 4. Add company profile/fundamental data for better watchlist and sector-gap scoring.
 5. Expand UI polish: tabs, cards, badges, saved settings, and stronger auth.
@@ -354,7 +353,7 @@ This patch makes the app easier to use from the Railway production URL and on mo
 ```text
 /
 /run?token=YOUR_RUN_TOKEN&mode=dev
-/trades?token=YOUR_RUN_TOKEN
+/trades?token=YOUR_RUN_TOKEN  # disabled legacy manual-entry route
 /config-check?token=YOUR_RUN_TOKEN
 /health
 ```

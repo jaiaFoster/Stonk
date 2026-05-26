@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from app import config
 from app.providers.tradier_provider import TradierAuthError, TradierProvider
+from app.providers.robinhood_provider import get_open_option_positions as get_robinhood_open_option_positions
 from app.utils.log_safety import sanitize_for_log
 
 LogFn = Callable[[str], None]
@@ -30,15 +31,21 @@ OCC_SYMBOL_RE = re.compile(r"^([A-Z0-9.]+?)(\d{6})([CP])(\d{8})$")
 
 
 def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, Any]:
-    """Fetch Tradier positions and detect open option calendars."""
+    """Fetch broker option positions and detect open calendars.
+
+    V2 detects Tradier option positions as before and also attempts to detect
+    Robinhood option positions automatically. This keeps the tool read-only and
+    avoids manual trade tracking/input workflows.
+    """
     logger = log_print or (lambda msg: print(msg, flush=True))
     provider = TradierProvider()
 
     result: dict[str, Any] = {
-        "source": "tradier",
+        "source": "combined_broker_options",
+        "sources": [],
         "has_data": False,
         "enabled": bool(config.OPEN_OPTIONS_DETECTOR_ENABLED),
-        "configured": bool(provider.is_configured),
+        "configured": bool(provider.is_configured or getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True)),
         "account_ids": [],
         "positions": [],
         "option_legs": [],
@@ -49,45 +56,93 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
 
     if not config.OPEN_OPTIONS_DETECTOR_ENABLED:
         result["errors"].append("OPEN_OPTIONS_DETECTOR_ENABLED=false")
-        logger("Open Options Position Detector v1 disabled by OPEN_OPTIONS_DETECTOR_ENABLED=false.")
-        return _finalize_result(result)
-
-    if not provider.is_configured:
-        result["errors"].append("TRADIER_ACCESS_TOKEN is not set")
-        logger("Open Options Position Detector v1 skipped: TRADIER_ACCESS_TOKEN is not set.")
-        return _finalize_result(result)
-
-    account_ids = _resolve_account_ids(provider, logger)
-    result["account_ids"] = account_ids
-    if not account_ids:
-        result["errors"].append("No Tradier account ID available. Set TRADIER_ACCOUNT_ID or check token/profile access.")
-        logger("Open Options Position Detector v1 skipped: no Tradier account ID available.")
+        logger("Open Options Position Detector v2 disabled by OPEN_OPTIONS_DETECTOR_ENABLED=false.")
         return _finalize_result(result)
 
     raw_positions: list[dict[str, Any]] = []
     option_legs: list[dict[str, Any]] = []
+    account_ids: list[str] = []
 
-    for account_id in account_ids[: max(1, int(config.OPEN_OPTIONS_MAX_ACCOUNTS or 1))]:
+    # --- Tradier positions ---
+    if provider.is_configured:
+        result["sources"].append({"source": "tradier", "configured": True})
+        tradier_account_ids = _resolve_account_ids(provider, logger)
+        account_ids.extend([f"tradier:{acct}" for acct in tradier_account_ids])
+        if not tradier_account_ids:
+            result["errors"].append("Tradier: no account ID available. Set TRADIER_ACCOUNT_ID or check token/profile access.")
+        for account_id in tradier_account_ids[: max(1, int(config.OPEN_OPTIONS_MAX_ACCOUNTS or 1))]:
+            try:
+                account_positions = provider.get_account_positions(account_id)
+                logger(f"Tradier account {account_id}: fetched {len(account_positions)} open position(s).")
+            except Exception as e:
+                safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
+                logger(f"Tradier account {account_id}: positions unavailable: {safe_error}")
+                result["errors"].append(f"Tradier {account_id}: {safe_error}")
+                continue
+
+            for raw in account_positions:
+                normalized = _normalize_account_position(raw, account_id)
+                normalized["source"] = "tradier"
+                normalized["broker"] = "tradier"
+                raw_positions.append(normalized)
+                leg = _position_to_option_leg(normalized)
+                if leg:
+                    leg["source"] = "tradier"
+                    leg["broker"] = "tradier"
+                    option_legs.append(leg)
+    else:
+        result["sources"].append({"source": "tradier", "configured": False})
+        result["errors"].append("Tradier: TRADIER_ACCESS_TOKEN is not set")
+        logger("Open Options Position Detector v2: Tradier skipped because TRADIER_ACCESS_TOKEN is not set.")
+
+    # --- Robinhood positions ---
+    if bool(getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True)):
+        rh_account_numbers = _configured_robinhood_option_accounts()
         try:
-            account_positions = provider.get_account_positions(account_id)
-            logger(f"Tradier account {account_id}: fetched {len(account_positions)} open position(s).")
+            rh_payload = get_robinhood_open_option_positions(
+                account_numbers=rh_account_numbers,
+                max_positions=getattr(config, "ROBINHOOD_OPTIONS_MAX_POSITIONS", None),
+            )
+            result["sources"].append(
+                {
+                    "source": "robinhood",
+                    "configured": bool(rh_payload.get("configured")),
+                    "account_count": len(rh_payload.get("accounts") or []),
+                    "position_count": len(rh_payload.get("positions") or []),
+                }
+            )
+            for err in rh_payload.get("errors", []) or []:
+                result["errors"].append(f"Robinhood: {err}")
+            for acct in rh_payload.get("accounts", []) or []:
+                acct_num = acct.get("account_number")
+                if acct_num:
+                    account_ids.append(f"robinhood:{acct_num}")
+            for pos in rh_payload.get("positions", []) or []:
+                if not isinstance(pos, dict):
+                    continue
+                raw_positions.append(pos)
+                leg = _robinhood_position_to_option_leg(pos)
+                if leg:
+                    option_legs.append(leg)
+            logger(
+                "Robinhood Open Options Detector v1: "
+                f"{len(rh_payload.get('positions') or [])} open option position(s) normalized."
+            )
         except Exception as e:
-            safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
-            logger(f"Tradier account {account_id}: positions unavailable: {safe_error}")
-            result["errors"].append(f"{account_id}: {safe_error}")
-            continue
+            safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.RUN_TOKEN])
+            result["errors"].append(f"Robinhood options unavailable: {safe_error}")
+            logger(f"Robinhood Open Options Detector v1 failed: {safe_error}")
+    else:
+        result["sources"].append({"source": "robinhood", "configured": False, "disabled": True})
+        logger("Robinhood Open Options Detector v1 disabled by ROBINHOOD_OPTIONS_DETECTOR_ENABLED=false.")
 
-        for raw in account_positions:
-            normalized = _normalize_account_position(raw, account_id)
-            raw_positions.append(normalized)
-            leg = _position_to_option_leg(normalized)
-            if leg:
-                option_legs.append(leg)
-
+    result["account_ids"] = account_ids
     result["positions"] = raw_positions
     result["option_legs"] = option_legs
 
-    if option_legs and bool(config.OPEN_OPTIONS_QUOTE_LEGS):
+    # Price all detected option legs through Tradier quotes when available. This
+    # works for Robinhood legs too because they are normalized into OCC symbols.
+    if option_legs and bool(config.OPEN_OPTIONS_QUOTE_LEGS) and provider.is_configured:
         _attach_leg_quotes(provider, option_legs, logger)
 
     calendars = _detect_calendar_spreads(option_legs)
@@ -95,12 +150,77 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
     result["has_data"] = bool(raw_positions or option_legs or calendars)
 
     logger(
-        "Open Options Position Detector v1: "
+        "Open Options Position Detector v2: "
         f"{len(raw_positions)} total position(s), {len(option_legs)} option leg(s), "
         f"{len(calendars)} calendar spread(s) detected."
     )
 
     return _finalize_result(result)
+
+
+def _configured_robinhood_option_accounts() -> list[str] | None:
+    raw = str(getattr(config, "ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS", "") or "").strip()
+    if not raw:
+        return None
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _robinhood_position_to_option_leg(position: dict[str, Any]) -> dict[str, Any] | None:
+    underlying = str(position.get("underlying") or "").upper().strip()
+    expiration = str(position.get("expiration") or position.get("expiration_date") or "").strip()[:10]
+    option_type = str(position.get("option_type") or "").lower().strip()
+    strike = _float_or_none(position.get("strike"))
+    quantity = _float_or_none(position.get("quantity"))
+    if not underlying or not expiration or option_type not in {"call", "put"} or strike is None:
+        return None
+    if quantity is None or quantity == 0:
+        return None
+
+    symbol = str(position.get("symbol") or "").upper().strip()
+    if not symbol:
+        symbol = _occ_symbol(underlying, expiration, option_type, strike)
+
+    abs_quantity = abs(quantity)
+    side = str(position.get("side") or "unknown").lower().strip()
+    if side not in {"long", "short", "unknown"}:
+        side = "unknown"
+
+    return {
+        "source": "robinhood",
+        "broker": "robinhood",
+        "account_id": position.get("account_id"),
+        "account_label": position.get("account_label"),
+        "symbol": symbol,
+        "underlying": underlying,
+        "expiration": expiration,
+        "expiration_date": expiration,
+        "dte": _days_to_expiration(expiration),
+        "option_type": option_type,
+        "strike": strike,
+        "quantity": quantity,
+        "abs_quantity": abs_quantity,
+        "side": side,
+        "side_is_explicit": bool(position.get("side_is_explicit")),
+        "side_inferred": False,
+        "cost_basis": _float_or_none(position.get("cost_basis")),
+        "avg_cost_per_contract": _float_or_none(position.get("avg_cost_per_contract")),
+        "quote": {},
+        "mid": None,
+        "bid": None,
+        "ask": None,
+        "market_value_estimate": None,
+        "raw": position.get("raw") or position,
+    }
+
+
+def _occ_symbol(underlying: str, expiration: str, option_type: str, strike: float) -> str:
+    try:
+        yymmdd = str(expiration).replace("-", "")[2:]
+        cp = "C" if str(option_type).lower() == "call" else "P"
+        strike_int = int(round(float(strike) * 1000))
+        return f"{str(underlying).upper()}{yymmdd}{cp}{strike_int:08d}"
+    except Exception:
+        return ""
 
 
 def _resolve_account_ids(provider: TradierProvider, logger: LogFn) -> list[str]:
@@ -248,6 +368,8 @@ def _detect_calendar_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
     for (underlying, option_type, strike), legs in groups.items():
         longs = [leg for leg in legs if leg.get("side") == "long"]
         shorts = [leg for leg in legs if leg.get("side") == "short"]
+
+        # First use explicit long/short side data when the broker provides it.
         for short_leg in shorts:
             for long_leg in longs:
                 short_exp = _parse_iso_date(short_leg.get("expiration"))
@@ -259,9 +381,57 @@ def _detect_calendar_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
                     continue
                 calendars.append(_build_calendar_summary(underlying, option_type, strike, short_leg, long_leg, spread_qty))
 
-    calendars.sort(key=lambda item: (item.get("underlying") or "", item.get("strike") or 0, item.get("front_expiration") or ""))
-    return calendars
+        # Robinhood option-position rows may omit whether the leg is long or
+        # short. If all legs in a same ticker/type/strike group are unknown but
+        # there are multiple expirations, infer the common calendar structure:
+        # front expiration short, back expiration long. This is read-only and
+        # flagged as inferred in the row so the UI can disclose lower certainty.
+        if not shorts and bool(getattr(config, "ROBINHOOD_OPTIONS_INFER_CALENDARS", True)):
+            unknown_or_rh = [
+                leg for leg in legs
+                if leg.get("source") == "robinhood" and leg.get("side") in {"unknown", "long", None, ""}
+            ]
+            if len(unknown_or_rh) >= 2:
+                ordered = sorted(
+                    [leg for leg in unknown_or_rh if _parse_iso_date(leg.get("expiration"))],
+                    key=lambda leg: _parse_iso_date(leg.get("expiration")),
+                )
+                if len(ordered) >= 2:
+                    front = dict(ordered[0])
+                    back = dict(ordered[-1])
+                    front_exp = _parse_iso_date(front.get("expiration"))
+                    back_exp = _parse_iso_date(back.get("expiration"))
+                    if front_exp and back_exp and back_exp > front_exp:
+                        spread_qty = min(float(front.get("abs_quantity") or 0), float(back.get("abs_quantity") or 0))
+                        if spread_qty > 0:
+                            front["side"] = "short"
+                            front["side_inferred"] = True
+                            back["side"] = "long"
+                            back["side_inferred"] = True
+                            calendar = _build_calendar_summary(underlying, option_type, strike, front, back, spread_qty)
+                            calendar["side_inferred"] = True
+                            calendar.setdefault("risks", []).append(
+                                "Robinhood did not expose explicit long/short side for one or more legs; front-short/back-long calendar structure was inferred from expirations."
+                            )
+                            calendars.append(calendar)
 
+    # De-dupe in case explicit and inferred paths produce the same calendar.
+    deduped: dict[tuple[str, str, float, str, str], dict[str, Any]] = {}
+    for item in calendars:
+        key = (
+            str(item.get("underlying") or ""),
+            str(item.get("option_type") or ""),
+            round(float(item.get("strike") or 0.0), 4),
+            str(item.get("front_expiration") or ""),
+            str(item.get("back_expiration") or ""),
+        )
+        existing = deduped.get(key)
+        if not existing or (existing.get("side_inferred") and not item.get("side_inferred")):
+            deduped[key] = item
+
+    result = list(deduped.values())
+    result.sort(key=lambda item: (item.get("underlying") or "", item.get("strike") or 0, item.get("front_expiration") or ""))
+    return result
 
 def _build_calendar_summary(
     underlying: str,
@@ -301,12 +471,22 @@ def _build_calendar_summary(
         reasons.append("Detected a valid long-calendar structure with a later-dated long leg.")
 
     if current_mid_debit is not None:
-        reasons.append("Current estimated spread value is available from Tradier option quotes.")
+        reasons.append("Current estimated spread value is available from live option quotes.")
     else:
         risks.append("Current spread value could not be estimated because one or both leg quotes were unavailable.")
 
+    broker_sources = sorted({str(short_leg.get("broker") or short_leg.get("source") or "unknown"), str(long_leg.get("broker") or long_leg.get("source") or "unknown")})
+    side_inferred = bool(short_leg.get("side_inferred") or long_leg.get("side_inferred"))
+    if side_inferred:
+        risks.append("Calendar leg direction was inferred because the broker payload did not clearly mark long/short side.")
+    if broker_sources:
+        reasons.append("Detected from " + ", ".join(broker_sources) + " option positions.")
+
     return {
         "strategy": "Long Calendar Spread",
+        "source": ",".join(broker_sources),
+        "broker": ",".join(broker_sources),
+        "side_inferred": side_inferred,
         "underlying": underlying,
         "ticker": underlying,
         "option_type": option_type,
@@ -340,11 +520,15 @@ def _next_check_for_calendar(short_leg: dict[str, Any]) -> str:
 def _finalize_result(result: dict[str, Any]) -> dict[str, Any]:
     option_legs = result.get("option_legs") or []
     calendars = result.get("calendars") or []
+    brokers = sorted({str((leg or {}).get("broker") or (leg or {}).get("source") or "unknown") for leg in option_legs if isinstance(leg, dict)})
+    inferred_calendar_count = sum(1 for cal in calendars if isinstance(cal, dict) and cal.get("side_inferred"))
     result["summary"] = {
         "account_count": len(result.get("account_ids") or []),
         "total_positions": len(result.get("positions") or []),
         "option_leg_count": len(option_legs),
         "calendar_count": len(calendars),
+        "inferred_calendar_count": inferred_calendar_count,
+        "brokers": brokers,
         "has_open_options": bool(option_legs),
         "has_open_calendars": bool(calendars),
     }

@@ -121,7 +121,6 @@ def format_payload(
     portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
     daily_opportunity = daily_opportunity_from_tradier_snapshot(tradier_snapshot)
-    trade_memory = trade_memory_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -151,8 +150,8 @@ def format_payload(
     lines += ["", "=== DAILY OPPORTUNITY ENGINE V1 ==="]
     lines.extend(format_daily_opportunity_text(daily_opportunity))
 
-    lines += ["", "=== TRADE MEMORY V1 ==="]
-    lines.extend(format_trade_memory_text(trade_memory))
+    lines += ["", "=== ACTIVE CALENDAR TRADES ==="]
+    lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
 
     lines += ["", "=== STOCK MOMENTUM ADD STRATEGY V1 ==="]
     lines.extend(format_stock_momentum_text(stock_momentum))
@@ -382,7 +381,6 @@ def format_html(
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
     stock_momentum_rows = format_stock_momentum_rows(stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot))
     daily_opportunity_rows = format_daily_opportunity_rows(daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot))
-    trade_memory_rows = format_trade_memory_rows(trade_memory_from_tradier_snapshot(parsed_tradier_snapshot))
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     pipeline_status_rows = format_pipeline_status_rows(pipeline_status)
     pipeline_summary_html = format_pipeline_summary(pipeline_status)
@@ -407,12 +405,12 @@ def format_html(
     <p class="muted top-note">
         Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
         relevance-scored news, market momentum/trend, watchlist stock review,
-        and a unified calendar trade engine that combines earnings discovery, spread screening, open-calendar detection, and lifecycle next actions. Fundamentals, persistence, and full options strategy scoring will be added later.
+        and a unified calendar trade engine that combines earnings discovery, spread screening, open-calendar detection, and lifecycle next actions. Fundamentals and deeper options strategy scoring will be added later. Manual trade entry is intentionally avoided; active trades should come from broker detection.
     </p>
 
     <nav class="quick-nav" aria-label="Report sections">
         <a href="#daily-opportunity">Daily</a>
-        <a href="#trade-memory">Trades</a>
+        <a href="#calendar-engine">Active Trades</a>
         <a href="#portfolio-scores">Portfolio</a>
         <a href="#stock-momentum">Stock Ideas</a>
         <a href="#portfolio-gap">Sector Gaps</a>
@@ -435,19 +433,6 @@ def format_html(
         {daily_opportunity_rows}
     </table>
 
-    <h2 id="trade-memory">Trade Memory v1</h2>
-    <p class="muted">SQLite-backed manual calendar trade memory. Used to preserve entry debit, targets, notes, and closed-trade history across deploys when stored on a Railway Volume.</p>
-    <table>
-        <tr>
-            <th>Status</th>
-            <th>Trade</th>
-            <th>Entry</th>
-            <th>Targets</th>
-            <th>Close</th>
-            <th>Notes</th>
-        </tr>
-        {trade_memory_rows}
-    </table>
 
     <h2 id="portfolio-scores">Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
     <table>

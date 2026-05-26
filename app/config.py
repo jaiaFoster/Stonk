@@ -85,6 +85,13 @@ OPEN_OPTIONS_QUOTE_LEGS = _bool_env("OPEN_OPTIONS_QUOTE_LEGS", True)
 OPEN_OPTIONS_MAX_LEGS_TO_PRICE = _int_env("OPEN_OPTIONS_MAX_LEGS_TO_PRICE", 20)
 OPEN_OPTIONS_MAX_ACCOUNTS = _int_env("OPEN_OPTIONS_MAX_ACCOUNTS", 3)
 
+# Robinhood options are detected automatically for viewing/lifecycle checks.
+# Manual trade entry is intentionally out of scope for this project.
+ROBINHOOD_OPTIONS_DETECTOR_ENABLED = _bool_env("ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True)
+ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS = os.environ.get("ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS", "").strip()
+ROBINHOOD_OPTIONS_MAX_POSITIONS = _int_env("ROBINHOOD_OPTIONS_MAX_POSITIONS", 50)
+ROBINHOOD_OPTIONS_INFER_CALENDARS = _bool_env("ROBINHOOD_OPTIONS_INFER_CALENDARS", True)
+
 
 # --- Earnings timestamp provider ---
 # Earnings Provider v1 is optional and read-only. It uses Finnhub earnings

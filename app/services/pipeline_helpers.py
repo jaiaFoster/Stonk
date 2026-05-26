@@ -48,8 +48,8 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "portfolio_gap_enabled": config.PORTFOLIO_GAP_ENABLED,
         "stock_momentum_strategy_enabled": config.STOCK_MOMENTUM_STRATEGY_ENABLED,
         "daily_opportunity_engine_enabled": config.DAILY_OPPORTUNITY_ENGINE_ENABLED,
-        "trade_memory_enabled": getattr(config, "TRADE_MEMORY_ENABLED", True),
-        "trade_memory_db_path": getattr(config, "TRADE_MEMORY_DB_PATH", ""),
+        "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
+        "robinhood_options_infer_calendars": getattr(config, "ROBINHOOD_OPTIONS_INFER_CALENDARS", True),
         "dev_tickers": list(config.DEV_TICKERS),
         "dev_max_tickers": config.DEV_MAX_TICKERS,
     }
@@ -105,8 +105,8 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"STOCK_MOMENTUM_STRATEGY_ENABLED: {snapshot.get('stock_momentum_strategy_enabled')}",
         f"STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX: {getattr(config, 'STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX', None)}",
         f"DAILY_OPPORTUNITY_ENGINE_ENABLED: {snapshot.get('daily_opportunity_engine_enabled')}",
-        f"TRADE_MEMORY_ENABLED: {snapshot.get('trade_memory_enabled')}",
-        f"TRADE_MEMORY_DB_PATH: {snapshot.get('trade_memory_db_path')}",
+        f"ROBINHOOD_OPTIONS_DETECTOR_ENABLED: {snapshot.get('robinhood_options_detector_enabled')}",
+        f"ROBINHOOD_OPTIONS_INFER_CALENDARS: {snapshot.get('robinhood_options_infer_calendars')}",
     ]
     if snapshot.get("run_mode") == "dev":
         lines.extend(

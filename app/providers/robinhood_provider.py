@@ -564,3 +564,243 @@ def _ticker_from_watchlist_item(item):
         return _ticker_from_watchlist_item(str(instrument))
 
     return None
+
+
+
+def get_open_option_positions(account_numbers=None, max_positions=None):
+    """
+    Fetch open Robinhood option positions for configured accounts.
+
+    This is read-only. It does not place, modify, or close trades. The goal is
+    to support automatic calendar-spread detection for positions opened inside
+    Robinhood, without requiring manual trade entry.
+    """
+    print("get_open_option_positions() called", flush=True)
+    logged_in = False
+    result = {
+        "source": "robinhood",
+        "configured": bool(config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
+        "accounts": [],
+        "positions": [],
+        "errors": [],
+    }
+
+    if not result["configured"]:
+        result["errors"].append("Robinhood credentials are not configured.")
+        return result
+
+    accounts = []
+    if account_numbers:
+        for acct in account_numbers:
+            acct = str(acct).strip()
+            if acct:
+                accounts.append((acct, ACCOUNT_MAP.get(acct, acct)))
+    else:
+        accounts = list(ACCOUNT_MAP.items())
+
+    try:
+        if not login_with_retry():
+            result["errors"].append("Robinhood login failed while fetching option positions.")
+            return result
+        logged_in = True
+
+        for account_number, account_label in accounts:
+            account_record = {
+                "account_number": account_number,
+                "account_label": account_label,
+                "raw_count": 0,
+                "normalized_count": 0,
+                "errors": [],
+            }
+            result["accounts"].append(account_record)
+            try:
+                raw_positions = r.options.get_open_option_positions(account_number=account_number) or []
+                account_record["raw_count"] = len(raw_positions)
+                print(f"Robinhood account {account_label}: fetched {len(raw_positions)} open option position(s).", flush=True)
+            except Exception as e:
+                safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])
+                account_record["errors"].append(safe_error)
+                result["errors"].append(f"{account_label}: {safe_error}")
+                print(f"Robinhood account {account_label}: option positions unavailable: {safe_error}", flush=True)
+                continue
+
+            for raw in raw_positions:
+                try:
+                    normalized = _normalize_option_position(raw, account_number, account_label)
+                    if not normalized:
+                        continue
+                    result["positions"].append(normalized)
+                    account_record["normalized_count"] += 1
+                except Exception as e:
+                    safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])
+                    account_record["errors"].append(safe_error)
+                    print(f"Failed to normalize Robinhood option position: {safe_error}", flush=True)
+
+            if max_positions and len(result["positions"]) >= int(max_positions):
+                result["positions"] = result["positions"][: int(max_positions)]
+                break
+
+        print(
+            f"Robinhood Open Options Detector: {len(result['positions'])} normalized option position(s) across {len(result['accounts'])} account(s).",
+            flush=True,
+        )
+        return result
+
+    except Exception as e:
+        safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])
+        result["errors"].append(safe_error)
+        print(f"Robinhood open option position fetch failed: {safe_error}", flush=True)
+        traceback.print_exc()
+        return result
+
+    finally:
+        if logged_in:
+            try:
+                r.logout()
+                print("Logged out after Robinhood option position fetch.", flush=True)
+            except Exception as e:
+                print(f"Robinhood option logout skipped or failed: {sanitize_for_log(e)}", flush=True)
+
+
+def _normalize_option_position(raw, account_number, account_label):
+    if not isinstance(raw, dict):
+        return None
+
+    instrument_data = _option_instrument_from_position(raw)
+    # Prefer option instrument metadata for contract facts because position rows
+    # may use fields like "type" for position semantics rather than call/put.
+    underlying = _first_present(instrument_data, ["chain_symbol", "symbol", "underlying_symbol"]) if isinstance(instrument_data, dict) else None
+    if not underlying:
+        underlying = _first_present(raw, ["chain_symbol", "symbol", "underlying_symbol"])
+    underlying = str(underlying or "").upper().strip()
+
+    expiration = _first_present(instrument_data, ["expiration_date", "expiration"]) if isinstance(instrument_data, dict) else None
+    if not expiration:
+        expiration = _first_present(raw, ["expiration_date", "expiration"])
+    expiration = str(expiration or "").strip()[:10]
+
+    option_type = _first_present(instrument_data, ["type", "option_type"]) if isinstance(instrument_data, dict) else None
+    if not option_type:
+        option_type = _first_present(raw, ["option_type", "type"])
+    option_type = str(option_type or "").lower().strip()
+    if option_type in {"c", "call"}:
+        option_type = "call"
+    elif option_type in {"p", "put"}:
+        option_type = "put"
+
+    strike = _float_or_none(_first_present(instrument_data, ["strike_price", "strike"])) if isinstance(instrument_data, dict) else None
+    if strike is None:
+        strike = _float_or_none(_first_present(raw, ["strike_price", "strike"]))
+
+    quantity = _float_or_none(_first_present(raw, ["quantity", "net_quantity", "intraday_quantity"]))
+    if quantity is None or quantity == 0:
+        return None
+
+    side = _infer_robinhood_option_side(raw, quantity)
+    abs_quantity = abs(quantity)
+    avg_price = _float_or_none(_first_present(raw, ["average_price", "average_open_price", "average_buy_price", "price"]))
+    cost_basis = None
+    if avg_price is not None:
+        cost_basis = avg_price * abs_quantity * 100.0
+        if side == "short":
+            cost_basis *= -1.0
+
+    option_id = _option_id_from_position(raw)
+    option_symbol = _occ_symbol(underlying, expiration, option_type, strike)
+
+    return {
+        "source": "robinhood",
+        "broker": "robinhood",
+        "account_id": account_number,
+        "account_label": account_label,
+        "id": raw.get("id") or raw.get("url") or option_id,
+        "option_id": option_id,
+        "symbol": option_symbol,
+        "underlying": underlying,
+        "expiration": expiration,
+        "expiration_date": expiration,
+        "option_type": option_type,
+        "strike": strike,
+        "quantity": quantity,
+        "abs_quantity": abs_quantity,
+        "side": side,
+        "side_is_explicit": side in {"long", "short"},
+        "avg_cost_per_contract": avg_price,
+        "cost_basis": cost_basis,
+        "quote": {},
+        "mid": None,
+        "bid": None,
+        "ask": None,
+        "market_value_estimate": None,
+        "raw": raw,
+        "instrument": instrument_data or {},
+    }
+
+
+def _option_instrument_from_position(raw):
+    option_id = _option_id_from_position(raw)
+    if option_id:
+        try:
+            data = r.options.get_option_instrument_data_by_id(option_id)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            print(f"Could not fetch Robinhood option instrument {option_id}: {sanitize_for_log(e)}", flush=True)
+    return {}
+
+
+def _option_id_from_position(raw):
+    for key in ["option_id", "option", "instrument", "url"]:
+        value = raw.get(key)
+        if not value:
+            continue
+        text = str(value).strip().rstrip("/")
+        if not text:
+            continue
+        if "/" in text:
+            return text.split("/")[-1]
+        return text
+    return None
+
+
+def _infer_robinhood_option_side(raw, quantity):
+    for key in ["side", "direction", "position_type", "quantity_direction", "opening_side", "strategy"]:
+        text = str(raw.get(key) or "").lower()
+        if "short" in text or "sell" in text or text in {"credit", "sold"}:
+            return "short"
+        if "long" in text or "buy" in text or text in {"debit", "bought"}:
+            return "long"
+    if quantity < 0:
+        return "short"
+    # Robinhood option position rows can omit long/short direction. Keep this
+    # unknown so the calendar detector can infer front-short/back-long only
+    # when the grouped legs make that structure plausible.
+    return "unknown"
+
+
+def _occ_symbol(underlying, expiration, option_type, strike):
+    if not underlying or not expiration or option_type not in {"call", "put"} or strike is None:
+        return ""
+    try:
+        yymmdd = expiration.replace("-", "")[2:]
+        cp = "C" if option_type == "call" else "P"
+        strike_int = int(round(float(strike) * 1000))
+        return f"{underlying.upper()}{yymmdd}{cp}{strike_int:08d}"
+    except Exception:
+        return ""
+
+
+def _first_present(row, keys):
+    for key in keys:
+        if isinstance(row, dict) and row.get(key) not in {None, ""}:
+            return row.get(key)
+    return None
+
+
+def _float_or_none(value):
+    try:
+        if value in {None, ""}:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
