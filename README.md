@@ -70,7 +70,7 @@ The top-level action list. It combines:
 
 ### Automatic Active Calendar Detection
 
-Manual trade tracking is intentionally out of scope. The app is a read-only viewing/discovery tool: open calendars should be detected from broker option positions. Robinhood options and Tradier options are normalized into common option legs, grouped into calendar spreads, repriced when possible, and evaluated by the lifecycle checker.
+Manual trade tracking is intentionally out of scope. The app is a read-only viewing/discovery tool: open calendars should be detected from broker option positions. Robinhood options and Tradier options are normalized into common option legs, grouped into calendar spreads, repriced when possible, and evaluated by the lifecycle checker. The Robinhood detector now scans the default taxable brokerage account shown in Robinhood as “Investing” in addition to configured IRA accounts, because options calendars are commonly held there.
 
 ### Pipeline Status
 
@@ -202,6 +202,20 @@ CALENDAR_MAX_LEG_SPREAD_PCT=15
 CALENDAR_MAX_DEBIT_PCT_UNDERLYING=8
 CALENDAR_MAX_ATM_DISTANCE_PCT=3
 ```
+
+### Automatic Robinhood options detection
+
+```text
+OPEN_OPTIONS_DETECTOR_ENABLED=true
+ROBINHOOD_OPTIONS_DETECTOR_ENABLED=true
+ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT=true
+ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL=Investing
+ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS=
+ROBINHOOD_OPTIONS_MAX_POSITIONS=50
+ROBINHOOD_OPTIONS_INFER_CALENDARS=true
+```
+
+Leave `ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS` blank unless you intentionally want to restrict scanning. Blank/default now scans the default Robinhood options account, usually shown as `Investing`, plus the known IRA accounts.
 
 ### Watchlist controls
 

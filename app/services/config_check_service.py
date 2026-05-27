@@ -49,7 +49,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "robinhood_options": {
             "ready": bool(getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True) and config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
             "required": False,
-            "details": f"auto_detect={getattr(config, 'ROBINHOOD_OPTIONS_DETECTOR_ENABLED', True)}; infer_calendars={getattr(config, 'ROBINHOOD_OPTIONS_INFER_CALENDARS', True)}",
+            "details": f"auto_detect={getattr(config, 'ROBINHOOD_OPTIONS_DETECTOR_ENABLED', True)}; scan_default_account={getattr(config, 'ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT', True)}; default_label={getattr(config, 'ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL', 'Investing')}; infer_calendars={getattr(config, 'ROBINHOOD_OPTIONS_INFER_CALENDARS', True)}",
         },
     }
 
@@ -80,6 +80,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "earnings_discovery_max_final_candidates": config.EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES,
         "stock_momentum_watchlist_market_data_max": config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX,
         "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
+        "robinhood_options_scan_default_account": getattr(config, "ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT", True),
+        "robinhood_options_default_account_label": getattr(config, "ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL", "Investing"),
         "robinhood_options_infer_calendars": getattr(config, "ROBINHOOD_OPTIONS_INFER_CALENDARS", True),
     }
 

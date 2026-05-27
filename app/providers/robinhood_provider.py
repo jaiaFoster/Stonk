@@ -574,6 +574,12 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
     This is read-only. It does not place, modify, or close trades. The goal is
     to support automatic calendar-spread detection for positions opened inside
     Robinhood, without requiring manual trade entry.
+
+    Important Robinhood behavior: the regular taxable brokerage account is
+    often shown in the app as "Investing". In robin_stocks, calling
+    get_open_option_positions() with no account_number targets that default
+    investing/options account. Previous versions only scanned the hard-coded
+    IRA account numbers, which could miss calendars opened in Investing.
     """
     print("get_open_option_positions() called", flush=True)
     logged_in = False
@@ -583,20 +589,18 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
         "accounts": [],
         "positions": [],
         "errors": [],
+        "debug": [],
     }
 
     if not result["configured"]:
         result["errors"].append("Robinhood credentials are not configured.")
         return result
 
-    accounts = []
-    if account_numbers:
-        for acct in account_numbers:
-            acct = str(acct).strip()
-            if acct:
-                accounts.append((acct, ACCOUNT_MAP.get(acct, acct)))
-    else:
-        accounts = list(ACCOUNT_MAP.items())
+    accounts = _option_accounts_to_scan(account_numbers)
+    result["debug"].append(
+        "accounts_to_scan="
+        + ", ".join(f"{label}({display or 'default'})" for call_number, display, label in accounts)
+    )
 
     try:
         if not login_with_retry():
@@ -604,19 +608,27 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
             return result
         logged_in = True
 
-        for account_number, account_label in accounts:
+        seen_positions = set()
+        for call_account_number, display_account_number, account_label in accounts:
             account_record = {
-                "account_number": account_number,
+                "account_number": display_account_number,
                 "account_label": account_label,
                 "raw_count": 0,
                 "normalized_count": 0,
                 "errors": [],
+                "is_default_account": call_account_number is None,
             }
             result["accounts"].append(account_record)
             try:
-                raw_positions = r.options.get_open_option_positions(account_number=account_number) or []
+                if call_account_number is None:
+                    raw_positions = r.options.get_open_option_positions() or []
+                else:
+                    raw_positions = r.options.get_open_option_positions(account_number=call_account_number) or []
                 account_record["raw_count"] = len(raw_positions)
-                print(f"Robinhood account {account_label}: fetched {len(raw_positions)} open option position(s).", flush=True)
+                print(
+                    f"Robinhood account {account_label}: fetched {len(raw_positions)} open option position(s).",
+                    flush=True,
+                )
             except Exception as e:
                 safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])
                 account_record["errors"].append(safe_error)
@@ -626,7 +638,12 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
 
             for raw in raw_positions:
                 try:
-                    normalized = _normalize_option_position(raw, account_number, account_label)
+                    dedupe_key = _dedupe_key_for_option_position(raw, display_account_number, account_label)
+                    if dedupe_key in seen_positions:
+                        continue
+                    seen_positions.add(dedupe_key)
+
+                    normalized = _normalize_option_position(raw, display_account_number, account_label)
                     if not normalized:
                         continue
                     result["positions"].append(normalized)
@@ -660,6 +677,50 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
                 print("Logged out after Robinhood option position fetch.", flush=True)
             except Exception as e:
                 print(f"Robinhood option logout skipped or failed: {sanitize_for_log(e)}", flush=True)
+
+
+def _option_accounts_to_scan(account_numbers=None):
+    """Return tuples of (api_account_number, display_account_number, label)."""
+    accounts = []
+
+    def add(call_number, display_number, label):
+        key = (str(call_number or "__default__"), str(display_number or "default"))
+        existing = {(str(a[0] or "__default__"), str(a[1] or "default")) for a in accounts}
+        if key not in existing:
+            accounts.append((call_number, display_number, label))
+
+    if account_numbers:
+        for raw_acct in account_numbers:
+            text = str(raw_acct or "").strip()
+            if not text:
+                continue
+            lowered = text.lower()
+            if lowered in {"default", "investing", "brokerage", "taxable"}:
+                add(None, "default", getattr(config, "ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL", "Investing"))
+            else:
+                add(text, text, ACCOUNT_MAP.get(text, text))
+        return accounts
+
+    if bool(getattr(config, "ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT", True)):
+        add(None, "default", getattr(config, "ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL", "Investing"))
+
+    for acct_num, acct_label in ACCOUNT_MAP.items():
+        add(acct_num, acct_num, acct_label)
+
+    return accounts
+
+
+def _dedupe_key_for_option_position(raw, account_number, account_label):
+    if not isinstance(raw, dict):
+        return (str(account_number), str(account_label), str(raw))
+    for key in ["id", "url", "option", "instrument"]:
+        value = raw.get(key)
+        if value:
+            return (str(account_number), str(value))
+    parts = [str(account_number), str(account_label)]
+    for key in ["chain_symbol", "symbol", "expiration_date", "strike_price", "type", "option_type", "quantity"]:
+        parts.append(str(raw.get(key)))
+    return tuple(parts)
 
 
 def _normalize_option_position(raw, account_number, account_label):
