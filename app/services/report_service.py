@@ -1100,7 +1100,8 @@ def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
         action_class = action_css_class(action)
         reasons = [str(r) for r in (check.get("reasons", []) or [])]
         risks = [str(r) for r in (check.get("risks", []) or [])]
-        combined = reasons[:2] + risks[:3]
+        leg_bits = _format_calendar_leg_quote_bits(check)
+        combined = leg_bits + reasons[:2] + risks[:3]
         next_check = escape(str(check.get("next_check") or "Monitor daily."))
         calendar = (
             f"<strong>{ticker} {option_money(check.get('strike'))} {option_type}</strong><br>"
@@ -1110,16 +1111,23 @@ def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
             f"({check.get('back_dte') if check.get('back_dte') is not None else '—'} DTE)<br>"
             f"<span class='pill {action_class}'>{action}</span>"
         )
+        pricing_quality = check.get("pricing_quality") if isinstance(check.get("pricing_quality"), dict) else {}
         value = (
             f"Current debit {option_money(check.get('current_mid_debit'))}<br>"
             f"Entry debit est. {option_money(check.get('entry_debit_estimate'))}<br>"
-            f"P/L est. {signed_pct(check.get('estimated_pnl_pct'))}<br>"
-            f"Value {money(check.get('current_value_estimate'))}"
+            f"P/L est. {signed_pct(check.get('estimated_pnl_pct'))} "
+            f"/ {money(check.get('pnl_total_estimate'))}<br>"
+            f"Spread value {money(check.get('current_value_estimate'))}<br>"
+            f"Target {option_money(check.get('target_debit'))} | Stop {option_money(check.get('stop_debit'))}<br>"
+            f"<span class='muted'>Entry source: {escape(str(check.get('entry_debit_source') or 'broker'))}; "
+            f"pricing {escape(str(pricing_quality.get('confidence') or 'unknown'))}</span>"
         )
         risk_state = (
             f"Underlying {money(check.get('underlying_price'))}<br>"
             f"Short moneyness {signed_pct(check.get('short_leg_moneyness_pct'))}<br>"
-            f"Short ITM {yes_no(check.get('short_leg_itm'))}"
+            f"Distance to strike {money(check.get('distance_to_strike'))}<br>"
+            f"Short ITM {yes_no(check.get('short_leg_itm'))}<br>"
+            f"Assignment risk {escape(str(check.get('assignment_risk_level') or 'Unknown'))}"
         )
         earnings = (
             f"{escape(str(check.get('earnings_date') or 'Unknown'))}<br>"
@@ -1138,6 +1146,27 @@ def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
         </tr>"""
         status = ""
     return rows
+
+
+def _format_calendar_leg_quote_bits(check: dict[str, Any]) -> list[str]:
+    bits: list[str] = []
+    short_q = check.get("short_leg_quote") if isinstance(check.get("short_leg_quote"), dict) else {}
+    long_q = check.get("long_leg_quote") if isinstance(check.get("long_leg_quote"), dict) else {}
+    if short_q:
+        bits.append(
+            "Short leg: "
+            f"mid {option_money(short_q.get('mid'))}, "
+            f"bid/ask {option_money(short_q.get('bid'))}/{option_money(short_q.get('ask'))}, "
+            f"Δ {number(short_q.get('delta'), 2)}, Θ {number(short_q.get('theta'), 2)}"
+        )
+    if long_q:
+        bits.append(
+            "Long leg: "
+            f"mid {option_money(long_q.get('mid'))}, "
+            f"bid/ask {option_money(long_q.get('bid'))}/{option_money(long_q.get('ask'))}, "
+            f"Δ {number(long_q.get('delta'), 2)}, Θ {number(long_q.get('theta'), 2)}"
+        )
+    return bits
 
 def format_news_rows(news_map: NewsMap) -> str:
     if not news_map:

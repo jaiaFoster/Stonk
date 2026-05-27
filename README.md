@@ -1,5 +1,23 @@
 # Algo Stock Advisor
 
+## Latest patch: Options Lifecycle Accuracy v1
+
+This app intentionally avoids manual trade input. Active option trades should come from broker detection.
+
+The lifecycle engine now normalizes Robinhood option average prices, estimates calendar entry debit from detected broker legs, calculates current spread value/P&L, and shows assignment-risk context for short front legs.
+
+Optional environment variables:
+
+```text
+ROBINHOOD_OPTION_AVG_PRICE_SCALE=auto
+CALENDAR_LIFECYCLE_ASSIGNMENT_DTE=3
+CALENDAR_LIFECYCLE_TAKE_PROFIT_PCT=50
+CALENDAR_LIFECYCLE_STOP_LOSS_PCT=-35
+```
+
+`ROBINHOOD_OPTION_AVG_PRICE_SCALE=auto` protects against Robinhood returning option average prices as cents instead of dollars. For example, a raw value of `172` is treated as `$1.72`, preventing a 100x lifecycle P/L error.
+
+
 A modular personal portfolio and trade-opportunity assistant.
 
 Algo Stock Advisor gathers brokerage positions, watchlists, news, earnings calendars, historical market data, options chains, and strategy outputs so a daily report can recommend practical next actions. The current product is focused on aggressive growth stock review, earnings-calendar spread discovery, watchlist triage, portfolio gap analysis, and open calendar-spread lifecycle checks.

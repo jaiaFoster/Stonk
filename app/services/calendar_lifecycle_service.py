@@ -85,29 +85,41 @@ def _evaluate_one_calendar(
     current_mid_debit = _float_or_none(calendar.get("current_mid_debit"))
     current_value = _float_or_none(calendar.get("current_value_estimate"))
     cost_basis_estimate = _float_or_none(calendar.get("cost_basis_estimate"))
+    pricing_quality = calendar.get("pricing_quality") if isinstance(calendar.get("pricing_quality"), dict) else {}
 
     underlying_price = _underlying_price_for(ticker, tradier_snapshot)
     if underlying_price is None:
         underlying_price = _float_or_none((calendar.get("short_front_leg") or {}).get("underlying_price"))
 
-    memory_trade = _matching_memory_trade(calendar, trade_memory or {})
+    # Manual trade memory is intentionally not used for Algo Stock Advisor.
+    # Entry debit should come from broker-detected option leg average prices or
+    # broker cost basis only.
+    entry_debit_estimate = _float_or_none(calendar.get("entry_mid_debit_estimate"))
+    entry_debit_source = str(calendar.get("entry_source") or "broker_detected")
+    if entry_debit_estimate is None and cost_basis_estimate is not None and quantity > 0:
+        entry_debit_estimate = _normalize_entry_debit_from_total_cost(cost_basis_estimate, quantity)
+        entry_debit_source = "broker_total_cost_basis_fallback"
 
-    entry_debit_estimate = None
-    pnl_pct = None
-    if memory_trade and _float_or_none(memory_trade.get("entry_debit")) is not None:
-        entry_debit_estimate = _float_or_none(memory_trade.get("entry_debit"))
-        if entry_debit_estimate and entry_debit_estimate > 0 and current_mid_debit is not None:
-            pnl_pct = ((current_mid_debit - entry_debit_estimate) / entry_debit_estimate) * 100.0
-    elif cost_basis_estimate is not None and quantity > 0:
-        # Tradier cost-basis sign conventions can vary. Use absolute value and
-        # present this as an estimate only.
-        entry_debit_estimate = abs(cost_basis_estimate) / (quantity * 100.0)
-        if entry_debit_estimate > 0 and current_mid_debit is not None:
-            pnl_pct = ((current_mid_debit - entry_debit_estimate) / entry_debit_estimate) * 100.0
+    pnl_pct = _float_or_none(calendar.get("pnl_pct_estimate"))
+    pnl_per_spread = _float_or_none(calendar.get("pnl_per_spread_estimate"))
+    pnl_total = _float_or_none(calendar.get("pnl_total_estimate"))
+    if pnl_pct is None and entry_debit_estimate is not None and entry_debit_estimate > 0 and current_mid_debit is not None:
+        pnl_pct = ((current_mid_debit - entry_debit_estimate) / abs(entry_debit_estimate)) * 100.0
+    if pnl_per_spread is None and entry_debit_estimate is not None and current_mid_debit is not None:
+        pnl_per_spread = (current_mid_debit - entry_debit_estimate) * 100.0
+    if pnl_total is None and pnl_per_spread is not None and quantity:
+        pnl_total = pnl_per_spread * quantity
+
+    current_value_per_spread = current_mid_debit * 100.0 if current_mid_debit is not None else None
+    entry_value_per_spread = entry_debit_estimate * 100.0 if entry_debit_estimate is not None else None
 
     short_moneyness_pct = _short_leg_moneyness_pct(option_type, strike, underlying_price)
     short_itm = _short_leg_is_itm(option_type, strike, underlying_price)
     near_money = short_moneyness_pct is not None and abs(short_moneyness_pct) <= float(config.CALENDAR_LIFECYCLE_NEAR_MONEY_PCT)
+    distance_to_strike = None
+    if strike is not None and underlying_price is not None:
+        distance_to_strike = underlying_price - strike if option_type != "put" else strike - underlying_price
+    assignment_risk_level = _assignment_risk_level(short_itm, near_money, front_dte)
 
     earnings = earnings_events.get(ticker) or {}
     earnings_date = earnings.get("earnings_date") or earnings.get("date")
@@ -125,18 +137,14 @@ def _evaluate_one_calendar(
     else:
         risks.append("Current spread value unavailable; one or both leg quotes may be missing.")
 
+    target_pct = float(getattr(config, "CALENDAR_LIFECYCLE_TAKE_PROFIT_PCT", config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT))
+    max_loss_pct = float(getattr(config, "CALENDAR_LIFECYCLE_STOP_LOSS_PCT", config.CALENDAR_LIFECYCLE_MAX_LOSS_PCT))
+    target_debit = entry_debit_estimate * (1.0 + target_pct / 100.0) if entry_debit_estimate is not None else None
+    stop_debit = entry_debit_estimate * (1.0 + max_loss_pct / 100.0) if entry_debit_estimate is not None else None
+
     if entry_debit_estimate is not None and pnl_pct is not None:
-        if memory_trade:
-            reasons.append(f"Entry debit loaded from legacy trade memory: {entry_debit_estimate:.2f}.")
-        else:
-            reasons.append(f"Estimated entry debit from broker cost basis: {entry_debit_estimate:.2f}.")
-        confidence = "Medium" if not memory_trade else "Medium-High"
-        target_pct = _float_or_none((memory_trade or {}).get("profit_target_pct"))
-        max_loss_pct = _float_or_none((memory_trade or {}).get("max_loss_pct"))
-        if target_pct is None:
-            target_pct = float(config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT)
-        if max_loss_pct is None:
-            max_loss_pct = float(config.CALENDAR_LIFECYCLE_MAX_LOSS_PCT)
+        reasons.append(f"Entry debit estimated from {entry_debit_source}: {entry_debit_estimate:.2f}.")
+        confidence = "Medium-High" if (pricing_quality.get("confidence") == "high") else "Medium"
         if pnl_pct >= target_pct:
             action = "TAKE PROFIT / REVIEW EXIT"
             reasons.append("Estimated gain has reached or exceeded the configured profit target.")
@@ -145,6 +153,9 @@ def _evaluate_one_calendar(
             risks.append("Estimated loss has exceeded the configured max-loss threshold.")
     else:
         risks.append("Entry debit is unknown or only partially available; exact % P/L cannot be calculated yet.")
+
+    for warning in pricing_quality.get("warnings", []) or []:
+        risks.append(f"Pricing quality warning: {warning}.")
 
     if front_dte is not None:
         if front_dte <= int(config.CALENDAR_LIFECYCLE_URGENT_DTE):
@@ -155,6 +166,9 @@ def _evaluate_one_calendar(
             risks.append("Short front leg is inside the review window.")
         else:
             reasons.append("Short front leg is not yet inside the urgent DTE window.")
+
+    if assignment_risk_level in {"High", "Elevated"}:
+        risks.append(f"Assignment/pin risk level: {assignment_risk_level}.")
 
     if short_itm is True:
         action = _more_urgent(action, "URGENT REVIEW / EXIT CHECK")
@@ -196,7 +210,21 @@ def _evaluate_one_calendar(
         "entry_debit_estimate": entry_debit_estimate,
         "cost_basis_estimate": cost_basis_estimate,
         "estimated_pnl_pct": pnl_pct,
-                "earnings_date": earnings_date,
+        "pnl_per_spread_estimate": pnl_per_spread,
+        "pnl_total_estimate": pnl_total,
+        "current_value_per_spread": current_value_per_spread,
+        "entry_value_per_spread": entry_value_per_spread,
+        "entry_debit_source": entry_debit_source,
+        "target_profit_pct": target_pct,
+        "max_loss_pct": max_loss_pct,
+        "target_debit": target_debit,
+        "stop_debit": stop_debit,
+        "pricing_quality": pricing_quality,
+        "assignment_risk_level": assignment_risk_level,
+        "distance_to_strike": distance_to_strike,
+        "short_leg_quote": calendar.get("short_leg_quote") or {},
+        "long_leg_quote": calendar.get("long_leg_quote") or {},
+        "earnings_date": earnings_date,
         "earnings_session": earnings_session,
         "days_until_earnings": days_until_earnings,
         "earnings_known": earnings_known,
@@ -208,6 +236,30 @@ def _evaluate_one_calendar(
     }
 
 
+
+
+def _normalize_entry_debit_from_total_cost(cost_basis_estimate: float, quantity: float) -> float | None:
+    if quantity <= 0:
+        return None
+    debit = abs(cost_basis_estimate) / (quantity * 100.0)
+    # Protect against broker payloads that expose cents in the underlying cost
+    # basis. A $1.72 spread can otherwise display as $172.00.
+    if debit >= 25.0:
+        debit = debit / 100.0
+    return debit
+
+
+def _assignment_risk_level(short_itm: bool | None, near_money: bool, front_dte: int | None) -> str:
+    urgent_dte = int(getattr(config, "CALENDAR_LIFECYCLE_ASSIGNMENT_DTE", config.CALENDAR_LIFECYCLE_URGENT_DTE))
+    if short_itm is True and front_dte is not None and front_dte <= urgent_dte:
+        return "High"
+    if short_itm is True:
+        return "Elevated"
+    if near_money and front_dte is not None and front_dte <= urgent_dte:
+        return "Elevated"
+    if near_money:
+        return "Moderate"
+    return "Low"
 
 def _matching_memory_trade(calendar: dict[str, Any], trade_memory: dict[str, Any]) -> dict[str, Any] | None:
     ticker = str(calendar.get("underlying") or calendar.get("ticker") or "").upper().strip()

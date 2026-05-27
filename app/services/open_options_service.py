@@ -204,6 +204,9 @@ def _robinhood_position_to_option_leg(position: dict[str, Any]) -> dict[str, Any
         "side_inferred": False,
         "cost_basis": _float_or_none(position.get("cost_basis")),
         "avg_cost_per_contract": _float_or_none(position.get("avg_cost_per_contract")),
+        "avg_cost_per_share": _float_or_none(position.get("avg_cost_per_share") or position.get("avg_cost_per_contract")),
+        "avg_price_raw": _float_or_none(position.get("avg_price_raw")),
+        "avg_price_scale": position.get("avg_price_scale"),
         "quote": {},
         "mid": None,
         "bid": None,
@@ -286,6 +289,7 @@ def _position_to_option_leg(position: dict[str, Any]) -> dict[str, Any] | None:
         "side": side,
         "cost_basis": cost_basis,
         "avg_cost_per_contract": (cost_basis / abs_quantity) if cost_basis is not None and abs_quantity else None,
+        "avg_cost_per_share": ((cost_basis / abs_quantity) / 100.0) if cost_basis is not None and abs_quantity else None,
         "quote": {},
         "mid": None,
         "bid": None,
@@ -449,12 +453,41 @@ def _build_calendar_summary(
 
     current_value_estimate = current_mid_debit * spread_qty * 100.0 if current_mid_debit is not None else None
 
+    short_entry = _entry_price_per_share(short_leg)
+    long_entry = _entry_price_per_share(long_leg)
+    entry_mid_debit_estimate = None
+    entry_value_estimate = None
+    entry_source = "unavailable"
+    entry_quality = "missing"
+    if short_entry is not None and long_entry is not None:
+        entry_mid_debit_estimate = long_entry - short_entry
+        entry_value_estimate = entry_mid_debit_estimate * spread_qty * 100.0
+        entry_source = "broker_leg_average_prices"
+        entry_quality = _entry_quality(short_leg, long_leg)
+
     short_cost = _float_or_none(short_leg.get("cost_basis"))
     long_cost = _float_or_none(long_leg.get("cost_basis"))
     cost_basis_estimate = None
-    if short_cost is not None and long_cost is not None:
-        # Tradier cost basis signs can vary by response context; this is displayed as an estimate only.
+    if entry_value_estimate is not None:
+        cost_basis_estimate = entry_value_estimate
+    elif short_cost is not None and long_cost is not None:
+        # Broker cost-basis signs can vary by source. This fallback is lower
+        # confidence than leg-average prices and is displayed as an estimate.
         cost_basis_estimate = long_cost + short_cost
+        if spread_qty > 0:
+            entry_mid_debit_estimate = cost_basis_estimate / (spread_qty * 100.0)
+            entry_value_estimate = cost_basis_estimate
+            entry_source = "broker_total_cost_basis"
+            entry_quality = "estimated_from_total_cost_basis"
+
+    pnl_per_spread_estimate = None
+    pnl_total_estimate = None
+    pnl_pct_estimate = None
+    if current_mid_debit is not None and entry_mid_debit_estimate is not None:
+        pnl_per_spread_estimate = (current_mid_debit - entry_mid_debit_estimate) * 100.0
+        pnl_total_estimate = pnl_per_spread_estimate * spread_qty
+        if entry_mid_debit_estimate != 0:
+            pnl_pct_estimate = ((current_mid_debit - entry_mid_debit_estimate) / abs(entry_mid_debit_estimate)) * 100.0
 
     action = "MONITOR"
     risks: list[str] = []
@@ -475,12 +508,19 @@ def _build_calendar_summary(
     else:
         risks.append("Current spread value could not be estimated because one or both leg quotes were unavailable.")
 
+    if entry_mid_debit_estimate is not None:
+        reasons.append(f"Entry debit estimate from {entry_source}: {entry_mid_debit_estimate:.2f}.")
+    else:
+        risks.append("Entry debit estimate unavailable from broker payload; P/L confidence is lower.")
+
     broker_sources = sorted({str(short_leg.get("broker") or short_leg.get("source") or "unknown"), str(long_leg.get("broker") or long_leg.get("source") or "unknown")})
     side_inferred = bool(short_leg.get("side_inferred") or long_leg.get("side_inferred"))
     if side_inferred:
         risks.append("Calendar leg direction was inferred because the broker payload did not clearly mark long/short side.")
     if broker_sources:
         reasons.append("Detected from " + ", ".join(broker_sources) + " option positions.")
+
+    pricing_quality = _calendar_pricing_quality(short_leg, long_leg, current_mid_debit, entry_mid_debit_estimate, side_inferred)
 
     return {
         "strategy": "Long Calendar Spread",
@@ -500,13 +540,98 @@ def _build_calendar_summary(
         "long_back_leg": long_leg,
         "current_mid_debit": current_mid_debit,
         "current_value_estimate": current_value_estimate,
+        "entry_mid_debit_estimate": entry_mid_debit_estimate,
+        "entry_value_estimate": entry_value_estimate,
+        "entry_source": entry_source,
+        "entry_quality": entry_quality,
         "cost_basis_estimate": cost_basis_estimate,
+        "pnl_per_spread_estimate": pnl_per_spread_estimate,
+        "pnl_total_estimate": pnl_total_estimate,
+        "pnl_pct_estimate": pnl_pct_estimate,
+        "pricing_quality": pricing_quality,
+        "short_leg_quote": _compact_leg_quote(short_leg),
+        "long_leg_quote": _compact_leg_quote(long_leg),
         "action": action,
         "reasons": reasons,
         "risks": risks,
         "next_check": _next_check_for_calendar(short_leg),
     }
 
+
+def _entry_price_per_share(leg: dict[str, Any]) -> float | None:
+    for key in ["avg_cost_per_share", "avg_cost_per_contract"]:
+        val = _float_or_none(leg.get(key))
+        if val is not None:
+            # If a broker gave cents despite upstream normalization, protect the
+            # lifecycle math from a 100x display error.
+            if abs(val) >= 25.0:
+                return val / 100.0
+            return abs(val)
+    cost = _float_or_none(leg.get("cost_basis"))
+    qty = _float_or_none(leg.get("abs_quantity"))
+    if cost is not None and qty and qty > 0:
+        per_share = abs(cost) / (qty * 100.0)
+        if abs(per_share) >= 25.0:
+            return per_share / 100.0
+        return per_share
+    return None
+
+
+def _entry_quality(short_leg: dict[str, Any], long_leg: dict[str, Any]) -> str:
+    scales = {str(short_leg.get("avg_price_scale") or "unknown"), str(long_leg.get("avg_price_scale") or "unknown")}
+    if any("forced" in scale for scale in scales):
+        return "forced_scale"
+    if any("auto_cents" in scale for scale in scales):
+        return "auto_scaled_from_cents"
+    if all(scale in {"auto_dollars", "unknown", "missing"} for scale in scales):
+        return "broker_average_price"
+    return ",".join(sorted(scales))
+
+
+def _calendar_pricing_quality(
+    short_leg: dict[str, Any],
+    long_leg: dict[str, Any],
+    current_mid_debit: float | None,
+    entry_mid_debit_estimate: float | None,
+    side_inferred: bool,
+) -> dict[str, Any]:
+    warnings: list[str] = []
+    if current_mid_debit is None:
+        warnings.append("missing_current_mid")
+    if entry_mid_debit_estimate is None:
+        warnings.append("missing_entry_debit")
+    if side_inferred:
+        warnings.append("leg_side_inferred")
+    for label, leg in [("short", short_leg), ("long", long_leg)]:
+        bid = _float_or_none(leg.get("bid"))
+        ask = _float_or_none(leg.get("ask"))
+        mid = _float_or_none(leg.get("mid"))
+        if bid is None or ask is None or mid is None:
+            warnings.append(f"{label}_quote_incomplete")
+        elif mid > 0 and ((ask - bid) / mid) > 0.25:
+            warnings.append(f"{label}_wide_spread")
+    confidence = "high"
+    if warnings:
+        confidence = "medium" if len(warnings) <= 2 else "low"
+    return {"confidence": confidence, "warnings": warnings}
+
+
+def _compact_leg_quote(leg: dict[str, Any]) -> dict[str, Any]:
+    quote = leg.get("quote") or {}
+    greeks = quote.get("greeks") or quote.get("greek") or {}
+    return {
+        "symbol": leg.get("symbol"),
+        "side": leg.get("side"),
+        "expiration": leg.get("expiration"),
+        "dte": leg.get("dte"),
+        "bid": _float_or_none(leg.get("bid")),
+        "ask": _float_or_none(leg.get("ask")),
+        "mid": _float_or_none(leg.get("mid")),
+        "last": _float_or_none(leg.get("last")),
+        "delta": _float_or_none(greeks.get("delta") if isinstance(greeks, dict) else None),
+        "theta": _float_or_none(greeks.get("theta") if isinstance(greeks, dict) else None),
+        "iv": _float_or_none((greeks.get("mid_iv") or greeks.get("smv_vol") or greeks.get("iv")) if isinstance(greeks, dict) else None),
+    }
 
 def _next_check_for_calendar(short_leg: dict[str, Any]) -> str:
     dte = short_leg.get("dte")

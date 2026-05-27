@@ -759,9 +759,12 @@ def _normalize_option_position(raw, account_number, account_label):
 
     side = _infer_robinhood_option_side(raw, quantity)
     abs_quantity = abs(quantity)
-    avg_price = _float_or_none(_first_present(raw, ["average_price", "average_open_price", "average_buy_price", "price"]))
+    avg_price_raw = _float_or_none(_first_present(raw, ["average_price", "average_open_price", "average_buy_price", "price"]))
+    avg_price, avg_price_scale = _normalize_robinhood_option_average_price(avg_price_raw)
     cost_basis = None
     if avg_price is not None:
+        # Normalized option premium is dollars per share. Cost basis is total dollars
+        # for the option contract position: premium * 100 * contracts.
         cost_basis = avg_price * abs_quantity * 100.0
         if side == "short":
             cost_basis *= -1.0
@@ -787,6 +790,9 @@ def _normalize_option_position(raw, account_number, account_label):
         "side": side,
         "side_is_explicit": side in {"long", "short"},
         "avg_cost_per_contract": avg_price,
+        "avg_cost_per_share": avg_price,
+        "avg_price_raw": avg_price_raw,
+        "avg_price_scale": avg_price_scale,
         "cost_basis": cost_basis,
         "quote": {},
         "mid": None,
@@ -797,6 +803,37 @@ def _normalize_option_position(raw, account_number, account_label):
         "instrument": instrument_data or {},
     }
 
+
+
+def _normalize_robinhood_option_average_price(value):
+    """Return (premium_dollars_per_share, scale_note).
+
+    Robinhood option position payloads have appeared in two forms across
+    accounts/library versions:
+      - dollars per share: 1.72
+      - cents per share: 172
+
+    The app is a read-only viewer, so it should be conservative and explicit
+    rather than silently showing a 100x wrong debit. The environment override
+    ROBINHOOD_OPTION_AVG_PRICE_SCALE can force dollars or cents; otherwise a
+    large option premium is treated as cents.
+    """
+    raw = _float_or_none(value)
+    if raw is None:
+        return None, "missing"
+
+    mode = str(getattr(config, "ROBINHOOD_OPTION_AVG_PRICE_SCALE", "auto") or "auto").strip().lower()
+    if mode in {"cent", "cents"}:
+        return raw / 100.0, "forced_cents"
+    if mode in {"dollar", "dollars"}:
+        return raw, "forced_dollars"
+
+    # Auto heuristic: most option premiums in this app's strategies should be
+    # quoted as a single- or low-double-digit dollar amount per share. Values
+    # like 172 almost certainly mean cents for a $1.72 debit/credit leg.
+    if abs(raw) >= 25.0:
+        return raw / 100.0, "auto_cents"
+    return raw, "auto_dollars"
 
 def _option_instrument_from_position(raw):
     option_id = _option_id_from_position(raw)

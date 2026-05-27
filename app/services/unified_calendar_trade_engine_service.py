@@ -373,17 +373,29 @@ def _open_structure(item: dict[str, Any]) -> str:
 
 def _open_value_summary(item: dict[str, Any]) -> str:
     parts = []
-    for label, key in [
-        ("current debit", "current_mid_debit"),
-        ("entry debit est.", "entry_debit_estimate"),
-        ("P/L est.", "estimated_pnl_pct"),
-    ]:
-        val = item.get(key)
-        if val is not None:
-            if "P/L" in label:
-                parts.append(f"{label} {float(val):+.1f}%")
-            else:
-                parts.append(f"{label} {float(val):.2f}")
+    current = item.get("current_mid_debit")
+    entry = item.get("entry_debit_estimate")
+    pnl_pct = item.get("estimated_pnl_pct")
+    pnl_total = item.get("pnl_total_estimate")
+    target = item.get("target_debit")
+    stop = item.get("stop_debit")
+
+    if current is not None:
+        parts.append(f"current debit {float(current):.2f}")
+    if entry is not None:
+        parts.append(f"entry debit est. {float(entry):.2f}")
+    if pnl_pct is not None:
+        pnl_text = f"P/L est. {float(pnl_pct):+.1f}%"
+        if pnl_total is not None:
+            pnl_text += f" / ${float(pnl_total):+.0f}"
+        parts.append(pnl_text)
+    if target is not None or stop is not None:
+        guardrails = []
+        if target is not None:
+            guardrails.append(f"target {float(target):.2f}")
+        if stop is not None:
+            guardrails.append(f"stop {float(stop):.2f}")
+        parts.append("guardrails " + ", ".join(guardrails))
     return " | ".join(parts) if parts else "Value unavailable"
 
 

@@ -39,8 +39,11 @@ def build_daily_opportunity_engine(
 
     actions: list[dict[str, Any]] = []
     actions.extend(_calendar_actions(unified_calendar_engine or {}))
-    actions.extend(_stock_momentum_actions(stock_momentum_strategy or {}))
-    actions.extend(_portfolio_gap_actions(portfolio_gap_analysis or {}))
+    # Stock add ideas are intentionally consolidated by ticker so the top-level
+    # daily view does not show separate momentum/gap/watchlist rows for the same
+    # candidate. Detailed strategy tables can stay lower in the report until the
+    # full UI overhaul.
+    actions.extend(_unified_stock_add_actions(stock_momentum_strategy or {}, portfolio_gap_analysis or {}))
     actions.extend(_portfolio_risk_actions(recommendations or []))
 
     # De-dupe by type+ticker+action so one idea does not spam the report.
@@ -89,6 +92,88 @@ def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:
             )
     return out
 
+
+
+def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) -> list[dict[str, Any]]:
+    by_ticker: dict[str, dict[str, Any]] = {}
+
+    def ensure(ticker: Any) -> dict[str, Any] | None:
+        symbol = str(ticker or "").upper().strip()
+        if not symbol:
+            return None
+        return by_ticker.setdefault(
+            symbol,
+            {
+                "type": "stock_add",
+                "ticker": symbol,
+                "priority_score": 0.0,
+                "action": "CONSIDER ADDING",
+                "why_parts": [],
+                "next_parts": [],
+                "source_tags": [],
+                "source": "Unified Stock Add Candidate v1",
+            },
+        )
+
+    for item in strategy.get("items", []) or []:
+        action = str(item.get("action") or "")
+        if action not in {"CONSIDER ADDING", "ADD ON PULLBACK", "WATCH / CONFIRM TREND"}:
+            continue
+        row = ensure(item.get("ticker"))
+        if not row:
+            continue
+        score = float(item.get("score") or 0)
+        row["priority_score"] = max(float(row.get("priority_score") or 0), score)
+        row["action"] = _merge_stock_action(str(row.get("action") or ""), action)
+        row["source_tags"].append("momentum")
+        for reason in (item.get("reasons") or [])[:3]:
+            _append_unique(row["why_parts"], str(reason))
+        if item.get("next_check"):
+            _append_unique(row["next_parts"], str(item.get("next_check")))
+
+    for item in gap.get("suggestions", []) or []:
+        row = ensure(item.get("ticker"))
+        if not row:
+            continue
+        score = float(item.get("score") or item.get("total_score") or 58)
+        row["priority_score"] = max(float(row.get("priority_score") or 0), score)
+        row["action"] = _merge_stock_action(str(row.get("action") or ""), str(item.get("action") or "CONSIDER ADDING"))
+        row["source_tags"].append("sector_gap")
+        _append_unique(row["why_parts"], item.get("reason") or item.get("rationale") or "Candidate helps fill an aggressive-growth portfolio gap.")
+        for bucket in item.get("buckets", []) or []:
+            _append_unique(row["why_parts"], f"Bucket: {bucket}")
+        for risk in item.get("risks", []) or []:
+            _append_unique(row["why_parts"], f"Risk: {risk}")
+        if item.get("next_check"):
+            _append_unique(row["next_parts"], str(item.get("next_check")))
+
+    output = []
+    for row in by_ticker.values():
+        tags = sorted(set(row.pop("source_tags", []) or []))
+        why_parts = row.pop("why_parts", [])
+        next_parts = row.pop("next_parts", [])
+        row["why"] = "; ".join(why_parts[:5]) or "Unified stock-add engine flagged this name."
+        row["next_step"] = next_parts[0] if next_parts else "Confirm trend, sizing, sector fit, and thesis before adding."
+        row["source"] = "Unified Stock Add Candidate v1 (" + ", ".join(tags or ["stock"]) + ")"
+        output.append(row)
+    return output
+
+
+def _append_unique(items: list[str], value: Any) -> None:
+    text = str(value or "").strip()
+    if text and text not in items:
+        items.append(text)
+
+
+def _merge_stock_action(existing: str, new: str) -> str:
+    combined = " ".join([existing.upper(), new.upper()])
+    if "ADD ON PULLBACK" in combined:
+        return "ADD ON PULLBACK"
+    if "CONSIDER ADDING" in combined or "HIGH-PRIORITY" in combined:
+        return "CONSIDER ADDING"
+    if "WATCH" in combined:
+        return "WATCH / CONFIRM TREND"
+    return new or existing or "CONSIDER ADDING"
 
 def _stock_momentum_actions(strategy: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
@@ -162,7 +247,7 @@ def _finalize(result: dict[str, Any]) -> dict[str, Any]:
     result["summary"] = {
         "action_count": len(actions),
         "calendar_count": sum(1 for a in actions if a.get("type") == "calendar"),
-        "stock_count": sum(1 for a in actions if a.get("type") == "stock"),
+        "stock_count": sum(1 for a in actions if a.get("type") in {"stock", "stock_add"}),
         "gap_count": sum(1 for a in actions if a.get("type") == "gap"),
         "risk_count": sum(1 for a in actions if a.get("type") == "risk"),
     }
