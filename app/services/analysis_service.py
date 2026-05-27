@@ -168,6 +168,75 @@ EMPTY_UNIFIED_CALENDAR = {
 }
 
 
+def _enrich_open_options_with_underlying_prices(
+    open_options: dict[str, Any] | None,
+    positions: list[dict[str, Any]] | None,
+    tradier_snapshot: dict[str, Any] | None,
+    market_metrics: dict[str, Any] | None,
+) -> None:
+    """Attach best-known underlying prices to detected option calendars.
+
+    Dev mode often prices only a small equity subset through Tradier, so an
+    active Robinhood calendar such as PDD may not have a quote in
+    ``tradier_snapshot``. The stock position payload is still a reliable source
+    for current underlying price, and lifecycle risk/moneyness depends on it.
+    This helper mutates the open-options object in-place before lifecycle checks.
+    """
+    if not isinstance(open_options, dict):
+        return
+
+    price_by_ticker: dict[str, tuple[float, str]] = {}
+
+    for pos in positions or []:
+        ticker = str((pos or {}).get("ticker") or "").upper().strip()
+        price = _safe_float((pos or {}).get("current_price"))
+        if ticker and price is not None and price > 0:
+            price_by_ticker.setdefault(ticker, (price, "robinhood_position"))
+
+    for ticker, data in (tradier_snapshot or {}).items():
+        if str(ticker).startswith("_") or not isinstance(data, dict):
+            continue
+        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
+        for key in ("last", "mark", "bid", "ask", "close", "prevclose"):
+            price = _safe_float(quote.get(key))
+            if price is not None and price > 0:
+                price_by_ticker[str(ticker).upper()] = (price, f"tradier_quote.{key}")
+                break
+
+    for ticker, data in (market_metrics or {}).items():
+        if not isinstance(data, dict):
+            continue
+        for key in ("last_price", "close", "current_price"):
+            price = _safe_float(data.get(key))
+            if price is not None and price > 0:
+                price_by_ticker.setdefault(str(ticker).upper(), (price, f"market_metrics.{key}"))
+                break
+
+    for cal in open_options.get("calendars", []) or []:
+        if not isinstance(cal, dict):
+            continue
+        ticker = str(cal.get("ticker") or cal.get("underlying") or "").upper().strip()
+        if not ticker or ticker not in price_by_ticker:
+            continue
+        price, source = price_by_ticker[ticker]
+        cal["underlying_price"] = price
+        cal["underlying_price_source"] = source
+        for leg_key in ("short_front_leg", "long_back_leg"):
+            leg = cal.get(leg_key)
+            if isinstance(leg, dict):
+                leg.setdefault("underlying_price", price)
+                leg.setdefault("underlying_price_source", source)
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value in {None, ""}:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log: list[str] = []
     news: dict[str, list[dict[str, Any]]] = {}
@@ -461,6 +530,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         EMPTY_OPEN_OPTIONS,
         lambda result: f"Detected {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} open calendar(s).",
     )
+    _enrich_open_options_with_underlying_prices(open_options, positions, tradier_snapshot, market_metrics)
     tradier_snapshot["_open_options_positions"] = open_options
 
     # Manual trade memory/input is intentionally out of scope. Open calendar

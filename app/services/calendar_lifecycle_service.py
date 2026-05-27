@@ -87,9 +87,7 @@ def _evaluate_one_calendar(
     cost_basis_estimate = _float_or_none(calendar.get("cost_basis_estimate"))
     pricing_quality = calendar.get("pricing_quality") if isinstance(calendar.get("pricing_quality"), dict) else {}
 
-    underlying_price = _underlying_price_for(ticker, tradier_snapshot)
-    if underlying_price is None:
-        underlying_price = _float_or_none((calendar.get("short_front_leg") or {}).get("underlying_price"))
+    underlying_price, underlying_price_source = _best_underlying_price(ticker, calendar, tradier_snapshot)
 
     # Manual trade memory is intentionally not used for Algo Stock Advisor.
     # Entry debit should come from broker-detected option leg average prices or
@@ -117,9 +115,21 @@ def _evaluate_one_calendar(
     short_itm = _short_leg_is_itm(option_type, strike, underlying_price)
     near_money = short_moneyness_pct is not None and abs(short_moneyness_pct) <= float(config.CALENDAR_LIFECYCLE_NEAR_MONEY_PCT)
     distance_to_strike = None
+    distance_to_strike_pct = None
     if strike is not None and underlying_price is not None:
         distance_to_strike = underlying_price - strike if option_type != "put" else strike - underlying_price
+        if strike > 0:
+            distance_to_strike_pct = (distance_to_strike / strike) * 100.0
     assignment_risk_level = _assignment_risk_level(short_itm, near_money, front_dte)
+    short_leg_mid = _float_or_none((calendar.get("short_front_leg") or {}).get("mid"))
+    long_leg_mid = _float_or_none((calendar.get("long_back_leg") or {}).get("mid"))
+    short_intrinsic = _short_leg_intrinsic_value(option_type, strike, underlying_price)
+    short_extrinsic = None
+    if short_leg_mid is not None and short_intrinsic is not None:
+        short_extrinsic = max(0.0, short_leg_mid - short_intrinsic)
+    net_delta = _net_greek(calendar, "delta")
+    net_theta = _net_greek(calendar, "theta")
+    net_iv = _net_greek(calendar, "iv")
 
     earnings = earnings_events.get(ticker) or {}
     earnings_date = earnings.get("earnings_date") or earnings.get("date")
@@ -167,8 +177,19 @@ def _evaluate_one_calendar(
         else:
             reasons.append("Short front leg is not yet inside the urgent DTE window.")
 
-    if assignment_risk_level in {"High", "Elevated"}:
+    if underlying_price is not None and strike is not None:
+        reasons.append(
+            f"Underlying {underlying_price:.2f} vs short strike {strike:.2f}; "
+            f"short-leg moneyness {short_moneyness_pct:+.1f}% from {underlying_price_source}."
+        )
+    else:
+        risks.append("Underlying price unavailable; short-leg moneyness and assignment risk are lower confidence.")
+
+    if assignment_risk_level in {"High", "Elevated", "Moderate"}:
         risks.append(f"Assignment/pin risk level: {assignment_risk_level}.")
+
+    if short_extrinsic is not None and short_extrinsic < 0.10 and front_dte is not None and front_dte <= int(config.CALENDAR_LIFECYCLE_ASSIGNMENT_DTE):
+        risks.append("Short leg has very little estimated extrinsic value while close to expiration; assignment risk may rise if it moves ITM.")
 
     if short_itm is True:
         action = _more_urgent(action, "URGENT REVIEW / EXIT CHECK")
@@ -187,6 +208,8 @@ def _evaluate_one_calendar(
     else:
         risks.append("Earnings timestamp unavailable; confirm earnings date/time before holding through an event window.")
 
+    lifecycle_priority_score = _priority_score(action, pnl_pct, assignment_risk_level, front_dte, short_itm)
+    decision_summary = _decision_summary(action, pnl_pct, short_itm, assignment_risk_level, front_dte)
     next_check = _next_check(action, front_dte, short_itm, earnings_known)
 
     return {
@@ -203,8 +226,17 @@ def _evaluate_one_calendar(
         "short_front_leg": calendar.get("short_front_leg") or {},
         "long_back_leg": calendar.get("long_back_leg") or {},
         "underlying_price": underlying_price,
+        "underlying_price_source": underlying_price_source,
         "short_leg_moneyness_pct": short_moneyness_pct,
+        "distance_to_strike_pct": distance_to_strike_pct,
         "short_leg_itm": short_itm,
+        "short_leg_intrinsic_value": short_intrinsic,
+        "short_leg_extrinsic_value": short_extrinsic,
+        "short_leg_mid": short_leg_mid,
+        "long_leg_mid": long_leg_mid,
+        "net_delta_estimate": net_delta,
+        "net_theta_estimate": net_theta,
+        "net_iv_estimate": net_iv,
         "current_mid_debit": current_mid_debit,
         "current_value_estimate": current_value,
         "entry_debit_estimate": entry_debit_estimate,
@@ -222,6 +254,8 @@ def _evaluate_one_calendar(
         "pricing_quality": pricing_quality,
         "assignment_risk_level": assignment_risk_level,
         "distance_to_strike": distance_to_strike,
+        "lifecycle_priority_score": lifecycle_priority_score,
+        "decision_summary": decision_summary,
         "short_leg_quote": calendar.get("short_leg_quote") or {},
         "long_leg_quote": calendar.get("long_leg_quote") or {},
         "earnings_date": earnings_date,
@@ -235,6 +269,102 @@ def _evaluate_one_calendar(
         "next_check": next_check,
     }
 
+
+
+def _best_underlying_price(
+    ticker: str,
+    calendar: dict[str, Any],
+    tradier_snapshot: dict[str, dict[str, Any]],
+) -> tuple[float | None, str]:
+    # Highest priority: price explicitly attached by analysis_service from
+    # Robinhood stock positions. This is crucial in dev mode because Tradier
+    # snapshot coverage may be limited to a small ticker subset.
+    price = _float_or_none(calendar.get("underlying_price"))
+    if price is not None and price > 0:
+        return price, str(calendar.get("underlying_price_source") or "calendar")
+
+    for leg_key in ("short_front_leg", "long_back_leg"):
+        leg = calendar.get(leg_key) if isinstance(calendar.get(leg_key), dict) else {}
+        price = _float_or_none(leg.get("underlying_price"))
+        if price is not None and price > 0:
+            return price, str(leg.get("underlying_price_source") or leg_key)
+
+    price = _underlying_price_for(ticker, tradier_snapshot)
+    if price is not None and price > 0:
+        return price, "tradier_snapshot"
+
+    return None, "unavailable"
+
+
+def _short_leg_intrinsic_value(option_type: str, strike: float | None, underlying_price: float | None) -> float | None:
+    if strike is None or underlying_price is None:
+        return None
+    if option_type == "put":
+        return max(0.0, strike - underlying_price)
+    return max(0.0, underlying_price - strike)
+
+
+def _net_greek(calendar: dict[str, Any], greek: str) -> float | None:
+    short_quote = calendar.get("short_leg_quote") if isinstance(calendar.get("short_leg_quote"), dict) else {}
+    long_quote = calendar.get("long_leg_quote") if isinstance(calendar.get("long_leg_quote"), dict) else {}
+    short_val = _float_or_none(short_quote.get(greek))
+    long_val = _float_or_none(long_quote.get(greek))
+    if short_val is None and long_val is None:
+        return None
+    # Long calendar net exposure = long back leg minus short front leg.
+    return (long_val or 0.0) - (short_val or 0.0)
+
+
+def _priority_score(
+    action: str,
+    pnl_pct: float | None,
+    assignment_risk_level: str,
+    front_dte: int | None,
+    short_itm: bool | None,
+) -> float:
+    score = 65.0
+    action_upper = str(action or "").upper()
+    if "URGENT" in action_upper:
+        score = 95.0
+    elif "CUT" in action_upper or "EXIT" in action_upper:
+        score = 90.0
+    elif "TAKE PROFIT" in action_upper:
+        score = 88.0
+    elif "RECHECK" in action_upper or "EVENT" in action_upper:
+        score = 78.0
+    if assignment_risk_level == "High":
+        score = max(score, 96.0)
+    elif assignment_risk_level == "Elevated":
+        score = max(score, 88.0)
+    elif assignment_risk_level == "Moderate":
+        score = max(score, 76.0)
+    if short_itm is True:
+        score = max(score, 94.0)
+    if front_dte is not None and front_dte <= 1:
+        score = max(score, 92.0)
+    if pnl_pct is not None and pnl_pct <= float(getattr(config, "CALENDAR_LIFECYCLE_STOP_LOSS_PCT", -35)):
+        score = max(score, 90.0)
+    return round(min(score, 100.0), 1)
+
+
+def _decision_summary(
+    action: str,
+    pnl_pct: float | None,
+    short_itm: bool | None,
+    assignment_risk_level: str,
+    front_dte: int | None,
+) -> str:
+    parts = [str(action or "Review")]
+    if pnl_pct is not None:
+        parts.append(f"P/L {pnl_pct:+.1f}%")
+    if front_dte is not None:
+        parts.append(f"short leg {front_dte} DTE")
+    if short_itm is True:
+        parts.append("short leg ITM")
+    elif short_itm is False:
+        parts.append("short leg OTM")
+    parts.append(f"assignment risk {assignment_risk_level}")
+    return " | ".join(parts)
 
 
 

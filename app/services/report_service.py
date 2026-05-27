@@ -1123,11 +1123,15 @@ def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
             f"pricing {escape(str(pricing_quality.get('confidence') or 'unknown'))}</span>"
         )
         risk_state = (
-            f"Underlying {money(check.get('underlying_price'))}<br>"
+            f"Underlying {money(check.get('underlying_price'))} "
+            f"<span class='muted'>({escape(str(check.get('underlying_price_source') or 'source unknown'))})</span><br>"
             f"Short moneyness {signed_pct(check.get('short_leg_moneyness_pct'))}<br>"
-            f"Distance to strike {money(check.get('distance_to_strike'))}<br>"
+            f"Distance to strike {money(check.get('distance_to_strike'))} "
+            f"/ {signed_pct(check.get('distance_to_strike_pct'))}<br>"
             f"Short ITM {yes_no(check.get('short_leg_itm'))}<br>"
-            f"Assignment risk {escape(str(check.get('assignment_risk_level') or 'Unknown'))}"
+            f"Assignment risk {escape(str(check.get('assignment_risk_level') or 'Unknown'))}<br>"
+            f"Short extrinsic {option_money(check.get('short_leg_extrinsic_value'))}<br>"
+            f"Net Δ {number(check.get('net_delta_estimate'))} | Net Θ {number(check.get('net_theta_estimate'))}"
         )
         earnings = (
             f"{escape(str(check.get('earnings_date') or 'Unknown'))}<br>"

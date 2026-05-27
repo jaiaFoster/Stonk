@@ -54,8 +54,12 @@ def build_daily_opportunity_engine(
         if key in seen:
             continue
         seen.add(key)
+        # Active option/calendar lifecycle alerts are allowed through even when
+        # their raw trade score is low. A losing calendar can be the most
+        # important thing to look at today.
         if float(action.get("priority_score") or 0) < float(getattr(config, "DAILY_OPPORTUNITY_MIN_SCORE", 55) or 55):
-            continue
+            if str(action.get("type") or "") not in {"calendar", "active_calendar"}:
+                continue
         deduped.append(action)
         if len(deduped) >= int(getattr(config, "DAILY_OPPORTUNITY_MAX_ACTIONS", 12) or 12):
             break
@@ -76,7 +80,28 @@ def build_daily_opportunity_engine(
 
 def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
-    for row in (engine.get("new_trade_rows") or []) + (engine.get("open_trade_rows") or []):
+
+    # Active trades first: this is the most important daily viewer value.
+    # A detected open calendar may require action even when its P/L score is low.
+    for row in engine.get("open_trade_rows") or []:
+        verdict = str(row.get("verdict") or "").upper()
+        raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+        score = float(raw.get("lifecycle_priority_score") or row.get("score") or 0)
+        if "URGENT" in verdict or "EXIT" in verdict or "CUT" in verdict or "RECHECK" in verdict or "TAKE PROFIT" in verdict:
+            score = max(score, 90.0 if ("URGENT" in verdict or "CUT" in verdict) else 78.0)
+        out.append(
+            {
+                "type": "active_calendar",
+                "ticker": row.get("ticker"),
+                "priority_score": score,
+                "action": row.get("verdict") or "Calendar review",
+                "why": _active_calendar_why(row),
+                "next_step": row.get("next_action") or "Review live spread quotes before acting.",
+                "source": "Active Calendar Lifecycle v2",
+            }
+        )
+
+    for row in engine.get("new_trade_rows") or []:
         verdict = str(row.get("verdict") or "").upper()
         if verdict.startswith("PASS") or "URGENT" in verdict or "TAKE PROFIT" in verdict or "EXIT" in verdict:
             out.append(
@@ -230,6 +255,20 @@ def _portfolio_risk_actions(recommendations: list[dict[str, Any]]) -> list[dict[
     return out
 
 
+def _active_calendar_why(row: dict[str, Any]) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    parts = []
+    decision = raw.get("decision_summary")
+    if decision:
+        parts.append(str(decision))
+    value = row.get("value")
+    if value:
+        parts.append(str(value))
+    risks = [str(r) for r in (row.get("risks") or [])[:2]]
+    parts.extend(risks)
+    return "; ".join(parts) or "Open calendar needs lifecycle review."
+
+
 def _calendar_why(row: dict[str, Any]) -> str:
     reqs = row.get("requirements") or []
     passed = [r.get("name") for r in reqs if str(r.get("status") or "").upper() == "PASS"]
@@ -246,7 +285,7 @@ def _finalize(result: dict[str, Any]) -> dict[str, Any]:
     actions = result.get("actions", []) or []
     result["summary"] = {
         "action_count": len(actions),
-        "calendar_count": sum(1 for a in actions if a.get("type") == "calendar"),
+        "calendar_count": sum(1 for a in actions if a.get("type") in {"calendar", "active_calendar"}),
         "stock_count": sum(1 for a in actions if a.get("type") in {"stock", "stock_add"}),
         "gap_count": sum(1 for a in actions if a.get("type") == "gap"),
         "risk_count": sum(1 for a in actions if a.get("type") == "risk"),

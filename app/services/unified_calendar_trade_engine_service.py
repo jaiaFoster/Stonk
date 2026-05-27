@@ -353,14 +353,21 @@ def _possible_spread(candidate: dict[str, Any]) -> dict[str, Any]:
 
 
 def _score_open_trade(check: dict[str, Any]) -> float:
+    explicit = _float_or_none(check.get("lifecycle_priority_score"))
+    if explicit is not None:
+        return explicit
     action = str(check.get("action") or "").upper()
-    if "TAKE PROFIT" in action:
+    # Score here means daily-review priority, not trade attractiveness. A losing
+    # or urgent active trade should rank high because it needs attention.
+    if "URGENT" in action:
+        return 95.0
+    if "CUT" in action or "EXIT" in action:
         return 90.0
-    if "CUT" in action or "URGENT" in action:
-        return 20.0
+    if "TAKE PROFIT" in action:
+        return 88.0
     if "RECHECK" in action or "EVENT" in action:
-        return 55.0
-    return 70.0
+        return 78.0
+    return 65.0
 
 
 def _open_structure(item: dict[str, Any]) -> str:
@@ -396,6 +403,19 @@ def _open_value_summary(item: dict[str, Any]) -> str:
         if stop is not None:
             guardrails.append(f"stop {float(stop):.2f}")
         parts.append("guardrails " + ", ".join(guardrails))
+
+    underlying = item.get("underlying_price")
+    moneyness = item.get("short_leg_moneyness_pct")
+    assignment = item.get("assignment_risk_level")
+    if underlying is not None or moneyness is not None or assignment:
+        risk_bits = []
+        if underlying is not None:
+            risk_bits.append(f"underlying {float(underlying):.2f}")
+        if moneyness is not None:
+            risk_bits.append(f"short moneyness {float(moneyness):+.1f}%")
+        if assignment:
+            risk_bits.append(f"assignment {assignment}")
+        parts.append("risk " + ", ".join(risk_bits))
     return " | ".join(parts) if parts else "Value unavailable"
 
 

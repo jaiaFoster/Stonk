@@ -391,3 +391,25 @@ This patch makes the app easier to use from the Railway production URL and on mo
 ```
 
 Open the base Railway URL on your phone and paste your token once.
+
+## Lifecycle Backlog Cleanup v2
+
+This patch deepens active-calendar lifecycle checks before the larger UI overhaul.
+It keeps the app read-only and automatic: no manual trade entry, no manual trade memory, and no trade execution.
+
+Highlights:
+
+- Active broker-detected calendars now receive better underlying-price enrichment.
+- Robinhood stock-position prices can feed option moneyness when dev-mode Tradier coverage is narrow.
+- Calendar lifecycle checks now include short-leg moneyness, distance to strike, ITM/OTM status, assignment risk, short-leg extrinsic value, and rough net Greeks when available.
+- Daily Opportunity now includes urgent active-calendar alerts so an open calendar can appear above ordinary stock-add candidates.
+- `railway.toml` sets a Gunicorn start command for Railway deployments.
+
+Relevant variables:
+
+```text
+CALENDAR_LIFECYCLE_ASSIGNMENT_DTE=3
+CALENDAR_LIFECYCLE_NEAR_MONEY_PCT=2
+CALENDAR_LIFECYCLE_TAKE_PROFIT_PCT=50
+CALENDAR_LIFECYCLE_STOP_LOSS_PCT=-35
+```

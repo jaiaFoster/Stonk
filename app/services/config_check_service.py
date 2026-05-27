@@ -86,6 +86,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "robinhood_option_avg_price_scale": getattr(config, "ROBINHOOD_OPTION_AVG_PRICE_SCALE", "auto"),
         "calendar_lifecycle_take_profit_pct": getattr(config, "CALENDAR_LIFECYCLE_TAKE_PROFIT_PCT", config.CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT),
         "calendar_lifecycle_stop_loss_pct": getattr(config, "CALENDAR_LIFECYCLE_STOP_LOSS_PCT", config.CALENDAR_LIFECYCLE_MAX_LOSS_PCT),
+        "calendar_lifecycle_assignment_dte": getattr(config, "CALENDAR_LIFECYCLE_ASSIGNMENT_DTE", config.CALENDAR_LIFECYCLE_URGENT_DTE),
+        "calendar_lifecycle_near_money_pct": getattr(config, "CALENDAR_LIFECYCLE_NEAR_MONEY_PCT", 2),
     }
 
     enabled_modules = {
