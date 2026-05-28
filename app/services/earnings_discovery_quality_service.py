@@ -97,7 +97,7 @@ def filter_earnings_discovery_for_calendar_scan(
         try:
             expirations = provider.get_expirations(ticker)
             row["expiration_count"] = len(expirations)
-            pair = _select_calendar_expiration_pair(expirations)
+            pair = _select_calendar_expiration_pair(expirations, event=item)
             if pair:
                 row["front_expiration"] = pair[0]
                 row["back_expiration"] = pair[1]
@@ -218,10 +218,13 @@ def _finalize_quality_row(row: dict[str, Any]) -> None:
         score += 4
     dte = _number(row.get("days_until_earnings"))
     if dte is not None:
-        if 2 <= dte <= 4:
-            score += 6
-        elif dte <= 1:
-            score -= 5
+        ideal_min = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE", 6) or 6)
+        ideal_max = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE", 12) or 12)
+        late_dte = int(getattr(config, "EARNINGS_CALENDAR_LATE_ENTRY_DTE", 4) or 4)
+        if ideal_min <= dte <= ideal_max:
+            score += 8
+        elif dte <= late_dte:
+            score -= 4
     avg_volume = _number(row.get("average_volume")) or 0
     if avg_volume >= 5_000_000:
         score += 8
@@ -237,17 +240,90 @@ def _finalize_quality_row(row: dict[str, Any]) -> None:
     row["primary_rejection_reason"] = fail_reasons[0] if fail_reasons else None
 
 
-def _select_calendar_expiration_pair(expirations: list[str]) -> tuple[str, str] | None:
+def _select_calendar_expiration_pair(expirations: list[str], event: dict[str, Any] | None = None) -> tuple[str, str] | None:
+    """Pick the best front/back expiration pair.
+
+    For earnings-calendar discovery, prefer a short leg that expires before
+    the earnings event and a long leg that remains open after the event. This
+    fixes the old generic calendar behavior that often selected a front leg
+    after earnings, causing otherwise interesting names such as CRDO/HPE to
+    be rejected as "not an earnings calendar."
+    """
     today = date.today()
     parsed: list[tuple[int, str]] = []
     for raw in expirations or []:
         dte = _dte(raw, today=today)
-        if dte is not None:
+        if dte is not None and dte >= 0:
             parsed.append((dte, str(raw)))
     parsed.sort(key=lambda item: item[0])
     if not parsed:
         return None
 
+    if bool(getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True)) and event:
+        event_pair = _select_event_aware_pair(parsed, event, today)
+        if event_pair:
+            return event_pair
+
+    return _select_generic_calendar_pair(parsed)
+
+
+def _select_event_aware_pair(
+    parsed_expirations: list[tuple[int, str]],
+    event: dict[str, Any],
+    today: date,
+) -> tuple[str, str] | None:
+    event_date = _parse_date(event.get("earnings_date") or event.get("date"))
+    if not event_date:
+        return None
+
+    session = str(event.get("session_label") or event.get("time_of_day") or event.get("hour") or "").lower()
+    event_dte = (event_date - today).days
+    front_min = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MIN_DTE", 1) or 1)
+    front_max = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MAX_DTE", 14) or 14)
+    back_min_after_event = int(getattr(config, "CALENDAR_EARNINGS_BACK_MIN_DTE_AFTER_EVENT", 14) or 14)
+    back_max = int(getattr(config, "CALENDAR_EARNINGS_BACK_MAX_DTE", config.CALENDAR_BACK_MAX_DTE) or config.CALENDAR_BACK_MAX_DTE)
+    target_gap = int(getattr(config, "CALENDAR_TARGET_EXPIRATION_GAP_DAYS", 30) or 30)
+
+    # For AMC earnings, same-day expiration occurs before the announcement.
+    # For BMO/unknown, require the short leg to expire strictly before the event.
+    same_day_ok = "after" in session or "amc" in session
+
+    front_candidates: list[tuple[int, str]] = []
+    for dte, exp in parsed_expirations:
+        exp_date = _parse_date(exp)
+        if not exp_date:
+            continue
+        expires_before_event = exp_date < event_date or (same_day_ok and exp_date == event_date)
+        if not expires_before_event:
+            continue
+        if front_min <= dte <= front_max:
+            front_candidates.append((dte, exp))
+
+    if not front_candidates:
+        return None
+
+    best_pair: tuple[float, str, str] | None = None
+    for front_dte, front_exp in front_candidates:
+        for back_dte, back_exp in parsed_expirations:
+            back_date = _parse_date(back_exp)
+            if not back_date or back_date <= event_date:
+                continue
+            if back_dte < event_dte + back_min_after_event or back_dte > back_max:
+                continue
+            gap = back_dte - front_dte
+            if gap < int(config.CALENDAR_MIN_EXPIRATION_GAP_DAYS or 14):
+                continue
+            # Prefer a back leg near target gap and a front leg close to, but before, earnings.
+            score = abs(gap - target_gap) + abs((event_dte - front_dte) - 1) * 0.35
+            if best_pair is None or score < best_pair[0]:
+                best_pair = (score, front_exp, back_exp)
+
+    if best_pair:
+        return best_pair[1], best_pair[2]
+    return None
+
+
+def _select_generic_calendar_pair(parsed: list[tuple[int, str]]) -> tuple[str, str] | None:
     front_min = int(config.CALENDAR_FRONT_MIN_DTE or 7)
     front_max = int(config.CALENDAR_FRONT_MAX_DTE or 21)
     min_gap = int(config.CALENDAR_MIN_EXPIRATION_GAP_DAYS or 14)
@@ -275,11 +351,25 @@ def _prioritize_raw_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     def key(item: dict[str, Any]) -> tuple[int, int, str]:
         dte = _number(item.get("days_until_earnings"))
         confirmed = 0 if item.get("is_timestamp_confirmed") else 1
-        # Prefer 2-4 DTE, then earlier dates, then symbol.
-        distance_penalty = 999 if dte is None else abs(int(dte) - 3)
+        ideal_min = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE", 6) or 6)
+        ideal_max = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE", 12) or 12)
+        ideal_mid = (ideal_min + ideal_max) / 2.0
+        # Prefer confirmed events in the ideal entry window, then near-window events.
+        if dte is None:
+            distance_penalty = 999
+        elif ideal_min <= dte <= ideal_max:
+            distance_penalty = int(abs(dte - ideal_mid))
+        else:
+            distance_penalty = int(min(abs(dte - ideal_min), abs(dte - ideal_max)) + 20)
         return (distance_penalty, confirmed, str(item.get("ticker") or item.get("symbol") or ""))
     return sorted(events, key=key)
 
+
+def _parse_date(value: Any) -> date | None:
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:
     return {"name": name, "status": status.upper(), "detail": str(detail)}

@@ -121,6 +121,8 @@ def format_payload(
     portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
     daily_opportunity = daily_opportunity_from_tradier_snapshot(tradier_snapshot)
+    calendar_ranking = calendar_ranking_from_tradier_snapshot(tradier_snapshot)
+    earnings_mini_backtest = earnings_mini_backtest_from_tradier_snapshot(tradier_snapshot)
 
     lines = [
         f"Date: {today}",
@@ -152,6 +154,12 @@ def format_payload(
 
     lines += ["", "=== ACTIVE CALENDAR TRADES ==="]
     lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
+
+    lines += ["", "=== CALENDAR RANKING V2 ==="]
+    lines.extend(format_calendar_ranking_text(calendar_ranking))
+
+    lines += ["", "=== EARNINGS MINI-BACKTEST V1 ==="]
+    lines.extend(format_earnings_mini_backtest_text(earnings_mini_backtest))
 
     lines += ["", "=== STOCK MOMENTUM ADD STRATEGY V1 ==="]
     lines.extend(format_stock_momentum_text(stock_momentum))
@@ -381,6 +389,8 @@ def format_html(
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
     stock_momentum_rows = format_stock_momentum_rows(stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot))
     daily_opportunity_rows = format_daily_opportunity_rows(daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot))
+    calendar_ranking_rows = format_calendar_ranking_rows(calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot))
+    earnings_mini_backtest_rows = format_earnings_mini_backtest_rows(earnings_mini_backtest_from_tradier_snapshot(parsed_tradier_snapshot))
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     pipeline_status_rows = format_pipeline_status_rows(pipeline_status)
     pipeline_summary_html = format_pipeline_summary(pipeline_status)
@@ -415,6 +425,7 @@ def format_html(
         <a href="#stock-momentum">Stock Ideas</a>
         <a href="#portfolio-gap">Sector Gaps</a>
         <a href="#calendar-engine">Calendars</a>
+        <a href="#calendar-ranking">Ranking</a>
         <a href="#monitor-details">Monitor</a>
         <a href="#debug-output">Debug</a>
     </nav>
@@ -535,6 +546,34 @@ def format_html(
             <th>Entry / Next Action</th>
         </tr>
         {unified_calendar_rows}
+    </table>
+
+    <h2 id="calendar-ranking">Calendar Ranking v2</h2>
+    <p class="muted">Ranks discovered earnings-calendar candidates. Mini-backtest eligibility requires all core criteria to pass.</p>
+    <table>
+        <tr>
+            <th>Ticker / Score</th>
+            <th>Action</th>
+            <th>Entry Timing</th>
+            <th>Criteria</th>
+            <th>Reasons / Risks</th>
+            <th>Next</th>
+        </tr>
+        {calendar_ranking_rows}
+    </table>
+
+    <h2 id="earnings-backtest">Earnings Mini-Backtest v1</h2>
+    <p class="muted">Candle-based historical earnings move review. Runs only for fully-qualified Calendar Ranking v2 candidates.</p>
+    <table>
+        <tr>
+            <th>Ticker</th>
+            <th>Events</th>
+            <th>Avg / Max Move</th>
+            <th>Gap / Run-up</th>
+            <th>Interpretation</th>
+            <th>Notes</th>
+        </tr>
+        {earnings_mini_backtest_rows}
     </table>
 
     <h2>Relevant News</h2>
@@ -1817,6 +1856,20 @@ def unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot: Tradie
     return raw if isinstance(raw, dict) else {}
 
 
+def calendar_ranking_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_calendar_ranking", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def earnings_mini_backtest_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_earnings_mini_backtest", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def format_unified_calendar_engine_text(engine: dict[str, Any]) -> list[str]:
     if not engine:
         return ["Unified calendar engine did not run for this report."]
@@ -1945,6 +1998,95 @@ def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
             <td>{next_action}</td>
         </tr>"""
 
+    return rows
+
+
+def format_calendar_ranking_text(ranking: dict[str, Any]) -> list[str]:
+    if not ranking or not ranking.get("items"):
+        errors = ranking.get("errors", []) if isinstance(ranking, dict) else []
+        return ["No ranked calendar candidates." + (" " + "; ".join(str(e) for e in errors[:2]) if errors else "")]
+    summary = ranking.get("summary", {}) or {}
+    lines = [
+        f"Candidates {summary.get('candidate_count', 0)} | Pass all criteria {summary.get('pass_count', 0)} | Backtest eligible {summary.get('backtest_eligible_count', 0)}"
+    ]
+    for item in ranking.get("items", [])[:10]:
+        lines.append(
+            f"{item.get('ticker', 'UNKNOWN')}: Rank {number(item.get('rank_score'), 1)} | {item.get('action') or 'WATCH'} | "
+            f"Timing {item.get('entry_timing') or 'UNKNOWN'} | DTE {item.get('days_until_earnings') if item.get('days_until_earnings') is not None else '—'} | "
+            f"Pass {yes_no(item.get('passes_all_criteria'))} | Backtest {yes_no(item.get('backtest_eligible'))}"
+        )
+        for crit in (item.get("criteria", []) or [])[:5]:
+            lines.append(f"  {crit.get('status')}: {crit.get('name')}: {crit.get('detail')}")
+        if item.get("next_check"):
+            lines.append(f"  Next: {item.get('next_check')}")
+    return lines
+
+
+def format_earnings_mini_backtest_text(backtest: dict[str, Any]) -> list[str]:
+    if not backtest or not backtest.get("items"):
+        errors = backtest.get("errors", []) if isinstance(backtest, dict) else []
+        return ["Mini-backtest skipped." + (" " + "; ".join(str(e) for e in errors[:2]) if errors else "")]
+    lines = []
+    for item in backtest.get("items", []) or []:
+        summary = item.get("summary", {}) or {}
+        if not item.get("has_data"):
+            lines.append(f"{item.get('ticker', 'UNKNOWN')}: no historical earnings/candle data available. {'; '.join(str(e) for e in (item.get('errors', []) or [])[:2])}")
+            continue
+        lines.append(
+            f"{item.get('ticker', 'UNKNOWN')}: {summary.get('event_count', 0)} events | "
+            f"avg abs move {pct(summary.get('avg_abs_event_move_pct'))} | max abs move {pct(summary.get('max_abs_event_move_pct'))} | "
+            f"avg gap {pct(summary.get('avg_abs_gap_pct'))} | avg pre-run {signed_pct(summary.get('avg_pre_event_runup_pct'))}"
+        )
+        lines.append(f"  {summary.get('interpretation') or 'No interpretation.'}")
+    return lines
+
+
+def format_calendar_ranking_rows(ranking: dict[str, Any]) -> str:
+    if not ranking or not ranking.get("items"):
+        errors = ranking.get("errors", []) if isinstance(ranking, dict) else []
+        message = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No calendar candidates were ranked.</span>'
+        return f'<tr><td colspan="6" class="empty">{message}</td></tr>'
+    rows = ""
+    for item in (ranking.get("items", []) or [])[:20]:
+        action = escape(str(item.get("action") or "WATCH"))
+        cls = _calendar_verdict_class(action)
+        rows += f"""
+        <tr>
+            <td class="score"><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong><br>{number(item.get('rank_score'), 1)}</td>
+            <td><span class="pill {cls}">{action}</span><br><span class="muted">Base {number(item.get('base_score'), 1)}</span></td>
+            <td>{escape(str(item.get('entry_timing') or 'UNKNOWN'))}<br><span class="muted">DTE {escape(str(item.get('days_until_earnings') if item.get('days_until_earnings') is not None else '—'))}</span></td>
+            <td>{format_requirement_list(item.get('criteria', []) or [])}</td>
+            <td>{format_compact_list([str(x) for x in ((item.get('reasons', []) or []) + (item.get('risks', []) or []))[:7]])}</td>
+            <td>{escape(str(item.get('next_check') or 'Recheck later.'))}</td>
+        </tr>"""
+    return rows
+
+
+def format_earnings_mini_backtest_rows(backtest: dict[str, Any]) -> str:
+    if not backtest or not backtest.get("items"):
+        errors = backtest.get("errors", []) if isinstance(backtest, dict) else []
+        message = format_compact_list([str(e) for e in errors[:3]]) if errors else '<span class="empty">No backtest was run.</span>'
+        return f'<tr><td colspan="6" class="empty">{message}</td></tr>'
+    rows = ""
+    for item in backtest.get("items", []) or []:
+        summary = item.get("summary", {}) or {}
+        notes = [str(n) for n in (backtest.get("notes", []) or [])[:2]]
+        if not item.get("has_data"):
+            rows += f"""
+            <tr>
+                <td><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong></td>
+                <td colspan="5" class="empty">No historical backtest data. {format_compact_list([str(e) for e in (item.get('errors', []) or [])[:3]])}</td>
+            </tr>"""
+            continue
+        rows += f"""
+        <tr>
+            <td><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong><br><span class="muted">Rank {number(item.get('ranking_score'), 1)}</span></td>
+            <td>{summary.get('event_count', 0)} historical event(s)</td>
+            <td>Avg abs {pct(summary.get('avg_abs_event_move_pct'))}<br>Max abs {pct(summary.get('max_abs_event_move_pct'))}<br>Small-move rate {pct(summary.get('small_move_rate_pct'))}</td>
+            <td>Avg gap {pct(summary.get('avg_abs_gap_pct'))}<br>Avg pre-run {signed_pct(summary.get('avg_pre_event_runup_pct'))}</td>
+            <td>{escape(str(summary.get('interpretation') or 'No interpretation.'))}</td>
+            <td>{format_compact_list(notes)}</td>
+        </tr>"""
     return rows
 
 

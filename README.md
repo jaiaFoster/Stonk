@@ -413,3 +413,55 @@ CALENDAR_LIFECYCLE_NEAR_MONEY_PCT=2
 CALENDAR_LIFECYCLE_TAKE_PROFIT_PCT=50
 CALENDAR_LIFECYCLE_STOP_LOSS_PCT=-35
 ```
+
+## Calendar Ranking + Earnings Mini-Backtest v1
+
+This patch expands the earnings-calendar strategy layer before the major UI overhaul.
+
+### What changed
+
+- Earnings trade discovery now looks farther ahead by default: `+4..+14` calendar days instead of `+2..+4`.
+- Earnings calendar expiration selection is now event-aware:
+  - Prefer a short/front leg that expires before the earnings event.
+  - Prefer a long/back leg that remains open after the earnings event.
+  - For after-market-close earnings, same-day expiration can be treated as before the event, but it is timing-sensitive.
+- Calendar Ranking v2 adds a strict criteria gate for discovered candidates:
+  - confirmed earnings timestamp
+  - event-capturing expiration placement
+  - acceptable bid/ask spread
+  - acceptable open interest
+  - acceptable volume
+  - acceptable debit size
+  - acceptable IV relationship
+  - preferred entry timing window
+- Earnings Mini-Backtest v1 runs only for candidates that pass the full Calendar Ranking v2 gate.
+- The mini-backtest is candle-based: it reviews historical underlying moves around prior earnings, not historical option P/L.
+
+### Important defaults
+
+```text
+EARNINGS_DISCOVERY_START_DAYS=4
+EARNINGS_DISCOVERY_END_DAYS=14
+EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE=6
+EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE=12
+EARNINGS_CALENDAR_LATE_ENTRY_DTE=4
+CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS=true
+CALENDAR_EARNINGS_FRONT_MIN_DTE=1
+CALENDAR_EARNINGS_FRONT_MAX_DTE=14
+CALENDAR_EARNINGS_BACK_MIN_DTE_AFTER_EVENT=14
+CALENDAR_EARNINGS_BACK_MAX_DTE=75
+CALENDAR_BACKTEST_ENABLED=true
+CALENDAR_BACKTEST_MAX_CANDIDATES=3
+CALENDAR_BACKTEST_MAX_EVENTS=10
+CALENDAR_BACKTEST_LOOKBACK_DAYS=900
+CALENDAR_BACKTEST_ENTRY_DAYS_BEFORE=7
+CALENDAR_BACKTEST_EXIT_DAYS_AFTER=1
+```
+
+### Backtest rule
+
+The app intentionally skips the mini-backtest unless the calendar candidate passes all core criteria. This prevents the expensive historical review from running on junk, illiquid, late, or structurally invalid calendars.
+
+### Railway start command
+
+The app uses `start.sh` via `railway.toml` so Railway expands `$PORT` safely at runtime.

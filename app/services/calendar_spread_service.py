@@ -80,9 +80,13 @@ def scan_calendar_spreads_for_positions(
                 continue
 
             expirations = provider.get_expirations(ticker)
-            pairs = _select_expiration_pairs(expirations)
+            earnings_event = _event_for_ticker(positions, ticker)
+            pairs = _select_expiration_pairs(expirations, earnings_event=earnings_event)
             if not pairs:
-                logger(f"Calendar {ticker}: no front/back expiration pair matched scanner settings.")
+                if earnings_event:
+                    logger(f"Calendar {ticker}: no front/back expiration pair captured earnings timing settings.")
+                else:
+                    logger(f"Calendar {ticker}: no front/back expiration pair matched scanner settings.")
                 continue
 
             ticker_candidates: CalendarCandidates = []
@@ -105,6 +109,7 @@ def scan_calendar_spreads_for_positions(
                     back_expiration=back_exp,
                     front_chain=front_chain,
                     back_chain=back_chain,
+                    earnings_event=earnings_event,
                 )
                 if candidate:
                     ticker_candidates.append(candidate)
@@ -131,6 +136,7 @@ def _build_best_candidate(
     back_expiration: str,
     front_chain: list[dict[str, Any]],
     back_chain: list[dict[str, Any]],
+    earnings_event: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     option_type = str(config.CALENDAR_OPTION_TYPE or "call").lower().strip()
     front_options = [
@@ -171,6 +177,7 @@ def _build_best_candidate(
         back_expiration=back_expiration,
         front_leg=front_leg,
         back_leg=back_leg,
+        earnings_event=earnings_event,
     )
 
 
@@ -182,6 +189,7 @@ def _score_candidate(
     back_expiration: str,
     front_leg: dict[str, Any],
     back_leg: dict[str, Any],
+    earnings_event: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     today = date.today()
     front_dte = _days_to_expiration(front_expiration, today)
@@ -274,6 +282,8 @@ def _score_candidate(
         "atm_distance_pct": atm_distance_pct,
         "reasons": reasons,
         "risks": risks,
+        "earnings_event": earnings_event or {},
+        "earnings_timing": _earnings_timing_payload(earnings_event, front_expiration, back_expiration),
         "next_check": _next_check(action),
     }
 
@@ -378,7 +388,7 @@ def _next_check(action: str) -> str:
     return "Avoid for now; liquidity, spread, debit, or structure does not pass v1 filters."
 
 
-def _select_expiration_pairs(expirations: list[str]) -> list[tuple[str, str]]:
+def _select_expiration_pairs(expirations: list[str], earnings_event: dict[str, Any] | None = None) -> list[tuple[str, str]]:
     today = date.today()
     parsed: list[tuple[int, str]] = []
     for raw in expirations:
@@ -387,6 +397,60 @@ def _select_expiration_pairs(expirations: list[str]) -> list[tuple[str, str]]:
             parsed.append((dte, str(raw)))
     parsed.sort(key=lambda item: item[0])
 
+    if bool(getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True)) and earnings_event:
+        event_pairs = _select_earnings_expiration_pairs(parsed, earnings_event, today)
+        if event_pairs:
+            return event_pairs
+
+    return _select_generic_expiration_pairs(parsed)
+
+
+def _select_earnings_expiration_pairs(
+    parsed: list[tuple[int, str]],
+    earnings_event: dict[str, Any],
+    today: date,
+) -> list[tuple[str, str]]:
+    event_date = _parse_date(earnings_event.get("earnings_date") or earnings_event.get("date"))
+    if not event_date:
+        return []
+
+    session = str(earnings_event.get("session_label") or earnings_event.get("time_of_day") or earnings_event.get("hour") or "").lower()
+    same_day_ok = "after" in session or "amc" in session
+    event_dte = (event_date - today).days
+    front_min = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MIN_DTE", 1) or 1)
+    front_max = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MAX_DTE", 14) or 14)
+    min_gap = int(config.CALENDAR_MIN_EXPIRATION_GAP_DAYS or 14)
+    target_gap = int(config.CALENDAR_TARGET_EXPIRATION_GAP_DAYS or 30)
+    back_min_after_event = int(getattr(config, "CALENDAR_EARNINGS_BACK_MIN_DTE_AFTER_EVENT", 14) or 14)
+    back_max = int(getattr(config, "CALENDAR_EARNINGS_BACK_MAX_DTE", config.CALENDAR_BACK_MAX_DTE) or config.CALENDAR_BACK_MAX_DTE)
+
+    front_candidates: list[tuple[int, str]] = []
+    for dte, exp in parsed:
+        exp_date = _parse_date(exp)
+        if not exp_date:
+            continue
+        expires_before_event = exp_date < event_date or (same_day_ok and exp_date == event_date)
+        if expires_before_event and front_min <= dte <= front_max:
+            front_candidates.append((dte, exp))
+
+    scored_pairs: list[tuple[float, str, str]] = []
+    for front_dte, front_exp in front_candidates:
+        for back_dte, back_exp in parsed:
+            back_date = _parse_date(back_exp)
+            if not back_date or back_date <= event_date:
+                continue
+            gap = back_dte - front_dte
+            if gap < min_gap or back_dte > back_max or back_dte < event_dte + back_min_after_event:
+                continue
+            score = abs(gap - target_gap) + abs((event_dte - front_dte) - 1) * 0.35
+            scored_pairs.append((score, front_exp, back_exp))
+
+    scored_pairs.sort(key=lambda item: item[0])
+    limit = max(1, int(config.CALENDAR_MAX_EXPIRATION_PAIRS_PER_TICKER or 1))
+    return [(front, back) for _, front, back in scored_pairs[:limit]]
+
+
+def _select_generic_expiration_pairs(parsed: list[tuple[int, str]]) -> list[tuple[str, str]]:
     front_candidates = [
         item for item in parsed
         if int(config.CALENDAR_FRONT_MIN_DTE) <= item[0] <= int(config.CALENDAR_FRONT_MAX_DTE)
@@ -413,6 +477,44 @@ def _select_expiration_pairs(expirations: list[str]) -> list[tuple[str, str]]:
 
     return pairs
 
+
+def _event_for_ticker(positions: list[dict[str, Any]], ticker: str) -> dict[str, Any] | None:
+    clean = str(ticker or "").upper().strip()
+    for pos in positions or []:
+        if str(pos.get("ticker") or "").upper().strip() != clean:
+            continue
+        event = pos.get("earnings_event")
+        if isinstance(event, dict) and (event.get("earnings_date") or event.get("date")):
+            return event
+    return None
+
+
+def _earnings_timing_payload(earnings_event: dict[str, Any] | None, front_expiration: str, back_expiration: str) -> dict[str, Any]:
+    event_date = _parse_date((earnings_event or {}).get("earnings_date") or (earnings_event or {}).get("date"))
+    front_date = _parse_date(front_expiration)
+    back_date = _parse_date(back_expiration)
+    session = str((earnings_event or {}).get("session_label") or (earnings_event or {}).get("time_of_day") or "").lower()
+    same_day_ok = "after" in session or "amc" in session
+    short_before = False
+    long_after = False
+    if event_date and front_date:
+        short_before = front_date < event_date or (same_day_ok and front_date == event_date)
+    if event_date and back_date:
+        long_after = back_date > event_date
+    return {
+        "earnings_date": event_date.isoformat() if event_date else None,
+        "session_label": (earnings_event or {}).get("session_label"),
+        "short_expires_before_event": short_before,
+        "long_expires_after_event": long_after,
+        "captures_event": bool(short_before and long_after),
+    }
+
+
+def _parse_date(value: Any) -> date | None:
+    try:
+        return datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 def _equity_tickers_from_positions(positions: list[dict[str, Any]]) -> list[str]:
     tickers: list[str] = []

@@ -78,6 +78,12 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "earnings_discovery_max_optionable_to_check": config.EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK,
         "earnings_discovery_dev_max_optionable_to_check": config.EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK,
         "earnings_discovery_max_final_candidates": config.EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES,
+        "earnings_discovery_window_days": f"+{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS}",
+        "earnings_calendar_ideal_entry_window": f"{getattr(config, 'EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE', 6)}-{getattr(config, 'EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE', 12)} DTE",
+        "calendar_earnings_event_aware_expirations": getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True),
+        "calendar_backtest_enabled": getattr(config, "CALENDAR_BACKTEST_ENABLED", True),
+        "calendar_backtest_max_events": getattr(config, "CALENDAR_BACKTEST_MAX_EVENTS", 10),
+        "calendar_backtest_gate": "only candidates passing Calendar Ranking v2 all-criteria gate",
         "stock_momentum_watchlist_market_data_max": config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX,
         "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
         "robinhood_options_scan_default_account": getattr(config, "ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT", True),
@@ -101,6 +107,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "portfolio_gap": config.PORTFOLIO_GAP_ENABLED,
         "stock_momentum": config.STOCK_MOMENTUM_STRATEGY_ENABLED,
         "daily_opportunity": config.DAILY_OPPORTUNITY_ENGINE_ENABLED,
+        "calendar_ranking": True,
+        "earnings_mini_backtest": getattr(config, "CALENDAR_BACKTEST_ENABLED", True),
         "robinhood_options_detector": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
     }
 

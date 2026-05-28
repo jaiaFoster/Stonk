@@ -18,11 +18,13 @@ from typing import Any, Callable
 from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
+from app.services.calendar_ranking_service import build_calendar_ranking
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.daily_opportunity_engine_service import build_daily_opportunity_engine
 from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
 from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
 from app.services.earnings_service import discover_upcoming_earnings_for_calendar_trades, get_earnings_for_positions
+from app.services.earnings_mini_backtest_service import build_earnings_mini_backtest
 from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.open_options_service import detect_open_options_positions
 from app.services.pipeline_helpers import (
@@ -167,6 +169,25 @@ EMPTY_UNIFIED_CALENDAR = {
     },
 }
 
+EMPTY_CALENDAR_RANKING = {
+    "source": "calendar_ranking_v2",
+    "enabled": True,
+    "has_data": False,
+    "items": [],
+    "eligible_for_backtest": [],
+    "errors": [],
+    "summary": {"candidate_count": 0, "pass_count": 0, "backtest_eligible_count": 0},
+}
+
+EMPTY_EARNINGS_BACKTEST = {
+    "source": "earnings_mini_backtest_v1",
+    "enabled": True,
+    "has_data": False,
+    "items": [],
+    "errors": [],
+    "summary": {"candidate_count": 0, "with_history_count": 0},
+}
+
 
 def _enrich_open_options_with_underlying_prices(
     open_options: dict[str, Any] | None,
@@ -251,6 +272,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     portfolio_gap_analysis: dict[str, Any] = {}
     stock_momentum_strategy: dict[str, Any] = {}
     daily_opportunity_engine: dict[str, Any] = {}
+    calendar_ranking: dict[str, Any] = dict(EMPTY_CALENDAR_RANKING)
+    earnings_mini_backtest: dict[str, Any] = dict(EMPTY_EARNINGS_BACKTEST)
     trade_memory: dict[str, Any] = dict(EMPTY_TRADE_MEMORY)
 
     clean_mode = normalize_run_mode(run_mode)
@@ -570,6 +593,31 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
     )
     tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
+
+    calendar_ranking = run_optional_step(
+        "calendar_ranking",
+        "Running Calendar Ranking v2...",
+        lambda: build_calendar_ranking(
+            calendar_candidates=calendar_candidates,
+            earnings_calendar_strategy=earnings_calendar_strategy,
+            log_print=log_print,
+        ),
+        EMPTY_CALENDAR_RANKING,
+        lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
+    )
+    tradier_snapshot["_calendar_ranking"] = calendar_ranking
+
+    earnings_mini_backtest = run_optional_step(
+        "earnings_mini_backtest",
+        "Running Earnings Mini-Backtest v1...",
+        lambda: build_earnings_mini_backtest(
+            calendar_ranking=calendar_ranking,
+            log_print=log_print,
+        ),
+        EMPTY_EARNINGS_BACKTEST,
+        lambda result: f"Earnings mini-backtest produced history for {((result or {}).get('summary', {}) or {}).get('with_history_count', 0)} candidate(s).",
+    )
+    tradier_snapshot["_earnings_mini_backtest"] = earnings_mini_backtest
 
     begin_step(pipeline_status, "portfolio_scoring", "Running Portfolio Scoring v2 inputs...")
     log_print("Running Portfolio Scoring v2 inputs...")
