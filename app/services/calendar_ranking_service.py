@@ -97,15 +97,15 @@ def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any]) -> dict
 
     max_spread = _float(candidate.get("max_leg_spread_pct"))
     spread_ok = max_spread is not None and max_spread <= float(config.CALENDAR_MAX_LEG_SPREAD_PCT)
-    criteria.append(_criterion("Bid/ask spread", spread_ok, f"Max leg spread {max_spread:.1f}% <= {config.CALENDAR_MAX_LEG_SPREAD_PCT}%" if max_spread is not None else "Spread unavailable."))
+    criteria.append(_criterion("Bid/ask spread", spread_ok, _threshold_detail("Max leg spread", max_spread, float(config.CALENDAR_MAX_LEG_SPREAD_PCT), "max", "%", "limit") if max_spread is not None else "Spread unavailable."))
 
     min_oi = _float(candidate.get("min_leg_open_interest"))
     oi_ok = min_oi is not None and min_oi >= float(config.CALENDAR_MIN_OPEN_INTEREST)
-    criteria.append(_criterion("Open interest", oi_ok, f"Min OI {min_oi:.0f} >= {config.CALENDAR_MIN_OPEN_INTEREST}" if min_oi is not None else "Open interest unavailable."))
+    criteria.append(_criterion("Open interest", oi_ok, _threshold_detail("Min OI", min_oi, float(config.CALENDAR_MIN_OPEN_INTEREST), "min", "", "minimum") if min_oi is not None else "Open interest unavailable."))
 
     min_vol = _float(candidate.get("min_leg_volume"))
     vol_ok = min_vol is not None and min_vol >= float(config.CALENDAR_MIN_VOLUME)
-    criteria.append(_criterion("Same-day volume", vol_ok, f"Min volume {min_vol:.0f} >= {config.CALENDAR_MIN_VOLUME}" if min_vol is not None else "Volume unavailable.", status="PASS" if vol_ok else "WARN"))
+    criteria.append(_criterion("Same-day volume", vol_ok, _threshold_detail("Min volume", min_vol, float(config.CALENDAR_MIN_VOLUME), "min", "", "preferred minimum") if min_vol is not None else "Volume unavailable.", status="PASS" if vol_ok else "WARN"))
 
     debit_pct = _float(candidate.get("debit_pct_underlying"))
     debit_ok = debit_pct is not None and debit_pct <= float(config.CALENDAR_MAX_DEBIT_PCT_UNDERLYING)
@@ -197,6 +197,20 @@ def _event_dte(candidate: dict[str, Any], strategy: dict[str, Any]) -> int | Non
 
 def _criterion(name: str, ok: bool, detail: str, status: str | None = None) -> dict[str, Any]:
     return {"name": name, "status": status or ("PASS" if ok else "FAIL"), "detail": str(detail), "ok": bool(ok)}
+
+
+def _threshold_detail(label: str, value: float, threshold: float, direction: str, suffix: str, threshold_label: str) -> str:
+    if direction == "max":
+        op = "<=" if value <= threshold else ">"
+    else:
+        op = ">=" if value >= threshold else "<"
+    if suffix == "%":
+        left = f"{value:.1f}%"
+        right = f"{threshold:g}%"
+    else:
+        left = f"{value:.0f}"
+        right = f"{threshold:g}"
+    return f"{label} {left} {op} {right} {threshold_label}."
 
 
 def _next_check(action: str, timing_label: str) -> str:

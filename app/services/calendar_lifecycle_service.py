@@ -123,6 +123,7 @@ def _evaluate_one_calendar(
         if strike > 0:
             distance_to_strike_pct = (distance_to_strike / strike) * 100.0
     assignment_risk_level = _assignment_risk_level(short_itm, near_money, front_dte)
+    assignment_risk_reasons: list[str] = []
     short_leg_mid = _float_or_none((calendar.get("short_front_leg") or {}).get("mid"))
     long_leg_mid = _float_or_none((calendar.get("long_back_leg") or {}).get("mid"))
     short_intrinsic = _short_leg_intrinsic_value(option_type, strike, underlying_price)
@@ -184,11 +185,19 @@ def _evaluate_one_calendar(
             f"Underlying {underlying_price:.2f} vs short strike {strike:.2f}; "
             f"short-leg moneyness {short_moneyness_pct:+.1f}% from {underlying_price_source}."
         )
+        assignment_risk_reasons.append(
+            f"Underlying is {abs(distance_to_strike or 0):.2f} from short strike; "
+            f"short leg is {'ITM' if short_itm else 'OTM' if short_itm is False else 'unknown'}."
+        )
     else:
         risks.append("Underlying price unavailable; short-leg moneyness and assignment risk are lower confidence.")
+        assignment_risk_reasons.append("Underlying price unavailable; moneyness could not be calculated.")
 
     if assignment_risk_level in {"High", "Elevated", "Moderate"}:
         risks.append(f"Assignment/pin risk level: {assignment_risk_level}.")
+        assignment_risk_reasons.append(f"Assignment/pin risk is {assignment_risk_level} based on DTE and moneyness.")
+    elif assignment_risk_level:
+        assignment_risk_reasons.append(f"Assignment/pin risk is {assignment_risk_level} based on DTE and moneyness.")
 
     if short_extrinsic is not None and short_extrinsic < 0.10 and front_dte is not None and front_dte <= int(config.CALENDAR_LIFECYCLE_ASSIGNMENT_DTE):
         risks.append("Short leg has very little estimated extrinsic value while close to expiration; assignment risk may rise if it moves ITM.")
@@ -220,6 +229,7 @@ def _evaluate_one_calendar(
         "underlying": ticker,
         "option_type": option_type,
         "strike": strike,
+        "short_strike": strike,
         "quantity": quantity,
         "front_expiration": calendar.get("front_expiration"),
         "back_expiration": calendar.get("back_expiration"),
@@ -230,8 +240,12 @@ def _evaluate_one_calendar(
         "underlying_price": underlying_price,
         "underlying_price_source": underlying_price_source,
         "short_leg_moneyness_pct": short_moneyness_pct,
+        "short_moneyness_pct": short_moneyness_pct,
         "distance_to_strike_pct": distance_to_strike_pct,
+        "distance_to_short_strike_dollars": distance_to_strike,
+        "distance_to_short_strike_pct": distance_to_strike_pct,
         "short_leg_itm": short_itm,
+        "short_itm": short_itm,
         "short_leg_intrinsic_value": short_intrinsic,
         "short_leg_extrinsic_value": short_extrinsic,
         "short_leg_mid": short_leg_mid,
@@ -255,6 +269,7 @@ def _evaluate_one_calendar(
         "stop_debit": stop_debit,
         "pricing_quality": pricing_quality,
         "assignment_risk_level": assignment_risk_level,
+        "assignment_risk_reasons": assignment_risk_reasons,
         "distance_to_strike": distance_to_strike,
         "lifecycle_priority_score": lifecycle_priority_score,
         "decision_summary": decision_summary,

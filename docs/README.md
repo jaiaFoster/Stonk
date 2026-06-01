@@ -13,6 +13,7 @@ This folder is a patch history plus a few forward-looking design notes. Treat ne
 ## Current High-Value Docs
 
 - `calendar_verdict_hold_through_research_v1.md` - final verdicts, hard fails, trade type, hold-through scoring, diagnostic research.
+- `calendar_verdict_cleanup_v2.md` - session-aware trade types, ranking wording cleanup, active-calendar priority, lifecycle moneyness enrichment.
 - `options_lifecycle_accuracy_v1.md` - broker-detected lifecycle accuracy and Robinhood average-price normalization.
 - `robinhood_calendar_auto_detect_v1.md` - automatic open calendar detection and disabled manual routes.
 - `calendar_ranking_backtest_v1.md` - ranking gate and eligibility mini-backtest rule.

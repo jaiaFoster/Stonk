@@ -37,33 +37,45 @@ class CalendarFinalVerdict:
         return asdict(self)
 
 
-def classify_trade_type(candidate: dict[str, Any], ranking: dict[str, Any] | None = None) -> dict[str, Any]:
+def classify_calendar_trade_type(candidate: dict[str, Any], ranking: dict[str, Any] | None = None) -> dict[str, Any]:
     earnings = _first_dict(
         candidate.get("earnings_event"),
         candidate.get("earnings"),
         ((ranking or {}).get("strategy") or {}).get("earnings") if isinstance((ranking or {}).get("strategy"), dict) else None,
     )
-    timing = candidate.get("earnings_timing") if isinstance(candidate.get("earnings_timing"), dict) else {}
     event_date = _parse_date(earnings.get("earnings_date") or earnings.get("date"))
     front = _parse_date(candidate.get("front_expiration") or candidate.get("short_expiration"))
     back = _parse_date(candidate.get("back_expiration") or candidate.get("long_expiration"))
-    confirmed = bool(earnings.get("is_timestamp_confirmed"))
-    session = str(earnings.get("session_label") or earnings.get("session") or "").strip().lower()
+    session = _normalize_session(earnings.get("session_label") or earnings.get("session") or earnings.get("earnings_session"))
+    confirmed = bool(earnings.get("is_timestamp_confirmed")) and session != "unknown"
+    max_front_days = int(getattr(config, "CALENDAR_TRUE_IV_FRONT_MAX_DAYS_AFTER_EVENT", 7) or 7)
+    detail = ""
 
-    if not event_date or not front or not back or not confirmed or session in {"", "unknown", "unconfirmed"}:
+    if not event_date or not front or not back or (not confirmed and not bool(getattr(config, "CALENDAR_UNKNOWN_TIMESTAMP_CAN_PASS", False))):
         key = "unknown_event_timing"
-    elif bool(timing.get("captures_event")):
-        key = "true_earnings_iv_crush_calendar"
-    elif front < event_date and back >= event_date:
-        key = "true_earnings_iv_crush_calendar"
-    elif front < event_date and back < event_date:
-        key = "pre_earnings_financing_or_directional_long_vol"
-    elif front > event_date and back > event_date:
-        key = "not_an_earnings_calendar"
-    elif front >= event_date:
+        detail = "Earnings date/session is missing or unconfirmed."
+    elif session == "unknown":
+        key = "unknown_event_timing"
+        detail = "Earnings session is unknown, so event inclusion cannot be trusted."
+    elif not _expiration_includes_event(front, event_date, session):
+        if _expiration_includes_event(back, event_date, session):
+            key = "pre_earnings_financing_or_directional_long_vol"
+            detail = "Short leg expires before the earnings release; long leg carries the event."
+        else:
+            key = "not_an_earnings_calendar"
+            detail = "Neither expiration cleanly carries the earnings event."
+    elif (front - event_date).days > max_front_days:
         key = "invalid_for_earnings_strategy"
+        detail = f"Front short expiration is {(front - event_date).days} days after earnings, beyond the {max_front_days}-day event-IV window."
+    elif not back or back <= front:
+        key = "invalid_for_earnings_strategy"
+        detail = "Long expiration must be after the short expiration."
+    elif front < event_date:
+        key = "pre_earnings_financing_or_directional_long_vol"
+        detail = "Short leg expires before earnings; this is not a true event-IV short calendar."
     else:
-        key = "unknown_event_timing"
+        key = "true_earnings_iv_crush_calendar"
+        detail = "Short/front leg includes the earnings event and long leg remains open after it."
 
     labels = {
         "true_earnings_iv_crush_calendar": "TRUE EARNINGS IV-CRUSH CALENDAR",
@@ -72,7 +84,17 @@ def classify_trade_type(candidate: dict[str, Any], ranking: dict[str, Any] | Non
         "invalid_for_earnings_strategy": "INVALID FOR STRATEGY",
         "unknown_event_timing": "TIMESTAMP UNKNOWN",
     }
-    return {"trade_type": key, "trade_type_label": labels.get(key, "TIMESTAMP UNKNOWN")}
+    return {
+        "trade_type": key,
+        "trade_type_label": labels.get(key, "TIMESTAMP UNKNOWN"),
+        "trade_type_detail": detail,
+        "event_session": session,
+        "front_days_after_event": None if not event_date or not front else (front - event_date).days,
+    }
+
+
+def classify_trade_type(candidate: dict[str, Any], ranking: dict[str, Any] | None = None) -> dict[str, Any]:
+    return classify_calendar_trade_type(candidate, ranking)
 
 
 def apply_hard_fail_overrides(
@@ -182,9 +204,10 @@ def build_final_calendar_verdict(
         verdict, status = "WATCH / RESEARCH ONLY", "WATCH"
         blockers.append("Pre-earnings financing/long-vol structures are research-only by default.")
     if trade_type in {"not_an_earnings_calendar", "invalid_for_earnings_strategy"} and status == "PASS":
-        verdict, status = "FAIL / NOT AN EARNINGS CALENDAR", "FAIL"
-        blockers.append("Structure does not match the earnings-calendar strategy.")
-    if trade_type == "unknown_event_timing" and status == "PASS":
+        verdict = "FAIL / INVALID FOR STRATEGY" if trade_type == "invalid_for_earnings_strategy" else "FAIL / NOT AN EARNINGS CALENDAR"
+        status = "FAIL"
+        blockers.append(trade.get("trade_type_detail") or "Structure does not match the earnings-calendar strategy.")
+    if trade_type == "unknown_event_timing" and status == "PASS" and not bool(getattr(config, "CALENDAR_UNKNOWN_TIMESTAMP_CAN_PASS", False)):
         verdict, status = "WATCH ONLY / TIMESTAMP UNCONFIRMED", "WATCH"
         blockers.append("Trade type cannot be confirmed without earnings timing.")
 
@@ -319,6 +342,29 @@ def _timestamp_confirmed(candidate: dict[str, Any], ranking: dict[str, Any] | No
     ):
         if isinstance(payload, dict) and payload.get("is_timestamp_confirmed"):
             return True
+    return False
+
+
+def _normalize_session(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return "unknown"
+    if text in {"bmo", "before open", "before market open", "before-market-open", "pre-market", "premarket"}:
+        return "bmo"
+    if text in {"amc", "after close", "after market close", "after-market-close", "post-market", "postmarket"}:
+        return "amc"
+    if "before" in text and "market" in text:
+        return "bmo"
+    if "after" in text and ("market" in text or "close" in text):
+        return "amc"
+    return "unknown"
+
+
+def _expiration_includes_event(expiration: date, event_date: date, session: str) -> bool:
+    if session == "bmo":
+        return expiration >= event_date
+    if session == "amc":
+        return expiration > event_date
     return False
 
 

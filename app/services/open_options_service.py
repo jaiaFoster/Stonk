@@ -146,6 +146,9 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
         _attach_leg_quotes(provider, option_legs, logger)
 
     calendars = _detect_calendar_spreads(option_legs)
+    if calendars and provider.is_configured and bool(getattr(config, "CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES", True)):
+        enriched = _attach_underlying_quotes(provider, calendars, logger)
+        logger(f"Calendar Lifecycle: underlying quote enriched for {enriched}/{len(calendars)} active calendar(s).")
     result["calendars"] = calendars
     result["has_data"] = bool(raw_positions or option_legs or calendars)
 
@@ -356,6 +359,47 @@ def _attach_leg_quotes(provider: TradierProvider, option_legs: list[dict[str, An
         leg["last"] = last
         leg["mid"] = mid
         leg["market_value_estimate"] = (mid * qty * 100.0) if mid is not None else None
+
+
+def _attach_underlying_quotes(provider: TradierProvider, calendars: list[dict[str, Any]], logger: LogFn) -> int:
+    tickers = sorted({
+        str(cal.get("ticker") or cal.get("underlying") or "").upper().strip()
+        for cal in calendars
+        if isinstance(cal, dict) and str(cal.get("ticker") or cal.get("underlying") or "").strip()
+    })
+    if not tickers:
+        return 0
+    try:
+        quotes = provider.get_quotes(tickers, greeks=False)
+    except Exception as e:
+        safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
+        logger(f"Calendar Lifecycle underlying quote enrichment failed: {safe_error}")
+        return 0
+
+    enriched = 0
+    for cal in calendars:
+        ticker = str(cal.get("ticker") or cal.get("underlying") or "").upper().strip()
+        quote = quotes.get(ticker) or {}
+        price, key = _best_equity_quote_price(quote)
+        if price is None:
+            continue
+        cal["underlying_price"] = price
+        cal["underlying_price_source"] = f"tradier_underlying_quote.{key}"
+        enriched += 1
+        for leg_key in ("short_front_leg", "long_back_leg"):
+            leg = cal.get(leg_key)
+            if isinstance(leg, dict):
+                leg["underlying_price"] = price
+                leg["underlying_price_source"] = f"tradier_underlying_quote.{key}"
+    return enriched
+
+
+def _best_equity_quote_price(quote: dict[str, Any]) -> tuple[float | None, str]:
+    for key in ("last", "mark", "bid", "ask", "close", "prevclose"):
+        price = _float_or_none(quote.get(key))
+        if price is not None and price > 0:
+            return price, key
+    return None, "unavailable"
 
 
 def _detect_calendar_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str, Any]]:

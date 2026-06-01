@@ -94,6 +94,11 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_lifecycle_stop_loss_pct": getattr(config, "CALENDAR_LIFECYCLE_STOP_LOSS_PCT", config.CALENDAR_LIFECYCLE_MAX_LOSS_PCT),
         "calendar_lifecycle_assignment_dte": getattr(config, "CALENDAR_LIFECYCLE_ASSIGNMENT_DTE", config.CALENDAR_LIFECYCLE_URGENT_DTE),
         "calendar_lifecycle_near_money_pct": getattr(config, "CALENDAR_LIFECYCLE_NEAR_MONEY_PCT", 2),
+        "calendar_true_iv_front_max_days_after_event": getattr(config, "CALENDAR_TRUE_IV_FRONT_MAX_DAYS_AFTER_EVENT", 7),
+        "calendar_pre_earnings_financing_can_pass": getattr(config, "CALENDAR_PRE_EARNINGS_FINANCING_CAN_PASS", False),
+        "calendar_unknown_timestamp_can_pass": getattr(config, "CALENDAR_UNKNOWN_TIMESTAMP_CAN_PASS", False),
+        "daily_opportunity_prioritize_active_calendars": getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True),
+        "calendar_lifecycle_fetch_underlying_quotes": getattr(config, "CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES", True),
     }
 
     enabled_modules = {
@@ -110,6 +115,9 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_ranking": True,
         "earnings_mini_backtest": getattr(config, "CALENDAR_BACKTEST_ENABLED", True),
         "robinhood_options_detector": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
+        "calendar_trade_type_rules": True,
+        "daily_opportunity_active_calendar_priority": getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True),
+        "lifecycle_underlying_quote_enrichment": getattr(config, "CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES", True),
     }
 
     ready_count = sum(1 for provider in providers.values() if provider["ready"])

@@ -200,6 +200,7 @@ def _build_new_trade_row(
     elif has_candidate:
         requirements.append(_req("Earnings placement", "WARN", "Candidate exists, but earnings-aware strategy did not evaluate it."))
 
+    no_structure_blocker = "" if has_candidate else _no_structure_blocker(quality_row, requirements)
     final = build_final_calendar_verdict(candidate, ranking, None, account_context) if has_candidate else {}
     verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy))
     entry_plan = _entry_plan(verdict, event, candidate, strategy)
@@ -212,11 +213,11 @@ def _build_new_trade_row(
         "verdict": verdict,
         "final_verdict": final,
         "trade_type": final.get("trade_type") or "",
-        "trade_type_label": final.get("trade_type_label") or "",
-        "main_blocker": final.get("main_blocker") or "",
-        "main_reason": final.get("main_reason") or "",
-        "backtest_status": final.get("backtest_status") or "",
-        "account_risk_status": final.get("account_risk_status") or "",
+        "trade_type_label": final.get("trade_type_label") or ("No proposed spread" if not has_candidate else ""),
+        "main_blocker": final.get("main_blocker") or no_structure_blocker,
+        "main_reason": final.get("main_reason") or no_structure_blocker,
+        "backtest_status": final.get("backtest_status") or ("skipped_no_candidate" if not has_candidate else ""),
+        "account_risk_status": final.get("account_risk_status") or ("UNKNOWN ACCOUNT VALUE" if not has_candidate else ""),
         "account_risk_warning": final.get("account_risk_warning") or "",
         "raw_scanner_verdict": final.get("raw_scanner_verdict") or _new_trade_verdict(has_candidate, strategy),
         "entry_plan": entry_plan,
@@ -229,6 +230,26 @@ def _build_new_trade_row(
         "reasons": _dedupe((final.get("reasons") or []) + (strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),
         "risks": _dedupe((final.get("blockers") or []) + (strategy.get("risks", []) if strategy else []) + (candidate.get("risks", []) if candidate else [])),
     }
+
+
+def _no_structure_blocker(quality_row: dict[str, Any], requirements: list[dict[str, str]]) -> str:
+    rejection = str((quality_row or {}).get("primary_rejection_reason") or "").strip()
+    if rejection:
+        return rejection
+    for check in (quality_row or {}).get("checks", []) or []:
+        if not isinstance(check, dict):
+            continue
+        status = str(check.get("status") or "").upper()
+        detail = str(check.get("detail") or "").strip()
+        name = str(check.get("name") or "precheck").strip()
+        if status == "FAIL" and detail:
+            return detail
+        if status == "FAIL":
+            return f"{name} failed."
+    for req in requirements:
+        if str(req.get("status") or "").upper() == "FAIL" and req.get("detail"):
+            return str(req.get("detail"))
+    return "No proposed spread exists."
 
 
 def _candidate_requirements(candidate: dict[str, Any]) -> list[dict[str, str]]:

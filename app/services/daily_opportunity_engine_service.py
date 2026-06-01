@@ -16,6 +16,18 @@ from app import config
 
 LogFn = Callable[[str], None]
 
+ACTION_TYPE_PRIORITY = {
+    "active_calendar": 0,
+    "portfolio_risk": 1,
+    "risk": 1,
+    "calendar": 2,
+    "holding": 3,
+    "stock_add": 4,
+    "stock": 4,
+    "gap": 5,
+    "monitor": 6,
+}
+
 
 def build_daily_opportunity_engine(
     unified_calendar_engine: dict[str, Any] | None,
@@ -49,7 +61,7 @@ def build_daily_opportunity_engine(
     # De-dupe by type+ticker+action so one idea does not spam the report.
     deduped: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
-    for action in sorted(actions, key=lambda item: float(item.get("priority_score") or 0), reverse=True):
+    for action in sorted(actions, key=_daily_sort_key):
         key = (str(action.get("type") or ""), str(action.get("ticker") or ""), str(action.get("action") or ""))
         if key in seen:
             continue
@@ -75,7 +87,16 @@ def build_daily_opportunity_engine(
         f"{summary.get('stock_count', 0)} stock, "
         f"{summary.get('risk_count', 0)} risk."
     )
+    if bool(getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True)):
+        logger("Daily Opportunity Engine: active_calendar rows prioritized above stock_add rows.")
     return finalized
+
+
+def _daily_sort_key(item: dict[str, Any]) -> tuple[int, float]:
+    if not bool(getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True)):
+        return (0, -float(item.get("priority_score") or 0))
+    action_type = str(item.get("type") or "")
+    return (ACTION_TYPE_PRIORITY.get(action_type, 99), -float(item.get("priority_score") or 0))
 
 
 def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:

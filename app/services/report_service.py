@@ -1976,6 +1976,7 @@ def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
             )
         else:
             spread_text = '<span class="empty">No proposed spread — failed scanner requirements.</span>'
+        raw_note = _calendar_raw_scanner_note(item)
 
         rows += f"""
         <tr>
@@ -1984,7 +1985,7 @@ def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
             <td>{earnings_text}</td>
             <td>{spread_text}</td>
             <td>{format_requirement_list(requirements)}<br><span class="muted">Trade type: {escape(str(item.get('trade_type_label') or 'Unknown'))}<br>Main blocker: {escape(str(item.get('main_blocker') or '—'))}<br>Backtest: {escape(str(item.get('backtest_status') or '—'))}<br>Account risk: {escape(str(item.get('account_risk_status') or '—'))}</span></td>
-            <td>{entry_plan}<br><span class="muted">Raw scanner: {escape(str(item.get('raw_scanner_verdict') or '—'))}<br>{escape(str(item.get('main_reason') or ''))}</span></td>
+            <td>{entry_plan}<br><span class="muted">{raw_note}<br>{escape(str(item.get('main_reason') or ''))}</span></td>
         </tr>"""
 
     for item in open_rows[:30]:
@@ -2116,6 +2117,15 @@ def format_requirement_list(requirements: list[dict[str, Any]]) -> str:
         cls = "yes" if status == "PASS" else "no" if status == "FAIL" else "muted"
         items.append(f"<li><strong class='{cls}'>{status}</strong> — {name}: <span class='muted'>{detail}</span></li>")
     return '<ul class="compact">' + ''.join(items) + '</ul>'
+
+
+def _calendar_raw_scanner_note(item: dict[str, Any]) -> str:
+    raw = escape(str(item.get("raw_scanner_verdict") or "—"))
+    verdict = str(item.get("verdict") or "").upper()
+    has_spread = bool(item.get("possible_spread"))
+    if has_spread and verdict.startswith("FAIL"):
+        return "Raw scanner found a structure, but final verdict rejected it."
+    return f"Raw scanner: {raw}"
 
 
 def _calendar_verdict_class(verdict: str) -> str:

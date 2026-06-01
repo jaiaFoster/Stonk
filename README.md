@@ -283,6 +283,16 @@ Manual trade memory is disabled and should stay disabled. Railway Volumes are no
 DAILY_OPPORTUNITY_ENGINE_ENABLED=true
 DAILY_OPPORTUNITY_MAX_ACTIONS=12
 DAILY_OPPORTUNITY_MIN_SCORE=55
+DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS=true
+```
+
+### Calendar verdict cleanup controls
+
+```text
+CALENDAR_TRUE_IV_FRONT_MAX_DAYS_AFTER_EVENT=7
+CALENDAR_PRE_EARNINGS_FINANCING_CAN_PASS=false
+CALENDAR_UNKNOWN_TIMESTAMP_CAN_PASS=false
+CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES=true
 ```
 
 ---
@@ -461,6 +471,14 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Diagnostic mini-backtest status can explain failed candidates without making them eligible.
 - Stateless research route: `/research/calendar-backtest?token=...&ticker=AVGO&mode=diagnostic`.
 - Details: `docs/calendar_verdict_hold_through_research_v1.md`.
+
+### Calendar Verdict Cleanup v2
+
+- Calendar trade-type classification is now earnings-session aware.
+- Failed ranking checks show correct threshold wording, such as `54.5% > 15% limit`.
+- Active calendar lifecycle can enrich underlying quotes for option-only positions before moneyness/assignment-risk checks.
+- Daily Opportunity prioritizes active calendars above stock-add ideas.
+- Details: `docs/calendar_verdict_cleanup_v2.md`.
 
 ### Railway start command
 
