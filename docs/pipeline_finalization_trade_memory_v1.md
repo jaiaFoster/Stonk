@@ -1,8 +1,14 @@
 # Pipeline Finalization + Trade Memory v1
 
+## Deprecated
+
+This document is historical. Manual trade tracking is out of scope for the current product direction.
+
+Do not use this document to reintroduce `/trades/add`, manual open/close/delete flows, user-entered cost basis as source of truth, or persistent manual trade memory. Active calendars should be detected from broker/provider positions, and research routes should remain stateless.
+
 ## Purpose
 
-This patch fixes the report finalization order and adds persistent manual calendar-trade storage.
+This historical patch fixed report finalization order and temporarily described persistent manual calendar-trade storage. The finalization-order lesson remains useful; the manual tracking workflow is superseded by broker-detected lifecycle checks.
 
 ## Major changes
 

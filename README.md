@@ -171,9 +171,6 @@ MARKET_DATA_USE_TRADIER_FALLBACK=true
 EARNINGS_PROVIDER_ORDER=finnhub,alphavantage
 EARNINGS_MERGE_PROVIDER_EVENTS=true
 REPORT_SHOW_CALENDAR_DEBUG_SECTIONS=false
-TRADE_MEMORY_ENABLED=true
-DATA_DIR=/app/data
-TRADE_MEMORY_DB_PATH=/app/data/trade_memory.sqlite3
 ```
 
 ### Dev mode controls
@@ -276,17 +273,9 @@ STOCK_MOMENTUM_MIN_SCORE_TO_CONSIDER=62
 STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX=6
 ```
 
-### Trade memory controls
+### Manual trade memory
 
-```text
-TRADE_MEMORY_ENABLED=true
-DATA_DIR=/app/data
-TRADE_MEMORY_DB_PATH=/app/data/trade_memory.sqlite3
-TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT=50
-TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT=-35
-```
-
-Railway Volumes are not required for the current read-only workflow. The app should create value by automatically detecting positions and opportunities every time you view it, not by relying on manual state entry.
+Manual trade memory is disabled and should stay disabled. Railway Volumes are not required for the current read-only workflow. The app should create value by automatically detecting positions and opportunities every time you view it, not by relying on manual state entry.
 
 ### Daily opportunity controls
 
@@ -386,6 +375,7 @@ This patch makes the app easier to use from the Railway production URL and on mo
 /
 /run?token=YOUR_RUN_TOKEN&mode=dev
 /trades?token=YOUR_RUN_TOKEN  # disabled legacy manual-entry route
+/research/calendar-backtest?token=YOUR_RUN_TOKEN&ticker=AVGO&mode=diagnostic
 /config-check?token=YOUR_RUN_TOKEN
 /health
 ```
@@ -461,6 +451,16 @@ CALENDAR_BACKTEST_EXIT_DAYS_AFTER=1
 ### Backtest rule
 
 The app intentionally skips the mini-backtest unless the calendar candidate passes all core criteria. This prevents the expensive historical review from running on junk, illiquid, late, or structurally invalid calendars.
+
+### Calendar Verdict + Hold-Through + Research Tools v1
+
+- Final calendar verdicts now override raw scanner labels before a candidate can appear as a possible entry.
+- Hard-fail checks block untradeable spreads, zero open interest, no live liquidity, inverted IV edge, unconfirmed earnings timestamps, and oversized debit risk.
+- Calendar rows include explicit trade type, main blocker/reason, account risk status, raw scanner verdict, and backtest status.
+- Active broker-detected calendar lifecycle rows include hold-through score/action fields. Positive P/L alone is not enough to support holding through earnings.
+- Diagnostic mini-backtest status can explain failed candidates without making them eligible.
+- Stateless research route: `/research/calendar-backtest?token=...&ticker=AVGO&mode=diagnostic`.
+- Details: `docs/calendar_verdict_hold_through_research_v1.md`.
 
 ### Railway start command
 

@@ -46,4 +46,4 @@ Default is `true`.
 
 This is still read-only. It does not place trades and does not close trades.
 
-The next major improvement should be trade memory/persistence so the lifecycle section can compare current spread value against exact entry debit and a target such as +50%.
+Superseded note: lifecycle entry debit should come from broker-detected option-leg average prices or broker cost-basis data, not manual trade memory. See `calendar_verdict_hold_through_research_v1.md` and `options_lifecycle_accuracy_v1.md`.
