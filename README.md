@@ -480,6 +480,15 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Daily Opportunity prioritizes active calendars above stock-add ideas.
 - Details: `docs/calendar_verdict_cleanup_v2.md`.
 
+### UI Overhaul v1: Muted Black Terminal
+
+- The production HTML report now uses the muted black terminal decision-dashboard hierarchy.
+- Active broker-detected calendar lifecycle cards appear before holdings and potential stock adds.
+- Holdings and all stock-add candidates are consolidated into compact mobile-friendly sections.
+- Failed/watch-only calendar setups are moved lower and shown as blocked candidates.
+- Provider/raw tables, full payload, and run log remain available in collapsed Monitor / Debug details.
+- Details: `docs/ui_overhaul_muted_black_terminal_v1.md`.
+
 ### Railway start command
 
 The app uses `start.sh` via `railway.toml` so Railway expands `$PORT` safely at runtime.

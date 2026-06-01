@@ -17,6 +17,268 @@ TradierSnapshot = dict[str, dict[str, Any]]
 CalendarCandidates = list[dict[str, Any]]
 
 
+UI_OVERHAUL_CSS = """
+        :root {
+            color-scheme: dark;
+            --bg: #000000;
+            --panel: #090b0f;
+            --panel-2: #10141b;
+            --panel-3: #151a23;
+            --text: #d8dee9;
+            --muted: #7f8a99;
+            --line: #222936;
+            --accent: #7aa2c7;
+            --accent-2: #9fb3c8;
+            --good: #83b88f;
+            --bad: #c56f75;
+            --warn: #c6a15b;
+            --neutral: #8a94a3;
+            --accent-dim: rgba(122, 162, 199, 0.24);
+        }
+        body {
+            max-width: 1320px;
+            background: var(--bg);
+            color: var(--text);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+            padding: 0;
+        }
+        a { color: var(--accent-2); }
+        h1, h2, h3 { letter-spacing: 0; }
+        h1 {
+            color: var(--text);
+            margin: 0;
+            font-size: clamp(1.1rem, 2.5vw, 1.5rem);
+        }
+        h2 {
+            color: var(--text);
+            border: 0;
+            margin: 0;
+            padding: 0;
+            font-size: clamp(1rem, 2.1vw, 1.18rem);
+        }
+        table { margin: 0.75rem 0 1rem; }
+        th { top: 0; background: var(--panel-3); color: var(--accent-2); }
+        td { border-bottom-color: var(--line); }
+        tr:hover td { background: rgba(122, 162, 199, 0.07); }
+        .report-shell {
+            min-height: 100vh;
+            background:
+                linear-gradient(180deg, rgba(122, 162, 199, 0.05), rgba(0, 0, 0, 0) 260px),
+                var(--bg);
+            padding: 1rem;
+        }
+        .top-summary {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.7rem 0.85rem;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(9, 11, 15, 0.96);
+            backdrop-filter: blur(12px);
+            box-shadow: 0 16px 35px rgba(0, 0, 0, 0.42);
+        }
+        .summary-title {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+            min-width: 180px;
+        }
+        .summary-title span { color: var(--muted); font-size: 0.78rem; }
+        .summary-chips, .provider-chips, .chip-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.4rem;
+            align-items: center;
+        }
+        .summary-chips { justify-content: flex-end; }
+        .chip, .pill {
+            display: inline-flex;
+            align-items: center;
+            min-height: 24px;
+            padding: 0.18rem 0.5rem;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: var(--panel-2);
+            color: var(--text);
+            font-size: 0.76rem;
+            line-height: 1.2;
+            white-space: nowrap;
+        }
+        .chip strong { color: var(--accent-2); margin-left: 0.28rem; }
+        .chip.good, .action-add, .candidate { color: var(--good); border-color: rgba(131, 184, 143, 0.35); background: rgba(131, 184, 143, 0.09); }
+        .chip.bad, .action-risk, .urgent { color: var(--bad); border-color: rgba(197, 111, 117, 0.4); background: rgba(197, 111, 117, 0.1); }
+        .chip.warn, .action-watch { color: var(--warn); border-color: rgba(198, 161, 91, 0.4); background: rgba(198, 161, 91, 0.1); }
+        .chip.neutral, .action-hold { color: var(--accent-2); border-color: rgba(122, 162, 199, 0.32); background: rgba(122, 162, 199, 0.09); }
+        .quick-nav {
+            position: sticky;
+            top: 70px;
+            z-index: 9;
+            background: rgba(0, 0, 0, 0.86);
+            border: 0;
+            border-bottom: 1px solid var(--line);
+            border-radius: 0;
+            margin: 0 -1rem 1rem;
+            padding: 0.65rem 1rem;
+        }
+        .quick-nav a {
+            border-color: var(--line);
+            background: var(--panel);
+            color: var(--accent-2);
+            border-radius: 6px;
+        }
+        .report-section {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            margin: 0 0 0.9rem;
+            overflow: hidden;
+        }
+        .section-head {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            align-items: flex-start;
+            padding: 0.85rem;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(180deg, var(--panel-2), var(--panel));
+        }
+        .section-kicker {
+            color: var(--muted);
+            font-size: 0.78rem;
+            margin-top: 0.18rem;
+        }
+        .section-body { padding: 0.85rem; }
+        .macro-strip {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 0.55rem;
+        }
+        .macro-cell, .metric, .risk-card {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-2);
+            padding: 0.65rem;
+            min-width: 0;
+        }
+        .label {
+            display: block;
+            color: var(--muted);
+            font-size: 0.72rem;
+            text-transform: uppercase;
+        }
+        .value {
+            display: block;
+            color: var(--text);
+            font-size: 0.94rem;
+            margin-top: 0.16rem;
+            word-break: break-word;
+        }
+        details.decision-card {
+            margin: 0 0 0.55rem;
+            padding: 0;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-2);
+        }
+        details.decision-card[open] { border-color: var(--accent-dim); }
+        details.decision-card summary {
+            list-style: none;
+            color: var(--text);
+            padding: 0.7rem;
+        }
+        details.decision-card summary::-webkit-details-marker { display: none; }
+        .strip-summary, .holding-row, .add-row, .blocked-row {
+            display: grid;
+            gap: 0.55rem;
+            align-items: center;
+        }
+        .strip-summary { grid-template-columns: 0.8fr 1.4fr 0.8fr 0.7fr 0.8fr 1fr; }
+        .holding-row { grid-template-columns: 0.75fr 1.1fr 0.65fr 0.7fr 0.8fr 1.2fr; }
+        .add-row { grid-template-columns: 0.75fr 0.65fr 1fr 1.55fr 1fr; }
+        .blocked-row { grid-template-columns: 0.75fr 1fr 0.9fr 1.8fr 0.85fr; }
+        .ticker {
+            color: #eef3f8;
+            font-weight: 700;
+            font-size: 1.02rem;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+            gap: 0.55rem;
+            padding: 0 0.7rem 0.7rem;
+        }
+        .detail-block {
+            border-top: 1px solid var(--line);
+            padding: 0.7rem;
+            color: var(--text);
+        }
+        .muted, .empty { color: var(--muted); }
+        .positive { color: var(--good); }
+        .negative { color: var(--bad); }
+        .warn-text { color: var(--warn); }
+        .compact-list { margin: 0; padding-left: 1rem; }
+        .compact-list li { margin: 0.12rem 0; }
+        .portfolio-bars {
+            display: grid;
+            grid-template-columns: 1.4fr 0.8fr 1.8fr 0.9fr;
+            gap: 0.45rem 0.7rem;
+            align-items: center;
+        }
+        .bar-track {
+            position: relative;
+            height: 8px;
+            border-radius: 999px;
+            background: #07090d;
+            border: 1px solid var(--line);
+            overflow: hidden;
+        }
+        .bar-fill {
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: var(--bar-width, 0%);
+            background: var(--accent);
+            opacity: 0.82;
+        }
+        .risk-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.55rem;
+            margin-top: 0.7rem;
+        }
+        details.debug-details {
+            background: var(--panel);
+            border-color: var(--line);
+            border-radius: 8px;
+        }
+        details.debug-details summary { color: var(--accent-2); }
+        .table-scroll { overflow-x: auto; }
+        @media (max-width: 900px) {
+            .top-summary { align-items: flex-start; flex-direction: column; }
+            .summary-chips { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; width: 100%; padding-bottom: 0.15rem; }
+            .quick-nav { top: 104px; overflow-x: auto; flex-wrap: nowrap; }
+            .quick-nav a { flex: 0 0 auto; }
+            .macro-strip, .metric-grid, .risk-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .strip-summary, .holding-row, .add-row, .blocked-row {
+                grid-template-columns: 1fr;
+                align-items: start;
+            }
+            .portfolio-bars { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 520px) {
+            .report-shell { padding: 0.65rem; }
+            .quick-nav { margin-left: -0.65rem; margin-right: -0.65rem; padding-left: 0.65rem; }
+            .section-head { flex-direction: column; }
+            .macro-strip, .metric-grid, .risk-grid { grid-template-columns: 1fr; }
+            .chip { white-space: normal; }
+        }
+"""
+
+
 def money(value):
     """Format a numeric value as money, or em dash if missing."""
     if value is None:
@@ -331,6 +593,432 @@ def format_payload(
     return "\n".join(lines)
 
 
+def _safe_text(value: Any, fallback: str = "—") -> str:
+    text = str(value) if value not in (None, "") else fallback
+    return escape(text)
+
+
+def _chip(label: str, value: Any | None = None, css_class: str = "neutral") -> str:
+    value_html = f"<strong>{_safe_text(value)}</strong>" if value is not None else ""
+    return f'<span class="chip {escape(css_class)}">{escape(label)}{value_html}</span>'
+
+
+def _tone_for_text(value: Any) -> str:
+    text = str(value or "").upper()
+    if any(token in text for token in ("FAIL", "AVOID", "REDUCE", "CUT", "RISK", "ELEVATED")):
+        return "bad"
+    if any(token in text for token in ("URGENT", "WATCH", "REVIEW", "WARN", "PULLBACK", "CONSIDER")):
+        return "warn"
+    if any(token in text for token in ("PASS", "ADD", "PROFIT", "OK", "HOLD")):
+        return "good"
+    return "neutral"
+
+
+def _signed_class(value: Any) -> str:
+    try:
+        return "positive" if float(value) >= 0 else "negative"
+    except (TypeError, ValueError):
+        return "muted"
+
+
+def _compact_ul(items: list[Any], limit: int = 4) -> str:
+    clean = [str(item) for item in items if item not in (None, "")]
+    if not clean:
+        return '<span class="empty">—</span>'
+    return '<ul class="compact-list">' + "".join(f"<li>{escape(item)}</li>" for item in clean[:limit]) + "</ul>"
+
+
+def _first_text(*values: Any, fallback: str = "—") -> str:
+    for value in values:
+        if isinstance(value, list) and value:
+            return str(value[0])
+        if value not in (None, "", []):
+            return str(value)
+    return fallback
+
+
+def _daily_actions(daily_opportunity: dict[str, Any]) -> list[dict[str, Any]]:
+    return [item for item in (daily_opportunity or {}).get("actions", []) or [] if isinstance(item, dict)]
+
+
+def _active_calendar_rows(
+    unified_calendar_engine: dict[str, Any],
+    lifecycle_checks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    rows = [row for row in (unified_calendar_engine or {}).get("open_trade_rows", []) or [] if isinstance(row, dict)]
+    if rows:
+        return rows
+    return [row for row in lifecycle_checks or [] if isinstance(row, dict)]
+
+
+def _blocked_calendar_rows(
+    unified_calendar_engine: dict[str, Any],
+    calendar_ranking: dict[str, Any],
+) -> list[dict[str, Any]]:
+    blocked: list[dict[str, Any]] = []
+    for row in (unified_calendar_engine or {}).get("new_trade_rows", []) or []:
+        if not isinstance(row, dict):
+            continue
+        verdict = str(row.get("verdict") or row.get("final_verdict") or "").upper()
+        if "FAIL" in verdict or "WATCH" in verdict or row.get("main_blocker"):
+            blocked.append(row)
+    seen = {str(row.get("ticker")) for row in blocked}
+    for row in (calendar_ranking or {}).get("items", []) or []:
+        if not isinstance(row, dict):
+            continue
+        final = row.get("final_verdict") if isinstance(row.get("final_verdict"), dict) else {}
+        ticker = str(row.get("ticker") or "")
+        verdict = str(final.get("final_verdict") or row.get("action") or "").upper()
+        if ticker not in seen and ("FAIL" in verdict or "WATCH" in verdict or final.get("main_blocker")):
+            blocked.append(row)
+            seen.add(ticker)
+    return blocked
+
+
+def _portfolio_risk_count(portfolio_gap: dict[str, Any], recommendations: Recommendations) -> int:
+    risks = len((portfolio_gap or {}).get("risk_rows", []) or [])
+    risks += sum(1 for rec in recommendations if rec.get("risks"))
+    return risks
+
+
+def _top_summary_html(
+    today: str,
+    active_count: int,
+    urgent_count: int,
+    risk_count: int,
+    adds_count: int,
+    blocked_count: int,
+    pipeline_status: dict[str, Any],
+) -> str:
+    mode = _first_text(pipeline_status.get("mode"), pipeline_status.get("run_mode"), fallback="dev/prod")
+    return f"""
+    <header class="top-summary">
+        <div class="summary-title">
+            <h1>Stock Advisor</h1>
+            <span>{escape(today)} · read-only decision dashboard</span>
+        </div>
+        <div class="summary-chips" aria-label="Run summary">
+            {_chip("ACTIVE", active_count, "warn" if active_count else "neutral")}
+            {_chip("URGENT", urgent_count, "bad" if urgent_count else "neutral")}
+            {_chip("RISK", risk_count, "warn" if risk_count else "neutral")}
+            {_chip("ADDS", adds_count, "good" if adds_count else "neutral")}
+            {_chip("BLOCKED", blocked_count, "bad" if blocked_count else "neutral")}
+            {_chip("MODE", mode, "neutral")}
+            {_provider_chips(pipeline_status)}
+        </div>
+    </header>"""
+
+
+def _provider_chips(pipeline_status: dict[str, Any]) -> str:
+    text = str(pipeline_status).lower()
+    providers = [("RH", "robinhood"), ("TRADIER", "tradier"), ("FINNHUB", "finnhub"), ("AV", "alpha")]
+    chips = []
+    for label, key in providers:
+        if key in text:
+            status = "OK" if ("success" in text or "ok" in text or "complete" in text) else "SEEN"
+            chips.append(_chip(label, status, "good" if status == "OK" else "neutral"))
+        else:
+            chips.append(_chip(label, "—", "neutral"))
+    return "".join(chips)
+
+
+def _macro_context_html(recommendations: Recommendations) -> str:
+    metrics = [rec.get("market_metrics", {}) or {} for rec in recommendations if isinstance(rec.get("market_metrics"), dict)]
+    with_data = [m for m in metrics if m.get("has_data")]
+    above_200 = [m.get("above_sma_200") for m in with_data if m.get("above_sma_200") is not None]
+    positive_6m = [m.get("return_6m_pct") for m in with_data if m.get("return_6m_pct") is not None]
+    if not with_data:
+        regime = "partial data"
+        trend = "trend unavailable"
+        bias = "use position signals"
+    else:
+        above_rate = sum(1 for value in above_200 if value is True) / max(len(above_200), 1)
+        numeric_6m = []
+        for value in positive_6m:
+            try:
+                numeric_6m.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        pos_rate = sum(1 for value in numeric_6m if value > 0) / max(len(numeric_6m), 1)
+        regime = "risk-on" if above_rate >= 0.65 and pos_rate >= 0.65 else "risk-off" if above_rate <= 0.35 else "neutral"
+        trend = f"{int(above_rate * 100)}% above 200D" if above_200 else "trend unavailable"
+        bias = "adds allowed" if regime == "risk-on" else "defensive / avoid chasing" if regime == "risk-off" else "selective adds"
+    cells = [
+        ("Macro", regime),
+        ("Benchmark Trend", trend),
+        ("Growth / Tech", "constructive" if regime == "risk-on" else "pressured" if regime == "risk-off" else "mixed"),
+        ("Volatility", "module pending"),
+        ("Action Bias", bias),
+    ]
+    return '<div class="macro-strip">' + "".join(
+        f'<div class="macro-cell"><span class="label">{escape(label)}</span><span class="value">{escape(value)}</span></div>'
+        for label, value in cells
+    ) + "</div>"
+
+
+def _active_calendar_section_html(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        body = '<p class="empty">No broker-detected active calendars were found for lifecycle action.</p>'
+    else:
+        cards = []
+        for row in rows[:20]:
+            ticker = _safe_text(row.get("ticker"), "UNKNOWN")
+            action = _first_text(row.get("next_action"), row.get("action"), row.get("verdict"), fallback="HOLD / MONITOR")
+            pnl_pct = row.get("estimated_pnl_pct") if row.get("estimated_pnl_pct") is not None else row.get("pnl_pct")
+            pnl_dollars = row.get("pnl_total_estimate") if row.get("pnl_total_estimate") is not None else row.get("pnl_dollars")
+            pnl = f'<span class="{_signed_class(pnl_pct)}">{signed_pct(pnl_pct)} / {signed_money(pnl_dollars)}</span>'
+            short_dte = _first_text(row.get("front_dte"), row.get("short_dte"), fallback="—")
+            moneyness = _first_text(row.get("short_leg_moneyness_label"), row.get("short_leg_moneyness_pct"), row.get("distance_to_strike_pct"), fallback="—")
+            assignment = _first_text(row.get("assignment_risk_level"), row.get("assignment_risk"), fallback="—")
+            next_check = _first_text(row.get("next_check"), row.get("next_action"), fallback="Recheck before market close.")
+            structure = _first_text(row.get("structure"), fallback=(
+                f"{option_money(row.get('strike'))} {str(row.get('option_type') or '').upper()} · "
+                f"short {row.get('front_expiration') or row.get('short_expiration') or '—'} / "
+                f"long {row.get('back_expiration') or row.get('long_expiration') or '—'}"
+            ))
+            warnings = [row.get("historical_move_warning"), row.get("pricing_quality")] + (row.get("risks", []) or [])
+            cards.append(f"""
+            <details class="decision-card" open>
+                <summary>
+                    <div class="strip-summary">
+                        <span class="ticker">{ticker}</span>
+                        <span>{_chip(action, None, _tone_for_text(action))}</span>
+                        <span>{pnl}</span>
+                        <span>Short {escape(short_dte)} DTE</span>
+                        <span>{escape(str(moneyness))}</span>
+                        <span>{_chip("Assignment", assignment, _tone_for_text(assignment))}</span>
+                    </div>
+                    <div class="section-kicker">{escape(next_check)}</div>
+                </summary>
+                <div class="metric-grid">
+                    <div class="metric"><span class="label">Current Debit</span><span class="value">{option_money(row.get('current_mid_debit'))}</span></div>
+                    <div class="metric"><span class="label">Entry Debit</span><span class="value">{option_money(row.get('entry_debit_estimate'))}</span></div>
+                    <div class="metric"><span class="label">Target / Stop</span><span class="value">{option_money(row.get('target_debit'))} / {option_money(row.get('stop_debit'))}</span></div>
+                    <div class="metric"><span class="label">Underlying</span><span class="value">{money(row.get('underlying_price'))}</span></div>
+                    <div class="metric"><span class="label">Hold-Through</span><span class="value">{number(row.get('hold_through_score'), 1)} · {_safe_text(row.get('hold_through_action'), 'review')}</span></div>
+                    <div class="metric"><span class="label">Short Leg</span><span class="value">{escape(str(moneyness))}</span></div>
+                    <div class="metric"><span class="label">Risk</span><span class="value">{escape(str(assignment))}</span></div>
+                    <div class="metric"><span class="label">Structure</span><span class="value">{escape(structure)}</span></div>
+                </div>
+                <div class="detail-block">
+                    <strong>Reasons</strong>{_compact_ul((row.get('reasons', []) or []) + [item for item in warnings if item])}
+                </div>
+            </details>""")
+        body = "".join(cards)
+    return _section("active-calendars", "Active Calendar Lifecycle", "Broker-detected open calendars; no manual trade tracking.", body, str(len(rows)))
+
+
+def _holdings_section_html(recommendations: Recommendations) -> str:
+    if not recommendations:
+        body = '<p class="empty">No portfolio advisor scores generated.</p>'
+    else:
+        rows = []
+        for rec in recommendations[:40]:
+            action = str(rec.get("action") or "WATCH / REVIEW")
+            rows.append(f"""
+            <details class="decision-card">
+                <summary>
+                    <div class="holding-row">
+                        <span class="ticker">{_safe_text(rec.get('ticker'), 'UNKNOWN')}</span>
+                        <span>{_chip(action, None, _tone_for_text(action))}</span>
+                        <span>Alloc {pct(rec.get('allocation_pct'))}</span>
+                        <span class="{_signed_class(rec.get('gain_loss_pct'))}">{signed_pct(rec.get('gain_loss_pct'))}</span>
+                        <span>{money(rec.get('position_value'))}</span>
+                        <span class="muted">{_safe_text(rec.get('next_check'), 'Next check pending')}</span>
+                    </div>
+                </summary>
+                <div class="detail-block">
+                    <strong>Trend</strong><br>{format_trend_summary(rec.get('market_metrics', {}) or {})}
+                    <br><br><strong>Reasons</strong>{_compact_ul(rec.get('reasons', []) or [])}
+                    <strong>Risks / Limits</strong>{_compact_ul(rec.get('risks', []) or [])}
+                </div>
+            </details>""")
+        body = "".join(rows)
+    return _section("holdings", "Holdings / Portfolio Advisor", "Owned-position management appears before new ideas.", body, str(len(recommendations)))
+
+
+def _potential_adds_section_html(
+    daily_opportunity: dict[str, Any],
+    stock_momentum: dict[str, Any],
+    portfolio_gap: dict[str, Any],
+) -> str:
+    actions = [
+        item for item in _daily_actions(daily_opportunity)
+        if str(item.get("type") or "").lower() != "active_calendar" and "ADD" in str(item.get("action") or item.get("why") or "").upper()
+    ]
+    seen = {str(item.get("ticker")) for item in actions}
+    for item in (stock_momentum or {}).get("items", []) or []:
+        if not isinstance(item, dict) or str(item.get("ticker")) in seen:
+            continue
+        if "ADD" in str(item.get("action") or "").upper():
+            actions.append({
+                "ticker": item.get("ticker"),
+                "priority_score": item.get("score"),
+                "action": item.get("action"),
+                "why": _first_text(item.get("reasons", []), fallback="Momentum candidate"),
+                "next_step": item.get("next_check"),
+                "source": "momentum",
+                "risks": item.get("risks", []),
+            })
+            seen.add(str(item.get("ticker")))
+    for item in (portfolio_gap or {}).get("suggestions", []) or []:
+        if not isinstance(item, dict) or str(item.get("ticker")) in seen:
+            continue
+        actions.append({
+            "ticker": item.get("ticker"),
+            "priority_score": item.get("score"),
+            "action": item.get("action") or "REVIEW ADD",
+            "why": item.get("reason") or item.get("theme") or "Portfolio gap candidate",
+            "next_step": item.get("next_check"),
+            "source": "sector_gap",
+            "risks": item.get("risks", []),
+        })
+        seen.add(str(item.get("ticker")))
+    if not actions:
+        body = '<p class="empty">No stock-add candidates cleared the display filters this run.</p>'
+    else:
+        rows = []
+        for item in actions[:30]:
+            action = str(item.get("action") or "REVIEW")
+            source = str(item.get("source") or "daily")
+            rows.append(f"""
+            <div class="decision-card add-row" role="group">
+                <span class="ticker">{_safe_text(item.get('ticker'), 'UNKNOWN')}</span>
+                <span class="score">{number(item.get('priority_score'), 1)}</span>
+                <span>{_chip(action, None, _tone_for_text(action))}</span>
+                <span>{_safe_text(item.get('why'), 'Review setup')}</span>
+                <span class="chip-row">{_chip(source, None, 'neutral')}{''.join(_chip(str(risk), None, _tone_for_text(risk)) for risk in (item.get('risks', []) or [])[:2])}</span>
+                <span class="muted">{_safe_text(item.get('next_step'), 'Next check pending')}</span>
+            </div>""")
+        body = "".join(rows)
+    return _section("potential-adds", "Unified Potential Adds", "One consolidated stock-add list across daily, momentum, watchlist, and sector-gap sources.", body, str(len(actions)))
+
+
+def _blocked_calendar_section_html(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        body = '<p class="empty">No blocked calendar candidates to review.</p>'
+    else:
+        cards = []
+        for row in rows[:30]:
+            final = row.get("final_verdict") if isinstance(row.get("final_verdict"), dict) else {}
+            verdict = _first_text(row.get("verdict"), final.get("final_verdict"), row.get("action"), fallback="WATCH")
+            blocker = _first_text(row.get("main_blocker"), final.get("main_blocker"), final.get("hard_fail_reason"), row.get("main_reason"), fallback="No main blocker recorded.")
+            trade_type = _first_text(row.get("trade_type_label"), final.get("trade_type_label"), fallback="Unknown")
+            backtest = _first_text(row.get("backtest_status"), final.get("backtest_status"), fallback="not_eligible")
+            account = _first_text(row.get("account_risk_status"), final.get("account_risk_status"), final.get("account_risk_warning"), fallback="—")
+            cards.append(f"""
+            <details class="decision-card">
+                <summary>
+                    <div class="blocked-row">
+                        <span class="ticker">{_safe_text(row.get('ticker'), 'UNKNOWN')}</span>
+                        <span>{_chip(verdict, None, _tone_for_text(verdict))}</span>
+                        <span>{escape(trade_type)}</span>
+                        <span>{escape(blocker)}</span>
+                        <span class="muted">Backtest {escape(backtest)}</span>
+                    </div>
+                </summary>
+                <div class="detail-block">
+                    <strong>Account risk</strong>: {escape(account)}<br>
+                    <strong>Raw scanner note</strong>: {_calendar_raw_scanner_note(row)}<br>
+                    <strong>Reasons / risks</strong>{_compact_ul((row.get('reasons', []) or []) + (row.get('risks', []) or []))}
+                </div>
+            </details>""")
+        body = "".join(cards)
+    return _section("blocked-calendars", "Calendar Candidates / Blocked Setups", "Rejected and watch-only setups are informational, not actionable orders.", body, str(len(rows)))
+
+
+def _portfolio_infographic_html(portfolio_gap: dict[str, Any]) -> str:
+    exposures = (portfolio_gap or {}).get("exposure_rows", []) or (portfolio_gap or {}).get("sector_rows", []) or []
+    risk_rows = (portfolio_gap or {}).get("risk_rows", []) or []
+    if not exposures and not risk_rows:
+        body = '<p class="empty">Portfolio gap details were not available for this run.</p>'
+    else:
+        bar_rows = []
+        for row in exposures[:12]:
+            if not isinstance(row, dict):
+                continue
+            label = _first_text(row.get("bucket"), row.get("sector"), row.get("theme"), fallback="Bucket")
+            actual = row.get("actual_pct") if row.get("actual_pct") is not None else row.get("current_pct")
+            target = row.get("target_pct")
+            status = _first_text(row.get("status"), row.get("label"), fallback="review")
+            width = 0.0
+            try:
+                width = max(0.0, min(float(actual or 0), 40.0)) / 40.0 * 100.0
+            except (TypeError, ValueError):
+                width = 0.0
+            bar_rows.append(
+                f'<span>{escape(label)}</span><span>{pct(actual)} / {pct(target)}</span>'
+                f'<span class="bar-track"><span class="bar-fill" style="--bar-width:{width:.0f}%"></span></span>'
+                f'<span>{_chip(status, None, _tone_for_text(status))}</span>'
+            )
+        risks = "".join(
+            f'<div class="risk-card"><span class="label">{_safe_text(row.get("name") or row.get("bucket"), "Risk")}</span>'
+            f'<span class="value">{_safe_text(row.get("detail") or row.get("status") or row.get("value"), "review")}</span></div>'
+            for row in risk_rows[:6] if isinstance(row, dict)
+        )
+        body = f'<div class="portfolio-bars">{"".join(bar_rows) or "<span class=empty>No target bars available.</span>"}</div><div class="risk-grid">{risks}</div>'
+    return _section("portfolio-infographic", "Portfolio + Macro Infographic", "Target-vs-actual exposure and portfolio-wide risk context.", body, None)
+
+
+def _monitor_debug_section_html(
+    pipeline_summary_html: str,
+    pipeline_status_rows: str,
+    market_rows: str,
+    position_rows: str,
+    recommendation_rows: str,
+    stock_momentum_rows: str,
+    watchlist_rows: str,
+    portfolio_gap_rows: str,
+    unified_calendar_rows: str,
+    calendar_ranking_rows: str,
+    earnings_mini_backtest_rows: str,
+    news_rows: str,
+    tradier_rows: str,
+    payload_debug_html: str,
+    log_debug_html: str,
+) -> str:
+    body = f"""
+        <details class="debug-details">
+            <summary>Pipeline Status</summary>
+            {pipeline_summary_html}
+            <div class="table-scroll"><table><tr><th>Status</th><th>Step</th><th>Message</th><th>Duration</th><th>Finished</th></tr>{pipeline_status_rows}</table></div>
+        </details>
+        <details class="debug-details">
+            <summary>Raw Advisor Tables</summary>
+            <div class="table-scroll"><h3>Market Momentum / Trend</h3><table><tr><th>Ticker</th><th>As Of</th><th>1M</th><th>3M</th><th>6M</th><th>12M</th><th>6M RS</th><th>Above 50D</th><th>Above 200D</th><th>52W High Dist.</th><th>Vol30</th><th>AvgVol30</th></tr>{market_rows}</table></div>
+            <div class="table-scroll"><h3>Positions</h3><table><tr><th>Ticker</th><th>Account</th><th>Quantity</th><th>Avg Cost</th><th>Current</th><th>G/L</th><th>Market Value</th></tr>{position_rows}</table></div>
+            <div class="table-scroll"><h3>Portfolio Advisor Scores</h3><table><tr><th>Ticker</th><th>Account</th><th>Score</th><th>Action</th><th>Allocation</th><th>G/L</th><th>Trend/Momentum</th><th>Reasons</th><th>Risks / Limits</th><th>Next Check</th></tr>{recommendation_rows}</table></div>
+            <div class="table-scroll"><h3>Stock Momentum</h3><table><tr><th>Ticker</th><th>Score / Action</th><th>Portfolio</th><th>Trend</th><th>Reasons</th><th>Risks</th><th>Next Check</th></tr>{stock_momentum_rows}</table></div>
+            <div class="table-scroll"><h3>Watchlist Review</h3><table><tr><th>Ticker</th><th>Stock Score / Category</th><th>Portfolio</th><th>Watchlist Source</th><th>Earnings</th><th>Earnings / Calendar Overlay</th><th>Reasons / Next</th></tr>{watchlist_rows}</table></div>
+            <h3>Portfolio Gap Raw</h3>{portfolio_gap_rows}
+            <div class="table-scroll"><h3>Unified Calendar Engine Raw</h3><table><tr><th>Type</th><th>Ticker / Score</th><th>Earnings / Verdict</th><th>Possible Spread / Current Position</th><th>Requirements</th><th>Entry / Next Action</th></tr>{unified_calendar_rows}</table></div>
+            <div class="table-scroll"><h3>Calendar Ranking Raw</h3><table><tr><th>Ticker / Score</th><th>Action</th><th>Entry Timing</th><th>Criteria</th><th>Reasons / Risks</th><th>Next</th></tr>{calendar_ranking_rows}</table></div>
+            <div class="table-scroll"><h3>Earnings Mini-Backtest</h3><table><tr><th>Ticker</th><th>Events</th><th>Avg / Max Move</th><th>Gap / Run-up</th><th>Interpretation</th><th>Notes</th></tr>{earnings_mini_backtest_rows}</table></div>
+            <div class="table-scroll"><h3>Relevant News</h3><table><tr><th>Ticker</th><th>Score</th><th>Headline</th><th>Source</th><th>Published</th><th>Link</th></tr>{news_rows}</table></div>
+            <div class="table-scroll"><h3>Tradier Snapshot</h3><table><tr><th>Ticker</th><th>Quote</th><th>Expirations</th><th>Chain</th><th>ATM Call</th><th>ATM Put</th><th>Liquidity</th></tr>{tradier_rows}</table></div>
+        </details>
+        <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('payload').innerText)">Copy Advisor Payload</button>
+        {payload_debug_html}
+        {log_debug_html}
+    """
+    return _section("monitor-debug", "Monitor / Debug", "Provider details, raw tables, payload, and run log are collapsed by default.", body, None)
+
+
+def _section(section_id: str, title: str, kicker: str, body: str, count: str | None) -> str:
+    count_html = _chip("COUNT", count, "neutral") if count is not None else ""
+    return f"""
+    <section class="report-section" id="{escape(section_id)}">
+        <div class="section-head">
+            <div>
+                <h2>{escape(title)}</h2>
+                <div class="section-kicker">{escape(kicker)}</div>
+            </div>
+            <div>{count_html}</div>
+        </div>
+        <div class="section-body">{body}</div>
+    </section>"""
+
+
 def format_html(
     payload: str,
     positions: list[dict[str, Any]],
@@ -373,32 +1061,95 @@ def format_html(
     if log_lines is not None:
         parsed_log_lines = log_lines
 
+    daily_opportunity = daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot)
+    unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot)
+    lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot)
+    portfolio_gap = portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot)
+    stock_momentum = stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot)
+    calendar_ranking = calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot)
+    pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
+
     position_rows = format_position_rows(positions)
     recommendation_rows = format_recommendation_rows(parsed_recommendations)
     market_rows = format_market_rows(parsed_recommendations)
     news_rows = format_news_rows(parsed_news)
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
-    calendar_rows = format_calendar_spread_rows(calendar_candidates_from_tradier_snapshot(parsed_tradier_snapshot))
-    earnings_calendar_rows = format_earnings_calendar_strategy_rows(earnings_calendar_strategy_from_tradier_snapshot(parsed_tradier_snapshot))
-    open_options_rows = format_open_options_rows(open_options_from_tradier_snapshot(parsed_tradier_snapshot))
-    lifecycle_rows = format_calendar_lifecycle_rows(calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot))
-    earnings_rows = format_earnings_rows(earnings_events_from_tradier_snapshot(parsed_tradier_snapshot))
     watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))
-    earnings_discovery_rows = format_earnings_trade_discovery_rows(earnings_trade_discovery_from_tradier_snapshot(parsed_tradier_snapshot))
-    unified_calendar_rows = format_unified_calendar_engine_rows(unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot))
-    portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot))
-    stock_momentum_rows = format_stock_momentum_rows(stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot))
-    daily_opportunity_rows = format_daily_opportunity_rows(daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot))
-    calendar_ranking_rows = format_calendar_ranking_rows(calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot))
+    unified_calendar_rows = format_unified_calendar_engine_rows(unified_calendar_engine)
+    portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap)
+    stock_momentum_rows = format_stock_momentum_rows(stock_momentum)
+    calendar_ranking_rows = format_calendar_ranking_rows(calendar_ranking)
     earnings_mini_backtest_rows = format_earnings_mini_backtest_rows(earnings_mini_backtest_from_tradier_snapshot(parsed_tradier_snapshot))
-    pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     pipeline_status_rows = format_pipeline_status_rows(pipeline_status)
     pipeline_summary_html = format_pipeline_summary(pipeline_status)
-    payload_html = escape(payload)
-    log_html = escape("\n".join(parsed_log_lines))
     payload_debug_html = collapsible_pre("Full Advisor Payload", payload, "payload", "payload")
     log_debug_html = collapsible_pre("Run Log", "\n".join(parsed_log_lines), None, "log")
     today = date.today().strftime("%B %d, %Y")
+    active_rows = _active_calendar_rows(unified_calendar_engine, lifecycle_checks)
+    blocked_rows = _blocked_calendar_rows(unified_calendar_engine, calendar_ranking)
+    daily_actions = _daily_actions(daily_opportunity)
+    urgent_count = sum(
+        1
+        for row in active_rows
+        if _tone_for_text(_first_text(row.get("next_action"), row.get("action"), row.get("verdict"))) in {"bad", "warn"}
+    )
+    add_tickers = {
+        str(item.get("ticker"))
+        for item in daily_actions
+        if str(item.get("type") or "").lower() != "active_calendar"
+        and "ADD" in str(item.get("action") or item.get("why") or "").upper()
+    }
+    add_tickers.update(
+        str(item.get("ticker"))
+        for item in (stock_momentum or {}).get("items", []) or []
+        if isinstance(item, dict) and "ADD" in str(item.get("action") or "").upper()
+    )
+    add_tickers.update(
+        str(item.get("ticker"))
+        for item in (portfolio_gap or {}).get("suggestions", []) or []
+        if isinstance(item, dict) and item.get("ticker")
+    )
+    add_count = len({ticker for ticker in add_tickers if ticker and ticker != "None"})
+    risk_count = _portfolio_risk_count(portfolio_gap, parsed_recommendations)
+
+    top_summary_html = _top_summary_html(
+        today=today,
+        active_count=len(active_rows),
+        urgent_count=urgent_count,
+        risk_count=risk_count,
+        adds_count=add_count,
+        blocked_count=len(blocked_rows),
+        pipeline_status=pipeline_status,
+    )
+    macro_html = _section(
+        "macro-context",
+        "Macro Context Strip",
+        "Compact market context; missing macro inputs show as placeholders.",
+        _macro_context_html(parsed_recommendations),
+        None,
+    )
+    active_calendar_html = _active_calendar_section_html(active_rows)
+    holdings_html = _holdings_section_html(parsed_recommendations)
+    potential_adds_html = _potential_adds_section_html(daily_opportunity, stock_momentum, portfolio_gap)
+    blocked_calendar_html = _blocked_calendar_section_html(blocked_rows)
+    portfolio_infographic_html = _portfolio_infographic_html(portfolio_gap)
+    monitor_debug_html = _monitor_debug_section_html(
+        pipeline_summary_html=pipeline_summary_html,
+        pipeline_status_rows=pipeline_status_rows,
+        market_rows=market_rows,
+        position_rows=position_rows,
+        recommendation_rows=recommendation_rows,
+        stock_momentum_rows=stock_momentum_rows,
+        watchlist_rows=watchlist_rows,
+        portfolio_gap_rows=portfolio_gap_rows,
+        unified_calendar_rows=unified_calendar_rows,
+        calendar_ranking_rows=calendar_ranking_rows,
+        earnings_mini_backtest_rows=earnings_mini_backtest_rows,
+        news_rows=news_rows,
+        tradier_rows=tradier_rows,
+        payload_debug_html=payload_debug_html,
+        log_debug_html=log_debug_html,
+    )
 
     return f"""<!DOCTYPE html>
 <html>
@@ -408,209 +1159,29 @@ def format_html(
     <title>Stock Advisor — {today}</title>
     <style>
         {REPORT_CSS}
+        {UI_OVERHAUL_CSS}
     </style>
 </head>
 <body>
-    <h1>📈 Stock Advisor — {today}</h1>
-    <p class="muted top-note">
-        Aggressive Quality-Momentum Snapshot v2 uses current portfolio data,
-        relevance-scored news, market momentum/trend, watchlist stock review,
-        and a unified calendar trade engine that combines earnings discovery, spread screening, open-calendar detection, and lifecycle next actions. Fundamentals and deeper options strategy scoring will be added later. Manual trade entry is intentionally avoided; active trades should come from broker detection.
-    </p>
-
-    <nav class="quick-nav" aria-label="Report sections">
-        <a href="#daily-opportunity">Daily</a>
-        <a href="#calendar-engine">Active Trades</a>
-        <a href="#portfolio-scores">Portfolio</a>
-        <a href="#stock-momentum">Stock Ideas</a>
-        <a href="#portfolio-gap">Sector Gaps</a>
-        <a href="#calendar-engine">Calendars</a>
-        <a href="#calendar-ranking">Ranking</a>
-        <a href="#monitor-details">Monitor</a>
-        <a href="#debug-output">Debug</a>
-    </nav>
-
-    <h2 id="daily-opportunity">Daily Opportunity Engine v1</h2>
-    <p class="muted">One ranked action list combining calendar trades, stock momentum adds, portfolio-gap ideas, and risk review items.</p>
-    <table>
-        <tr>
-            <th>Type</th>
-            <th>Ticker / Score</th>
-            <th>Action</th>
-            <th>Why</th>
-            <th>Next Step</th>
-            <th>Source</th>
-        </tr>
-        {daily_opportunity_rows}
-    </table>
-
-
-    <h2 id="portfolio-scores">Portfolio Advisor Scores ({len(parsed_recommendations)} scored)</h2>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Account</th>
-            <th>Score</th>
-            <th>Action</th>
-            <th>Allocation</th>
-            <th>G/L</th>
-            <th>Trend/Momentum</th>
-            <th>Reasons</th>
-            <th>Risks / Limits</th>
-            <th>Next Check</th>
-        </tr>
-        {recommendation_rows}
-    </table>
-
-    <h2 id="monitor-details">Monitor Details</h2>
-    <p class="muted">Detailed market, position, watchlist, and news tables. These are primarily for verification and deeper review.</p>
-
-    <h2>Market Momentum / Trend</h2>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>As Of</th>
-            <th>1M</th>
-            <th>3M</th>
-            <th>6M</th>
-            <th>12M</th>
-            <th>6M RS</th>
-            <th>Above 50D</th>
-            <th>Above 200D</th>
-            <th>52W High Dist.</th>
-            <th>Vol30</th>
-            <th>AvgVol30</th>
-        </tr>
-        {market_rows}
-    </table>
-
-    <h2>Positions ({len(positions)} total)</h2>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Account</th>
-            <th>Quantity</th>
-            <th>Avg Cost</th>
-            <th>Current</th>
-            <th>G/L</th>
-            <th>Market Value</th>
-        </tr>
-        {position_rows}
-    </table>
-
-
-
-    <h2 id="stock-momentum">Stock Momentum Add Strategy v1</h2>
-    <p class="muted">Normal-stock entry strategy for portfolio and watchlist names. It uses market trend/momentum when available and separates consider-add from add-on-pullback/watch/avoid.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Score / Action</th>
-            <th>Portfolio</th>
-            <th>Trend</th>
-            <th>Reasons</th>
-            <th>Risks</th>
-            <th>Next Check</th>
-        </tr>
-        {stock_momentum_rows}
-    </table>
-
-    <h2>Watchlist Stock Candidate Review v2</h2>
-    <p class="muted">Robinhood/manual watchlist tickers reviewed primarily as normal stock candidates. Earnings/calendar logic is an overlay only when an actual earnings setup exists. These are not treated as owned positions.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Stock Score / Category</th>
-            <th>Portfolio</th>
-            <th>Watchlist Source</th>
-            <th>Earnings</th>
-            <th>Earnings / Calendar Overlay</th>
-            <th>Reasons / Next</th>
-        </tr>
-        {watchlist_rows}
-    </table>
-
-    <h2 id="portfolio-gap">Portfolio Gap / Sector Suggestions v1</h2>
-    <p class="muted">Aggressive-growth sector/theme exposure, macro-priority buckets, risk buckets, and watchlist suggestions. This is stock-focused and separate from the calendar trade engine.</p>
-    {portfolio_gap_rows}
-
-    <h2 id="calendar-engine">Unified Calendar Trade Engine v1</h2>
-    <p class="muted">One workflow for earnings-calendar trades: discover upcoming earnings, pass/fail requirements, propose spreads when valid, rank entry candidates, and review already-entered calendars.</p>
-    <table>
-        <tr>
-            <th>Type</th>
-            <th>Ticker / Score</th>
-            <th>Earnings / Verdict</th>
-            <th>Possible Spread / Current Position</th>
-            <th>Requirements</th>
-            <th>Entry / Next Action</th>
-        </tr>
-        {unified_calendar_rows}
-    </table>
-
-    <h2 id="calendar-ranking">Calendar Ranking v2</h2>
-    <p class="muted">Ranks discovered earnings-calendar candidates. Mini-backtest eligibility requires all core criteria to pass.</p>
-    <table>
-        <tr>
-            <th>Ticker / Score</th>
-            <th>Action</th>
-            <th>Entry Timing</th>
-            <th>Criteria</th>
-            <th>Reasons / Risks</th>
-            <th>Next</th>
-        </tr>
-        {calendar_ranking_rows}
-    </table>
-
-    <h2 id="earnings-backtest">Earnings Mini-Backtest v1</h2>
-    <p class="muted">Candle-based historical earnings move review. Runs only for fully-qualified Calendar Ranking v2 candidates.</p>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Events</th>
-            <th>Avg / Max Move</th>
-            <th>Gap / Run-up</th>
-            <th>Interpretation</th>
-            <th>Notes</th>
-        </tr>
-        {earnings_mini_backtest_rows}
-    </table>
-
-    <h2>Relevant News</h2>
-    <table>
-        <tr>
-            <th>Ticker</th>
-            <th>Score</th>
-            <th>Headline</th>
-            <th>Source</th>
-            <th>Published</th>
-            <th>Link</th>
-        </tr>
-        {news_rows}
-    </table>
-
-    <div class="debug-section" id="debug-output">
-        <h2>Debug / Copyable Output</h2>
-        <details class="section-details">
-            <summary>Pipeline Status</summary>
-            {pipeline_summary_html}
-            <table>
-                <tr>
-                    <th>Status</th>
-                    <th>Step</th>
-                    <th>Message</th>
-                    <th>Duration</th>
-                    <th>Finished</th>
-                </tr>
-                {pipeline_status_rows}
-            </table>
-        </details>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('payload').innerText)">
-            Copy Advisor Payload
-        </button>
-        {payload_debug_html}
-        {log_debug_html}
-    </div>
+    <main class="report-shell">
+        {top_summary_html}
+        <nav class="quick-nav" aria-label="Report sections">
+            <a href="#macro-context">Macro</a>
+            <a href="#active-calendars">Active Calendars</a>
+            <a href="#holdings">Holdings</a>
+            <a href="#potential-adds">Potential Adds</a>
+            <a href="#blocked-calendars">Blocked Calendars</a>
+            <a href="#portfolio-infographic">Portfolio</a>
+            <a href="#monitor-debug">Monitor</a>
+        </nav>
+        {macro_html}
+        {active_calendar_html}
+        {holdings_html}
+        {potential_adds_html}
+        {blocked_calendar_html}
+        {portfolio_infographic_html}
+        {monitor_debug_html}
+    </main>
 </body>
 </html>"""
 
