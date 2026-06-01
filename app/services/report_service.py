@@ -1161,6 +1161,11 @@ def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
             f"<span class='muted'>Entry source: {escape(str(check.get('entry_debit_source') or 'broker'))}; "
             f"pricing {escape(str(pricing_quality.get('confidence') or 'unknown'))}</span>"
         )
+        hold = (
+            f"Hold-through {number(check.get('hold_through_score'), 1)}<br>"
+            f"<span class='pill {_calendar_verdict_class(str(check.get('hold_through_action') or ''))}'>{escape(str(check.get('hold_through_action') or 'ACTIVE REVIEW'))}</span><br>"
+            f"<span class='muted'>{escape(str(check.get('historical_move_warning') or check.get('trade_type_label') or ''))}</span>"
+        )
         risk_state = (
             f"Underlying {money(check.get('underlying_price'))} "
             f"<span class='muted'>({escape(str(check.get('underlying_price_source') or 'source unknown'))})</span><br>"
@@ -1181,7 +1186,7 @@ def format_calendar_lifecycle_rows(lifecycle: dict[str, Any]) -> str:
         <tr>
             <td>{status}</td>
             <td>{calendar}</td>
-            <td>{value}</td>
+            <td>{value}<br>{hold}</td>
             <td>{risk_state}</td>
             <td>{earnings}</td>
             <td>{format_compact_list(combined)}</td>
@@ -1706,7 +1711,7 @@ def format_trade_memory_text(trade_memory: dict[str, Any] | None) -> list[str]:
         lines.append("Errors: " + "; ".join(str(e) for e in errors[:3]))
     trades = list(trade_memory.get("open_trades", []) or []) + list(trade_memory.get("watch_trades", []) or [])
     if not trades:
-        lines.append("No open/watch calendar trades stored yet. Add one from /trades or /trades/add after entering a spread.")
+        lines.append("Manual trade memory is disabled; active calendars should come from broker-detected option positions.")
         return lines
     for trade in trades[:12]:
         lines.append(
@@ -1900,9 +1905,12 @@ def format_unified_calendar_engine_text(engine: dict[str, Any]) -> list[str]:
             lines.append(
                 f"{row.get('ticker', 'UNKNOWN')}: Score {number(row.get('score'), 1)} | "
                 f"{row.get('verdict') or 'WATCH'} | "
+                f"{row.get('trade_type_label') or 'TRADE TYPE UNKNOWN'} | "
                 f"Earnings {earnings.get('earnings_date') or 'unknown'} ({earnings.get('session_label') or 'Unknown'}) | "
                 f"{spread_text}"
             )
+            if row.get("main_blocker") or row.get("main_reason"):
+                lines.append(f"  Final verdict: {row.get('main_reason') or row.get('main_blocker')}")
             for req in row.get("requirements", [])[:6]:
                 lines.append(f"  {req.get('status', 'WARN')}: {req.get('name')}: {req.get('detail')}")
             lines.append(f"  Entry plan: {row.get('entry_plan') or 'Manual review before entry.'}")
@@ -1975,8 +1983,8 @@ def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
             <td class="score"><strong>{ticker}</strong><br>{number(item.get('score'), 1)}</td>
             <td>{earnings_text}</td>
             <td>{spread_text}</td>
-            <td>{format_requirement_list(requirements)}</td>
-            <td>{entry_plan}</td>
+            <td>{format_requirement_list(requirements)}<br><span class="muted">Trade type: {escape(str(item.get('trade_type_label') or 'Unknown'))}<br>Main blocker: {escape(str(item.get('main_blocker') or '—'))}<br>Backtest: {escape(str(item.get('backtest_status') or '—'))}<br>Account risk: {escape(str(item.get('account_risk_status') or '—'))}</span></td>
+            <td>{entry_plan}<br><span class="muted">Raw scanner: {escape(str(item.get('raw_scanner_verdict') or '—'))}<br>{escape(str(item.get('main_reason') or ''))}</span></td>
         </tr>"""
 
     for item in open_rows[:30]:
@@ -1986,6 +1994,9 @@ def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
         next_action = escape(str(item.get("next_action") or "Recheck before market close."))
         structure = escape(str(item.get("structure") or "—"))
         value = escape(str(item.get("value") or "Value unavailable"))
+        hold = ""
+        if item.get("hold_through_score") is not None or item.get("hold_through_action"):
+            hold = f"<br><span class='muted'>Hold-through {number(item.get('hold_through_score'), 1)}: {escape(str(item.get('hold_through_action') or 'ACTIVE REVIEW'))}</span>"
         reasons = [str(r) for r in (item.get("reasons", []) or [])]
         risks = [str(r) for r in (item.get("risks", []) or [])]
         rows += f"""
@@ -1993,7 +2004,7 @@ def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
             <td>Open calendar</td>
             <td class="score"><strong>{ticker}</strong><br>{number(item.get('score'), 1)}</td>
             <td><span class="pill {verdict_class}">{verdict}</span></td>
-            <td>{structure}<br><span class="muted">{value}</span></td>
+            <td>{structure}<br><span class="muted">{value}</span>{hold}</td>
             <td>{format_compact_list(reasons + risks)}</td>
             <td>{next_action}</td>
         </tr>"""
@@ -2010,11 +2021,14 @@ def format_calendar_ranking_text(ranking: dict[str, Any]) -> list[str]:
         f"Candidates {summary.get('candidate_count', 0)} | Pass all criteria {summary.get('pass_count', 0)} | Backtest eligible {summary.get('backtest_eligible_count', 0)}"
     ]
     for item in ranking.get("items", [])[:10]:
+        final = item.get("final_verdict") if isinstance(item.get("final_verdict"), dict) else {}
         lines.append(
-            f"{item.get('ticker', 'UNKNOWN')}: Rank {number(item.get('rank_score'), 1)} | {item.get('action') or 'WATCH'} | "
+            f"{item.get('ticker', 'UNKNOWN')}: Rank {number(item.get('rank_score'), 1)} | {final.get('final_verdict') or item.get('action') or 'WATCH'} | "
             f"Timing {item.get('entry_timing') or 'UNKNOWN'} | DTE {item.get('days_until_earnings') if item.get('days_until_earnings') is not None else '—'} | "
             f"Pass {yes_no(item.get('passes_all_criteria'))} | Backtest {yes_no(item.get('backtest_eligible'))}"
         )
+        if final:
+            lines.append(f"  Final: {final.get('trade_type_label')}; blocker={final.get('main_blocker') or '—'}; backtest={final.get('backtest_status')}")
         for crit in (item.get("criteria", []) or [])[:5]:
             lines.append(f"  {crit.get('status')}: {crit.get('name')}: {crit.get('detail')}")
         if item.get("next_check"):
@@ -2048,16 +2062,17 @@ def format_calendar_ranking_rows(ranking: dict[str, Any]) -> str:
         return f'<tr><td colspan="6" class="empty">{message}</td></tr>'
     rows = ""
     for item in (ranking.get("items", []) or [])[:20]:
-        action = escape(str(item.get("action") or "WATCH"))
+        final = item.get("final_verdict") if isinstance(item.get("final_verdict"), dict) else {}
+        action = escape(str(final.get("final_verdict") or item.get("action") or "WATCH"))
         cls = _calendar_verdict_class(action)
         rows += f"""
         <tr>
             <td class="score"><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong><br>{number(item.get('rank_score'), 1)}</td>
-            <td><span class="pill {cls}">{action}</span><br><span class="muted">Base {number(item.get('base_score'), 1)}</span></td>
+            <td><span class="pill {cls}">{action}</span><br><span class="muted">Base {number(item.get('base_score'), 1)}<br>{escape(str(final.get('trade_type_label') or item.get('trade_type_label') or 'Unknown'))}</span></td>
             <td>{escape(str(item.get('entry_timing') or 'UNKNOWN'))}<br><span class="muted">DTE {escape(str(item.get('days_until_earnings') if item.get('days_until_earnings') is not None else '—'))}</span></td>
             <td>{format_requirement_list(item.get('criteria', []) or [])}</td>
-            <td>{format_compact_list([str(x) for x in ((item.get('reasons', []) or []) + (item.get('risks', []) or []))[:7]])}</td>
-            <td>{escape(str(item.get('next_check') or 'Recheck later.'))}</td>
+            <td>{format_compact_list([str(x) for x in ([final.get('main_blocker'), final.get('hard_fail_reason'), final.get('account_risk_warning')] + (item.get('reasons', []) or []) + (item.get('risks', []) or []))[:8] if x])}</td>
+            <td>{escape(str(final.get('backtest_status') or item.get('backtest_status') or 'not_eligible'))}<br><span class="muted">{escape(str(item.get('next_check') or 'Recheck later.'))}</span></td>
         </tr>"""
     return rows
 
@@ -2075,12 +2090,12 @@ def format_earnings_mini_backtest_rows(backtest: dict[str, Any]) -> str:
             rows += f"""
             <tr>
                 <td><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong></td>
-                <td colspan="5" class="empty">No historical backtest data. {format_compact_list([str(e) for e in (item.get('errors', []) or [])[:3]])}</td>
+                <td colspan="5" class="empty">{escape(str(item.get('mode_status') or item.get('mode') or 'diagnostic'))}: No historical backtest data. {format_compact_list([str(e) for e in (item.get('errors', []) or [])[:3]])}</td>
             </tr>"""
             continue
         rows += f"""
         <tr>
-            <td><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong><br><span class="muted">Rank {number(item.get('ranking_score'), 1)}</span></td>
+            <td><strong>{escape(str(item.get('ticker') or 'UNKNOWN'))}</strong><br><span class="muted">Rank {number(item.get('ranking_score'), 1)}<br>{escape(str(item.get('mode_status') or item.get('mode') or 'eligibility'))}</span></td>
             <td>{summary.get('event_count', 0)} historical event(s)</td>
             <td>Avg abs {pct(summary.get('avg_abs_event_move_pct'))}<br>Max abs {pct(summary.get('max_abs_event_move_pct'))}<br>Small-move rate {pct(summary.get('small_move_rate_pct'))}</td>
             <td>Avg gap {pct(summary.get('avg_abs_gap_pct'))}<br>Avg pre-run {signed_pct(summary.get('avg_pre_event_runup_pct'))}</td>

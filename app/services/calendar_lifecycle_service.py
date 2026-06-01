@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app import config
+from app.services.calendar_hold_through_service import build_hold_through_score
+from app.services.calendar_verdict_service import classify_trade_type
 
 LogFn = Callable[[str], None]
 
@@ -212,7 +214,7 @@ def _evaluate_one_calendar(
     decision_summary = _decision_summary(action, pnl_pct, short_itm, assignment_risk_level, front_dte)
     next_check = _next_check(action, front_dte, short_itm, earnings_known)
 
-    return {
+    output = {
         "strategy": "Calendar Lifecycle Check v1",
         "ticker": ticker,
         "underlying": ticker,
@@ -268,6 +270,9 @@ def _evaluate_one_calendar(
         "risks": risks,
         "next_check": next_check,
     }
+    output.update(build_hold_through_score(output))
+    output.update(classify_trade_type(output))
+    return output
 
 
 

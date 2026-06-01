@@ -275,6 +275,27 @@ def config_check():
         return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
 
 
+@app.route("/research/calendar-backtest")
+def research_calendar_backtest():
+    token = request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+
+    try:
+        from app.services.calendar_research_service import (
+            render_calendar_backtest_research_html,
+            run_calendar_backtest_research,
+        )
+
+        params = dict(request.args.items())
+        report = run_calendar_backtest_research(params, log_print=lambda msg: print(msg, flush=True))
+        if str(request.args.get("format") or "").lower() == "json":
+            return jsonify(report), 200
+        return render_calendar_backtest_research_html(report), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
 @app.route("/health")
 def health():
     return "OK", 200

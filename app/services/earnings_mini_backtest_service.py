@@ -43,7 +43,7 @@ def build_earnings_mini_backtest(
         "errors": [],
         "notes": [
             "Candle-based underlying move study only; not historical option P/L.",
-            "Runs only for candidates that pass Calendar Ranking v2 criteria.",
+            "Eligibility mode runs only for candidates that pass Calendar Ranking v2 and final-verdict criteria.",
         ],
     }
 
@@ -56,6 +56,11 @@ def build_earnings_mini_backtest(
     if not eligible:
         result["errors"].append("No candidates passed the full criteria gate; mini-backtest intentionally skipped.")
         logger("Earnings Mini-Backtest v1 skipped: no fully-qualified calendar candidates.")
+        if bool(getattr(config, "CALENDAR_DIAGNOSTIC_BACKTEST_ENABLED", True)):
+            diagnostic_rows = _diagnostic_rows(calendar_ranking, eligible)
+            for row in diagnostic_rows[: max(1, int(getattr(config, "CALENDAR_BACKTEST_MAX_CANDIDATES", 3) or 3))]:
+                result["items"].append(_diagnostic_item(row))
+            logger(f"Diagnostic mini-backtest generated for {len(result['items'])} candidate(s).")
         return _finalize(result)
 
     provider = get_provider()
@@ -72,9 +77,81 @@ def build_earnings_mini_backtest(
     max_candidates = max(1, int(getattr(config, "CALENDAR_BACKTEST_MAX_CANDIDATES", 3) or 3))
     for row in eligible[:max_candidates]:
         item = _backtest_one(row, provider, tradier, logger)
+        item["mode"] = "eligibility"
+        item["mode_status"] = "eligibility"
         result["items"].append(item)
 
+    if bool(getattr(config, "CALENDAR_DIAGNOSTIC_BACKTEST_ENABLED", True)):
+        diagnostic_rows = _diagnostic_rows(calendar_ranking, eligible)
+        for row in diagnostic_rows[:max_candidates]:
+            result["items"].append(_diagnostic_item(row))
+        logger(f"Diagnostic mini-backtest generated for {len(diagnostic_rows[:max_candidates])} candidate(s).")
+
     return _finalize(result)
+
+
+def build_manual_calendar_backtest(
+    ticker: str,
+    mode: str = "diagnostic",
+    params: dict[str, Any] | None = None,
+    log_print: LogFn | None = None,
+) -> dict[str, Any]:
+    logger = log_print or (lambda msg: print(msg, flush=True))
+    row = {"ticker": ticker, "rank_score": None}
+    provider = get_provider()
+    tradier = TradierProvider()
+    if not ticker:
+        return {"ticker": ticker, "mode": mode, "mode_status": "skipped_no_candidate", "has_data": False, "events": [], "summary": {}, "errors": ["Missing ticker."]}
+    if not provider.is_configured or not tradier.is_configured:
+        return {
+            "ticker": ticker,
+            "mode": mode,
+            "mode_status": "skipped_no_candidate",
+            "has_data": False,
+            "events": [],
+            "summary": {},
+            "errors": ["Earnings provider and TRADIER_ACCESS_TOKEN are required for manual historical diagnostics."],
+        }
+    out = _backtest_one(row, provider, tradier, logger)
+    out["mode"] = mode
+    out["mode_status"] = mode
+    out["requested_params"] = dict(params or {})
+    out["diagnostic_interpretation"] = (out.get("summary") or {}).get("interpretation") or "Historical movement diagnostic only; no candidate was persisted or tracked."
+    return out
+
+
+def _diagnostic_rows(calendar_ranking: dict[str, Any] | None, eligible: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not bool(getattr(config, "CALENDAR_DIAGNOSTIC_BACKTEST_ALLOW_FAILED_CANDIDATES", True)):
+        return []
+    eligible_tickers = {str(row.get("ticker") or "").upper() for row in eligible}
+    rows = []
+    for row in ((calendar_ranking or {}).get("items", []) or []):
+        if not isinstance(row, dict):
+            continue
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker or ticker in eligible_tickers:
+            continue
+        rows.append(row)
+    return rows
+
+
+def _diagnostic_item(row: dict[str, Any]) -> dict[str, Any]:
+    final = row.get("final_verdict") if isinstance(row.get("final_verdict"), dict) else {}
+    blocker = str(final.get("main_blocker") or row.get("main_blocker") or "")
+    hard = str(final.get("hard_fail_reason") or "")
+    untradeable = "spread" in hard.lower() or "liquidity" in hard.lower() or "untradeable" in blocker.lower()
+    status = "skipped_untradeable" if untradeable and bool(getattr(config, "CALENDAR_DIAGNOSTIC_BACKTEST_SKIP_IF_UNTRADEABLE", True)) else "diagnostic"
+    explanation = "Diagnostic backtest not run. Main blocker is execution quality." if status == "skipped_untradeable" else "Diagnostic context available; failed candidate remains ineligible."
+    return {
+        "ticker": row.get("ticker"),
+        "ranking_score": row.get("rank_score"),
+        "mode": "diagnostic",
+        "mode_status": status,
+        "has_data": False,
+        "events": [],
+        "summary": {"event_count": 0, "interpretation": explanation},
+        "errors": [hard or blocker or "Candidate failed final verdict criteria."],
+    }
 
 
 def _backtest_one(row: dict[str, Any], earnings_provider: Any, tradier: TradierProvider, logger: LogFn) -> dict[str, Any]:

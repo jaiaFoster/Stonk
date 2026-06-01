@@ -22,6 +22,7 @@ from datetime import date
 from typing import Any, Callable
 
 from app import config
+from app.services.calendar_verdict_service import build_final_calendar_verdict
 
 LogFn = Callable[[str], None]
 
@@ -31,6 +32,8 @@ def build_unified_calendar_trade_engine(
     earnings_discovery_quality: dict[str, Any] | None = None,
     calendar_candidates: list[dict[str, Any]] | None = None,
     earnings_calendar_strategy: dict[str, Any] | None = None,
+    calendar_ranking: dict[str, Any] | None = None,
+    account_context: dict[str, Any] | None = None,
     open_options: dict[str, Any] | None = None,
     lifecycle_checks: dict[str, Any] | None = None,
     log_print: LogFn | None = None,
@@ -65,6 +68,11 @@ def build_unified_calendar_trade_engine(
         for item in (strategy.get("items", []) or [])
         if isinstance(item, dict) and str(item.get("ticker") or "").strip()
     }
+    ranking_by_ticker = {
+        str(item.get("ticker") or "").upper().strip(): item
+        for item in ((calendar_ranking or {}).get("items", []) or [])
+        if isinstance(item, dict) and str(item.get("ticker") or "").strip()
+    }
     candidates_by_ticker = {
         str(item.get("ticker") or "").upper().strip(): item
         for item in candidates
@@ -87,7 +95,7 @@ def build_unified_calendar_trade_engine(
 
     new_rows = []
     for event in events_for_rows:
-        row = _build_new_trade_row(event, candidates_by_ticker, strategy_by_ticker)
+        row = _build_new_trade_row(event, candidates_by_ticker, strategy_by_ticker, ranking_by_ticker, account_context)
         new_rows.append(row)
 
     # If the scanner produced a candidate that was not in the discovery list, include it
@@ -95,7 +103,7 @@ def build_unified_calendar_trade_engine(
     discovered_tickers = {str(row.get("ticker") or "").upper() for row in new_rows}
     for ticker, candidate in candidates_by_ticker.items():
         if ticker not in discovered_tickers:
-            row = _build_new_trade_row({}, candidates_by_ticker, strategy_by_ticker, fallback_ticker=ticker)
+            row = _build_new_trade_row({}, candidates_by_ticker, strategy_by_ticker, ranking_by_ticker, account_context, fallback_ticker=ticker)
             row["requirements"].insert(0, _req("Earnings discovery", "WARN", "Candidate exists, but no matching discovery event was attached."))
             new_rows.append(row)
 
@@ -124,6 +132,8 @@ def _build_new_trade_row(
     event: dict[str, Any],
     candidates_by_ticker: dict[str, dict[str, Any]],
     strategy_by_ticker: dict[str, dict[str, Any]],
+    ranking_by_ticker: dict[str, dict[str, Any]] | None = None,
+    account_context: dict[str, Any] | None = None,
     fallback_ticker: str | None = None,
 ) -> dict[str, Any]:
     quality_row = event if isinstance(event, dict) and event.get("checks") is not None else {}
@@ -131,6 +141,7 @@ def _build_new_trade_row(
     ticker = str(quality_row.get("ticker") or event_payload.get("ticker") or event_payload.get("symbol") or fallback_ticker or "UNKNOWN").upper().strip()
     candidate = candidates_by_ticker.get(ticker) or {}
     strategy = strategy_by_ticker.get(ticker) or {}
+    ranking = (ranking_by_ticker or {}).get(ticker) or {}
 
     event = event_payload
     has_event = bool(event and (event.get("earnings_date") or event.get("date")))
@@ -189,7 +200,8 @@ def _build_new_trade_row(
     elif has_candidate:
         requirements.append(_req("Earnings placement", "WARN", "Candidate exists, but earnings-aware strategy did not evaluate it."))
 
-    verdict = _new_trade_verdict(has_candidate, strategy)
+    final = build_final_calendar_verdict(candidate, ranking, None, account_context) if has_candidate else {}
+    verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy))
     entry_plan = _entry_plan(verdict, event, candidate, strategy)
     possible_spread = _possible_spread(candidate)
 
@@ -198,6 +210,15 @@ def _build_new_trade_row(
         "type": "new_earnings_calendar_candidate",
         "score": round(max(0.0, min(100.0, float(score or 0.0))), 1),
         "verdict": verdict,
+        "final_verdict": final,
+        "trade_type": final.get("trade_type") or "",
+        "trade_type_label": final.get("trade_type_label") or "",
+        "main_blocker": final.get("main_blocker") or "",
+        "main_reason": final.get("main_reason") or "",
+        "backtest_status": final.get("backtest_status") or "",
+        "account_risk_status": final.get("account_risk_status") or "",
+        "account_risk_warning": final.get("account_risk_warning") or "",
+        "raw_scanner_verdict": final.get("raw_scanner_verdict") or _new_trade_verdict(has_candidate, strategy),
         "entry_plan": entry_plan,
         "earnings": _compact_event(event),
         "candidate": candidate,
@@ -205,8 +226,8 @@ def _build_new_trade_row(
         "quality_precheck": quality_row,
         "possible_spread": possible_spread,
         "requirements": requirements,
-        "reasons": _dedupe((strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),
-        "risks": _dedupe((strategy.get("risks", []) if strategy else []) + (candidate.get("risks", []) if candidate else [])),
+        "reasons": _dedupe((final.get("reasons") or []) + (strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),
+        "risks": _dedupe((final.get("blockers") or []) + (strategy.get("risks", []) if strategy else []) + (candidate.get("risks", []) if candidate else [])),
     }
 
 
@@ -270,6 +291,10 @@ def _build_open_trade_rows(open_options: dict[str, Any], lifecycle_checks: dict[
                     "next_action": check.get("next_check") or "Recheck live spread value before market close.",
                     "structure": _open_structure(check),
                     "value": _open_value_summary(check),
+                    "hold_through_score": check.get("hold_through_score"),
+                    "hold_through_action": check.get("hold_through_action"),
+                    "trade_type": check.get("trade_type"),
+                    "trade_type_label": check.get("trade_type_label"),
                     "reasons": check.get("reasons", []) or [],
                     "risks": check.get("risks", []) or [],
                     "raw": check,
@@ -288,6 +313,10 @@ def _build_open_trade_rows(open_options: dict[str, Any], lifecycle_checks: dict[
                 "next_action": "Lifecycle checker did not return a check; reprice manually before acting.",
                 "structure": _open_structure(cal),
                 "value": _open_value_summary(cal),
+                "hold_through_score": cal.get("hold_through_score"),
+                "hold_through_action": cal.get("hold_through_action"),
+                "trade_type": cal.get("trade_type"),
+                "trade_type_label": cal.get("trade_type_label"),
                 "reasons": ["Open calendar detected from Tradier option legs."],
                 "risks": ["No lifecycle check was attached to this open calendar."],
                 "raw": cal,

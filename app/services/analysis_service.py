@@ -258,6 +258,21 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
+    total = 0.0
+    for pos in positions or []:
+        if not isinstance(pos, dict):
+            continue
+        value = _safe_float(pos.get("market_value") or pos.get("equity") or pos.get("current_value"))
+        if value is None:
+            qty = _safe_float(pos.get("quantity") or pos.get("shares"))
+            price = _safe_float(pos.get("current_price") or pos.get("price") or pos.get("last_price"))
+            value = qty * price if qty is not None and price is not None else None
+        if value is not None and value > 0:
+            total += value
+    return round(total, 2) if total > 0 else None
+
+
 def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log: list[str] = []
     news: dict[str, list[dict[str, Any]]] = {}
@@ -577,22 +592,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
 
-    unified_calendar_engine = run_optional_step(
-        "unified_calendar_engine",
-        "Running Unified Calendar Trade Engine v1...",
-        lambda: build_unified_calendar_trade_engine(
-            earnings_trade_discovery=earnings_trade_discovery,
-            earnings_discovery_quality=earnings_discovery_quality,
-            calendar_candidates=calendar_candidates,
-            earnings_calendar_strategy=earnings_calendar_strategy,
-            open_options=open_options,
-            lifecycle_checks=lifecycle_checks,
-            log_print=log_print,
-        ),
-        EMPTY_UNIFIED_CALENDAR,
-        lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
-    )
-    tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
+    account_context = {"account_value_estimate": _estimate_account_value(positions)}
 
     calendar_ranking = run_optional_step(
         "calendar_ranking",
@@ -606,6 +606,25 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
     )
     tradier_snapshot["_calendar_ranking"] = calendar_ranking
+
+    unified_calendar_engine = run_optional_step(
+        "unified_calendar_engine",
+        "Running Unified Calendar Trade Engine v1...",
+        lambda: build_unified_calendar_trade_engine(
+            earnings_trade_discovery=earnings_trade_discovery,
+            earnings_discovery_quality=earnings_discovery_quality,
+            calendar_candidates=calendar_candidates,
+            earnings_calendar_strategy=earnings_calendar_strategy,
+            calendar_ranking=calendar_ranking,
+            account_context=account_context,
+            open_options=open_options,
+            lifecycle_checks=lifecycle_checks,
+            log_print=log_print,
+        ),
+        EMPTY_UNIFIED_CALENDAR,
+        lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
+    )
+    tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
 
     earnings_mini_backtest = run_optional_step(
         "earnings_mini_backtest",
