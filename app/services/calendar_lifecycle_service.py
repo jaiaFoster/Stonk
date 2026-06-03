@@ -219,6 +219,12 @@ def _evaluate_one_calendar(
     else:
         risks.append("Earnings timestamp unavailable; confirm earnings date/time before holding through an event window.")
 
+    itm_risk = _deep_itm_short_leg_risk(short_moneyness_pct, front_dte, days_until_earnings)
+    if itm_risk["deep_itm_short_leg"]:
+        action = _more_urgent(action, "URGENT REVIEW / EXIT CHECK")
+        risks.append(str(itm_risk["urgent_short_leg_label"]))
+        risks.append(str(itm_risk["thesis_warning"]))
+
     lifecycle_priority_score = _priority_score(action, pnl_pct, assignment_risk_level, front_dte, short_itm)
     decision_summary = _decision_summary(action, pnl_pct, short_itm, assignment_risk_level, front_dte)
     next_check = _next_check(action, front_dte, short_itm, earnings_known)
@@ -281,6 +287,10 @@ def _evaluate_one_calendar(
         "earnings_known": earnings_known,
         "action": action,
         "confidence": confidence,
+        "deep_itm_short_leg": itm_risk["deep_itm_short_leg"],
+        "emergency_short_leg_risk": itm_risk["emergency_short_leg_risk"],
+        "urgent_short_leg_label": itm_risk["urgent_short_leg_label"],
+        "thesis_warning": itm_risk["thesis_warning"],
         "reasons": reasons,
         "risks": risks,
         "next_check": next_check,
@@ -471,6 +481,32 @@ def _more_urgent(current: str, candidate: str) -> str:
         "URGENT REVIEW / EXIT CHECK": 5,
     }
     return candidate if rank.get(candidate, 0) > rank.get(current, 0) else current
+
+
+def _deep_itm_short_leg_risk(
+    short_moneyness_pct: float | None,
+    front_dte: int | None,
+    days_until_earnings: int | None,
+) -> dict[str, Any]:
+    """Return display-only urgency fields for a deeply ITM short leg."""
+    base = {
+        "deep_itm_short_leg": False,
+        "emergency_short_leg_risk": False,
+        "urgent_short_leg_label": "",
+        "thesis_warning": "",
+    }
+    if short_moneyness_pct is None or front_dte is None:
+        return base
+    if short_moneyness_pct <= 5.0 or front_dte > 3:
+        return base
+
+    base["deep_itm_short_leg"] = True
+    base["urgent_short_leg_label"] = "SHORT LEG ITM - CLOSE / ROLL REVIEW"
+    base["thesis_warning"] = "Original calendar thesis may be broken because underlying moved far beyond the short strike."
+    if short_moneyness_pct > 10.0 and days_until_earnings is not None and 0 <= days_until_earnings <= 1:
+        base["emergency_short_leg_risk"] = True
+        base["urgent_short_leg_label"] = "SHORT LEG DEEP ITM - CLOSE / ROLL REVIEW REQUIRED"
+    return base
 
 
 def _next_check(action: str, front_dte: int | None, short_itm: bool | None, earnings_known: bool) -> str:
