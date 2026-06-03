@@ -96,6 +96,9 @@ UI_OVERHAUL_CSS = """
             align-items: center;
         }
         .summary-chips { justify-content: flex-end; }
+        .summary-link { text-decoration: none; }
+        .summary-link .chip { cursor: pointer; }
+        .summary-link:hover .chip { border-color: var(--accent-2); }
         .chip, .pill {
             display: inline-flex;
             align-items: center;
@@ -212,6 +215,7 @@ UI_OVERHAUL_CSS = """
             gap: 0.55rem;
             padding: 0 0.7rem 0.7rem;
         }
+        .metric-grid.compact { grid-template-columns: repeat(3, minmax(0, 1fr)); }
         .detail-block {
             border-top: 1px solid var(--line);
             padding: 0.7rem;
@@ -256,6 +260,33 @@ UI_OVERHAUL_CSS = """
             border-radius: 8px;
         }
         details.debug-details summary { color: var(--accent-2); }
+        .toast {
+            position: fixed;
+            right: 1rem;
+            bottom: 1rem;
+            z-index: 50;
+            display: none;
+            max-width: min(420px, calc(100vw - 2rem));
+            padding: 0.7rem 0.85rem;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-3);
+            color: var(--text);
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+        }
+        .toast.show { display: block; }
+        .payload-fallback {
+            width: 100%;
+            min-height: 220px;
+            margin-top: 0.65rem;
+            padding: 0.75rem;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-2);
+            color: var(--text);
+            font-family: inherit;
+            font-size: 0.82rem;
+        }
         .table-scroll { overflow-x: auto; }
         @media (max-width: 900px) {
             .top-summary { align-items: flex-start; flex-direction: column; }
@@ -603,6 +634,10 @@ def _chip(label: str, value: Any | None = None, css_class: str = "neutral") -> s
     return f'<span class="chip {escape(css_class)}">{escape(label)}{value_html}</span>'
 
 
+def _chip_link(target: str, label: str, value: Any | None = None, css_class: str = "neutral") -> str:
+    return f'<a class="summary-link" href="#{escape(target)}">{_chip(label, value, css_class)}</a>'
+
+
 def _tone_for_text(value: Any) -> str:
     text = str(value or "").upper()
     if any(token in text for token in ("FAIL", "AVOID", "REDUCE", "CUT", "RISK", "ELEVATED")):
@@ -635,6 +670,45 @@ def _first_text(*values: Any, fallback: str = "—") -> str:
         if value not in (None, "", []):
             return str(value)
     return fallback
+
+
+def _has_value(value: Any) -> bool:
+    return value not in (None, "", [], {}, "—", "â€”")
+
+
+def _lookup_path(mapping: dict[str, Any], path: str) -> Any:
+    current: Any = mapping
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _pick(row: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    for key in keys:
+        for source in (row, raw):
+            value = _lookup_path(source, key) if "." in key else source.get(key)
+            if _has_value(value):
+                return value
+    return default
+
+
+def _pick_text(row: dict[str, Any], *keys: str, fallback: str = "—") -> str:
+    value = _pick(row, *keys, default=None)
+    if isinstance(value, list) and value:
+        value = value[0]
+    return str(value) if _has_value(value) else fallback
+
+
+def _moneyness_text(value: Any) -> str:
+    if not _has_value(value):
+        return "—"
+    try:
+        return f"{float(value):+.1f}%"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 def _daily_actions(daily_opportunity: dict[str, Any]) -> list[dict[str, Any]]:
@@ -698,11 +772,11 @@ def _top_summary_html(
             <span>{escape(today)} · read-only decision dashboard</span>
         </div>
         <div class="summary-chips" aria-label="Run summary">
-            {_chip("ACTIVE", active_count, "warn" if active_count else "neutral")}
-            {_chip("URGENT", urgent_count, "bad" if urgent_count else "neutral")}
-            {_chip("RISK", risk_count, "warn" if risk_count else "neutral")}
-            {_chip("ADDS", adds_count, "good" if adds_count else "neutral")}
-            {_chip("BLOCKED", blocked_count, "bad" if blocked_count else "neutral")}
+            {_chip_link("active-calendars", "ACTIVE", active_count, "warn" if active_count else "neutral")}
+            {_chip_link("active-calendars", "URGENT", urgent_count, "bad" if urgent_count else "neutral")}
+            {_chip_link("risk-review", "RISK", risk_count, "warn" if risk_count else "neutral")}
+            {_chip_link("potential-adds", "ADDS", adds_count, "good" if adds_count else "neutral")}
+            {_chip_link("blocked-calendars", "BLOCKED", blocked_count, "bad" if blocked_count else "neutral")}
             {_chip("MODE", mode, "neutral")}
             {_provider_chips(pipeline_status)}
         </div>
