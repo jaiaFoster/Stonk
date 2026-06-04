@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Morning Brief - Algo Stock Advisor Preview</title>
+  <link rel="stylesheet" href="preview_shared.css">
+</head>
+<body class="theme-brief">
+  <main class="page">
+    <header class="topbar">
+      <div class="brand"><div class="brand-mark">A</div><div><h1>Algo Stock Advisor</h1><p>Morning brief preview</p></div></div>
+      <nav class="nav"><a href="index.html">Index</a><a href="#active">Active</a><a href="#holdings">Holdings</a><a href="#adds">Adds</a><a href="#gaps">Gaps</a><a href="#calendar">Calendar</a></nav>
+    </header>
+    <section class="hero" id="active">
+      <div class="hero-grid">
+        <div>
+          <p class="eyebrow">What needs attention today</p>
+          <h2>Start the morning with the one trade that needs review.</h2>
+          <p>Short leg is inside the review window. Current spread is slightly profitable, but hold-through score says to consider closing before earnings.</p>
+          <div class="stack" style="margin-top:12px"><span class="pill active_calendar">active_calendar</span><span class="pill warning">RECHECK BEFORE CLOSE</span><span class="pill warning">leg_side_inferred</span></div>
+        </div>
+        <div class="kpi-strip">
+          <div class="kpi"><strong>3.30</strong><span>current debit</span></div><div class="kpi"><strong class="positive">+3.4%</strong><span>+$11 est. P/L</span></div><div class="kpi"><strong>54</strong><span>hold-through score</span></div>
+        </div>
+      </div>
+    </section>
+    <section class="section">
+      <div class="section-header"><div><h2>Active Options / Calendar Trades</h2><p>Broker-detected lifecycle rows outrank all stock ideas.</p></div></div>
+      <div class="grid two">
+        <div class="card"><div class="card-title"><div><div class="ticker">AVGO</div><div class="sub">430 CALL calendar | short 2026-06-05 / long 2026-06-12</div></div><span class="pill active_calendar">Active</span></div><div class="metric-list"><div class="metric"><b>3.30</b><span>Current debit</span></div><div class="metric"><b>3.19</b><span>Entry debit est.</span></div><div class="metric"><b class="positive">+3.4% / +$11</b><span>Estimated P/L</span></div><div class="metric"><b>4.79 / 2.07</b><span>Target / stop</span></div><div class="metric"><b>Low</b><span>Assignment risk</span></div><div class="metric"><b class="warn-text">Consider closing</b><span>Hold-through action</span></div></div></div>
+        <div class="card"><div class="card-title"><div><div class="ticker">Next step</div><div class="sub">Lifecycle guidance</div></div><span class="pill warning">Review</span></div><p>Recheck before market close while the short leg is inside the review window.</p><p class="sub">Pricing quality warning: leg_side_inferred. Use broker-detected position data only; no manual tracking.</p></div>
+      </div>
+    </section>
+    <section class="section" id="holdings"><div class="section-header"><div><h2>Current Holdings / Portfolio Advisor</h2><p>Holdings stay above new stock ideas.</p></div></div><div class="list">
+      <div class="row"><strong>NVDA</strong><span>STRONG ADD / HOLD · allocation 7.6% · trend strong</span><span class="positive">+1.8%</span></div>
+      <div class="row"><strong>AMZN</strong><span>STRONG ADD / HOLD · allocation 14.7% · near concentration threshold</span><span class="positive">+2.2%</span></div>
+      <div class="row"><strong>IBM</strong><span>HOLD · allocation 14.6% · monitor concentration</span><span class="positive">+35.4%</span></div>
+      <div class="row"><strong>ORCL</strong><span>HOLD · allocation 8.8%</span><span class="positive">+41.7%</span></div>
+      <div class="row"><strong>FANUY</strong><span>HOLD · allocation 11.2%</span><span class="positive">+31.4%</span></div>
+      <div class="row"><strong>CRDO</strong><span>HOLD · allocation 4.0%</span><span class="positive">+10.4%</span></div>
+      <div class="row"><strong>SOFI</strong><span>AVOID ADDING / REDUCE RISK · allocation 0.6%</span><span class="negative">-30.4%</span></div>
+    </div></section>
+    <section class="section" id="adds"><div class="section-header"><div><h2>Unified Potential Stock Adds</h2><p>One list across momentum and sector-gap sources.</p></div></div><div class="grid three">
+      <div class="card"><span class="pill stock_add">CONSIDER ADDING</span><h3>NVDA <span class="score">100</span></h3><p class="sub">Source: momentum</p></div><div class="card"><span class="pill stock_add">CONSIDER ADDING</span><h3>FSLR <span class="score">100</span></h3><p class="sub">Momentum + sector_gap</p></div><div class="card"><span class="pill stock_add">ADD ON PULLBACK</span><h3>MU <span class="score">100</span></h3><p class="sub">Momentum + sector_gap</p></div>
+      <div class="card"><h3>AMZN <span class="score">99</span></h3><p class="sub">Consider adding · momentum</p></div><div class="card"><h3>SOXL <span class="score">74</span></h3><p class="sub">Sector_gap · leveraged ETF / high beta</p></div><div class="card"><h3>ONDS <span class="score">74</span></h3><p class="sub">Sector_gap · speculative/high beta</p></div><div class="card"><h3>NVO <span class="score">61</span></h3><p class="sub">Below 200-day trend</p></div><div class="card"><h3>VST / CRDO / ALGN <span class="score">59</span></h3><p class="sub">Sector_gap · consider adding</p></div>
+    </div></section>
+    <section class="section" id="gaps"><div class="section-header"><div><h2>Portfolio Gap / Sector Exposure</h2><p>Target-vs-current exposure map.</p></div></div><div class="grid two portfolio-map"><div class="panel"><div class="donut"></div><p class="sub" style="text-align:center">Concentration and sector balance</p></div><div class="panel">
+      <div class="gap-row"><span>AI / Semiconductors</span><div class="bar"><i style="--value:43%"></i></div><strong>+10.2%</strong></div><div class="gap-row"><span>Energy / Utilities / Infrastructure</span><div class="bar"><i style="--value:33%"></i></div><strong>+8.0%</strong></div><div class="gap-row"><span>Healthcare / Biotech</span><div class="bar"><i style="--value:44%"></i></div><strong>+5.6%</strong></div><div class="gap-row"><span>Industrials / Defense / Robotics</span><div class="bar"><i style="--value:56%"></i></div><strong>+4.4%</strong></div><div class="gap-row"><span>Mega-cap Tech / Cloud</span><div class="bar over"><i style="--value:100%"></i></div><strong>-8.3%</strong></div><div class="gap-row"><span>Consumer / Retail</span><div class="bar over"><i style="--value:100%"></i></div><strong>-8.2%</strong></div><div class="gap-row"><span>Single-name concentration</span><div class="bar bad"><i style="--value:98%"></i></div><strong>AMZN 14.7%</strong></div>
+    </div></div></section>
+    <section class="section" id="calendar"><div class="section-header"><div><h2>Calendar Candidates / Ranking</h2><p>Final verdict and blocker shown before raw scanner details.</p></div></div><div class="grid two"><div class="card"><div class="card-title"><div><div class="ticker">CPB</div><div class="sub">Backtest: skipped_untradeable</div></div><span class="pill fail">FAIL</span></div><p><strong>UNTRADEABLE SPREAD</strong></p><p class="sub">Trade type note: classifier cleanup needed if short expires before earnings. Main blocker: options market untradeable. Max spread 54.5%, min OI 27, min volume 21.</p></div><div class="card"><div class="card-title"><div><div class="ticker">MTN</div><div class="sub">Backtest: diagnostic_available</div></div><span class="pill fail">FAIL</span></div><p><strong>DO NOT ENTER</strong></p><p class="sub">Trade type: NOT AN EARNINGS CALENDAR. Main blocker: short/front expiration placement does not fit intended strategy.</p></div></div></section>
+    <details class="debug"><summary>Monitor / Debug</summary><pre>Provider payloads, raw scanner details, quote warnings, ranking criteria, and diagnostics live here. Collapsed by default in preview.</pre></details>
+  </main>
+</body>
+</html>
