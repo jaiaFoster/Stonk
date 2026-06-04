@@ -63,7 +63,7 @@ class CalendarVerdictServiceTests(unittest.TestCase):
             "min_leg_volume": 25,
             "iv_edge": 1,
             "front_expiration": "2026-06-10",
-            "back_expiration": "2026-06-11",
+            "back_expiration": "2026-06-19",
             "earnings_event": {
                 "earnings_date": "2026-06-12",
                 "session_label": "Before Market Open",
@@ -88,6 +88,47 @@ class CalendarVerdictServiceTests(unittest.TestCase):
         result = classify_trade_type(candidate)
 
         self.assertEqual(result["trade_type"], "unknown_event_timing")
+
+    def test_cpb_bmo_short_before_earnings_is_pre_earnings_financing(self):
+        candidate = {
+            "ticker": "CPB",
+            "max_leg_spread_pct": 54.5,
+            "min_leg_open_interest": 27,
+            "min_leg_volume": 0,
+            "front_expiration": "2026-06-05",
+            "back_expiration": "2026-07-02",
+            "earnings_event": {
+                "earnings_date": "2026-06-08",
+                "session_label": "Before market open",
+                "is_timestamp_confirmed": True,
+            },
+        }
+
+        verdict = build_final_calendar_verdict(candidate, {"action": "FAIL / DO NOT BACKTEST"})
+
+        self.assertEqual(verdict["trade_type"], "pre_earnings_financing_or_directional_long_vol")
+        self.assertEqual(verdict["final_verdict"], "FAIL / UNTRADEABLE SPREAD")
+        self.assertEqual(verdict["main_blocker"], "options market untradeable")
+
+    def test_mtn_amc_short_after_earnings_not_generic_not_calendar(self):
+        candidate = {
+            "ticker": "MTN",
+            "max_leg_spread_pct": 10,
+            "min_leg_open_interest": 100,
+            "min_leg_volume": 20,
+            "front_expiration": "2026-06-18",
+            "back_expiration": "2026-07-17",
+            "earnings_event": {
+                "earnings_date": "2026-06-08",
+                "session_label": "After market close",
+                "is_timestamp_confirmed": True,
+            },
+        }
+
+        result = classify_trade_type(candidate)
+
+        self.assertIn(result["trade_type"], {"true_earnings_iv_crush_calendar", "invalid_for_earnings_strategy"})
+        self.assertNotEqual(result["trade_type"], "not_an_earnings_calendar")
 
 
 if __name__ == "__main__":

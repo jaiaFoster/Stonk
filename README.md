@@ -386,6 +386,7 @@ This patch makes the app easier to use from the Railway production URL and on mo
 /run?token=YOUR_RUN_TOKEN&mode=dev
 /trades?token=YOUR_RUN_TOKEN  # disabled legacy manual-entry route
 /research/calendar-backtest?token=YOUR_RUN_TOKEN&ticker=AVGO&mode=diagnostic
+/refresh-active-trades?token=YOUR_RUN_TOKEN
 /config-check?token=YOUR_RUN_TOKEN
 /health
 ```
@@ -488,6 +489,16 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Failed/watch-only calendar setups are moved lower and shown as blocked candidates.
 - Provider/raw tables, full payload, and run log remain available in collapsed Monitor / Debug details.
 - Details: `docs/ui_overhaul_muted_black_terminal_v1.md`.
+
+### Open Items Cleanup Patch v1
+
+- Added purpose-specific copy/download exports for daily brief, calendar report, holdings report, potential adds, and full debug payload.
+- Potential Adds now separates actionable adds from Watch / Research and Risk Review rows.
+- Zero-value positions are hidden from main decision sections and top counts while remaining available in debug output.
+- Provider chips distinguish Finnhub key presence from blocked candle access and show Tradier fallback/dev-limited status when detected.
+- Active calendar cards use lifecycle field aliases and show deep-ITM close/roll review warnings.
+- Added token-protected `/refresh-active-trades` for lightweight broker-detected open-options repricing without broad scans.
+- Details: `docs/open_items_cleanup_patch_v1.md`.
 
 ### Railway start command
 

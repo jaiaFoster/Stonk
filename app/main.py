@@ -296,6 +296,59 @@ def research_calendar_backtest():
         return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
 
 
+@app.route("/refresh-active-trades", methods=["GET", "POST"])
+def refresh_active_trades():
+    token = request.values.get("token") or request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+
+    try:
+        from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
+        from app.services.open_options_service import detect_open_options_positions
+
+        log: list[str] = []
+
+        def logger(message: str) -> None:
+            safe = str(message)
+            log.append(safe)
+            print(safe, flush=True)
+
+        open_options = detect_open_options_positions(log_print=logger)
+        lifecycle = evaluate_calendar_lifecycle(
+            open_options=open_options,
+            tradier_snapshot={},
+            earnings_events={},
+            trade_memory=None,
+            log_print=logger,
+        )
+        summary = {
+            "option_position_count": ((open_options or {}).get("summary", {}) or {}).get("option_leg_count", 0),
+            "calendar_count": ((lifecycle or {}).get("summary", {}) or {}).get("calendar_count", 0),
+            "urgent_count": ((lifecycle or {}).get("summary", {}) or {}).get("urgent_count", 0),
+            "exit_review_count": ((lifecycle or {}).get("summary", {}) or {}).get("exit_review_count", 0),
+        }
+        return jsonify(
+            {
+                "status": "ok",
+                "scope": "active_trades_only",
+                "skipped": [
+                    "broad earnings discovery",
+                    "news fetch",
+                    "watchlist scan",
+                    "sector suggestions",
+                    "stock momentum scan",
+                    "full portfolio scoring",
+                ],
+                "summary": summary,
+                "open_options": open_options,
+                "lifecycle": lifecycle,
+                "log_tail": log[-20:],
+            }
+        ), 200
+    except Exception as e:
+        return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
+
+
 @app.route("/health")
 def health():
     return "OK", 200
@@ -471,6 +524,7 @@ def _render_home_page() -> str:
         <div class="grid">
             <a class="button" href="#" onclick="go('/run?mode=dev'); return false;">Run DEV Report</a>
             <a class="button" href="#" onclick="go('/run'); return false;">Run PROD Report</a>
+            <a class="button secondary" href="#" onclick="go('/refresh-active-trades'); return false;">Refresh Active Trades</a>
             
             <a class="button secondary" href="#" onclick="go('/config-check'); return false;">Config Check</a>
             <a class="button secondary" href="/health">Health</a>
