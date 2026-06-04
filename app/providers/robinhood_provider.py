@@ -9,6 +9,7 @@ import builtins
 import getpass
 import time
 import traceback
+from typing import Any
 
 import requests
 
@@ -16,9 +17,21 @@ from app import config
 from app.utils.log_safety import sanitize_for_log
 
 
+MAX_VERIFICATION_POLLS = 10
+_verification_prompt_count = 0
+_last_login_result: dict[str, Any] | None = None
+
+
 def _patched_input(prompt=""):
+    global _verification_prompt_count
     print(f"[PATCH] input() called with: {prompt}", flush=True)
-    if "code" in prompt.lower() or "validation" in prompt.lower():
+    prompt_text = str(prompt or "").lower()
+    if any(token in prompt_text for token in ("code", "validation", "verification", "challenge", "approve")):
+        _verification_prompt_count += 1
+        if _verification_prompt_count > MAX_VERIFICATION_POLLS:
+            raise RuntimeError(
+                f"Robinhood verification polling exceeded MAX_VERIFICATION_POLLS={MAX_VERIFICATION_POLLS}"
+            )
         print("Waiting 30s for you to approve on Robinhood app...", flush=True)
         time.sleep(30)
     return ""
@@ -44,6 +57,101 @@ ACCOUNT_MAP = {
 
 MAX_LOGIN_RETRIES = 3
 RETRY_INTERVAL_SECONDS = 60
+
+
+def _login_result(
+    success: bool,
+    error: str | None = None,
+    rate_limited: bool = False,
+    auth_required: bool = False,
+    status: str | None = None,
+) -> dict[str, Any]:
+    if status is None:
+        if success:
+            status = "ok"
+        elif rate_limited:
+            status = "rate_limited"
+        elif auth_required:
+            status = "auth_required"
+        else:
+            status = "auth_failed"
+    return {
+        "success": bool(success),
+        "error": error,
+        "rate_limited": bool(rate_limited),
+        "auth_required": bool(auth_required),
+        "status": status,
+    }
+
+
+def _classify_login_error(error: Any) -> dict[str, Any]:
+    text = str(error or "")
+    lowered = text.lower()
+    rate_limited = (
+        "429" in lowered
+        or "too many requests" in lowered
+        or "get_prompts_status" in lowered
+        or "/push/" in lowered
+    )
+    auth_required = (
+        "verification" in lowered
+        or "challenge" in lowered
+        or "mfa" in lowered
+        or "approval" in lowered
+        or "approve" in lowered
+        or "prompt" in lowered
+        or "validation" in lowered
+    )
+    if "max_verification_polls" in lowered or "verification polling exceeded" in lowered:
+        auth_required = True
+    return _login_result(
+        success=False,
+        error=text,
+        rate_limited=rate_limited,
+        auth_required=auth_required and not rate_limited,
+    )
+
+
+def _set_last_login_result(result: dict[str, Any]) -> dict[str, Any]:
+    global _last_login_result
+    _last_login_result = dict(result)
+    return result
+
+
+def get_last_login_result() -> dict[str, Any]:
+    return dict(_last_login_result or _login_result(False, "Login has not been attempted.", status="unknown"))
+
+
+def _robinhood_auth_status_payload(login_result: dict[str, Any] | None = None) -> dict[str, Any]:
+    result = dict(login_result or get_last_login_result())
+    return {
+        "provider": "robinhood",
+        "configured": bool(config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
+        "success": bool(result.get("success")),
+        "status": result.get("status") or "unknown",
+        "error": result.get("error"),
+        "rate_limited": bool(result.get("rate_limited")),
+        "auth_required": bool(result.get("auth_required")),
+    }
+
+
+def _log_robinhood_login_failure(result: dict[str, Any]) -> None:
+    print("[ROBINHOOD]\nLogin failed.", flush=True)
+    reason = result.get("error") or result.get("status") or "unknown"
+    if result.get("rate_limited"):
+        reason = "429 rate limit encountered during verification."
+    elif result.get("auth_required"):
+        reason = f"Authentication/verification required. {reason}"
+    print(f"\nReason:\n{sanitize_for_log(reason, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])}", flush=True)
+    print(
+        "\nSkipping:\n"
+        "- holdings\n"
+        "- watchlists\n"
+        "- option detection\n"
+        "- calendar inference\n\n"
+        "Continuing with non-Robinhood modules.",
+        flush=True,
+    )
 
 
 def dbg(msg, indent=0):
@@ -73,13 +181,19 @@ def notify(message, title="Stonk Reporter Alert"):
         print(f"Failed to send ntfy alert: {sanitize_for_log(e, [config.NTFY_TOPIC])}", flush=True)
 
 
-def login_with_retry():
+def login_with_retry() -> dict[str, Any]:
+    global _verification_prompt_count
     print("login_with_retry() called", flush=True)
     print(f"Username set: {bool(config.ROBINHOOD_USERNAME)}", flush=True)
     print(f"Password set: {bool(config.ROBINHOOD_PASSWORD)}", flush=True)
 
+    if not (config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD):
+        result = _login_result(False, "Robinhood credentials are not configured.", status="auth_failed")
+        return _set_last_login_result(result)
+
     for attempt in range(1, MAX_LOGIN_RETRIES + 1):
         try:
+            _verification_prompt_count = 0
             print(f"Login attempt {attempt}/{MAX_LOGIN_RETRIES}...", flush=True)
             r.login(
                 username=config.ROBINHOOD_USERNAME,
@@ -88,12 +202,22 @@ def login_with_retry():
                 pickle_name="robinhood_session",
             )
             print("Login successful.", flush=True)
-            return True
+            return _set_last_login_result(_login_result(True))
 
         except Exception as e:
             error_msg = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.NTFY_TOPIC])
+            classified = _classify_login_error(e)
             print(f"Login failed (attempt {attempt}): {error_msg}", flush=True)
             traceback.print_exc()
+            if classified.get("rate_limited"):
+                _set_last_login_result(classified)
+                _log_robinhood_login_failure(classified)
+                notify(
+                    "Robinhood login rate-limited during verification polling. "
+                    "Skipping Robinhood-dependent modules for this run.",
+                    title="Stonk Reporter - Robinhood Rate Limited",
+                )
+                return classified
 
             if attempt == 1:
                 notify(
@@ -113,12 +237,24 @@ def login_with_retry():
             if attempt < MAX_LOGIN_RETRIES:
                 time.sleep(RETRY_INTERVAL_SECONDS)
 
+    result = _login_result(False, f"Robinhood login failed after {MAX_LOGIN_RETRIES} attempts.")
     notify(
         f"Robinhood login failed after {MAX_LOGIN_RETRIES} attempts. Manual intervention needed.",
         title="Stonk Reporter - Login Gave Up",
     )
     print("Max retries reached. Giving up.", flush=True)
-    return False
+    _set_last_login_result(result)
+    _log_robinhood_login_failure(result)
+    return result
+
+
+def get_positions_with_status() -> dict[str, Any]:
+    positions = get_positions()
+    return {
+        "positions": positions,
+        "provider_status": _robinhood_auth_status_payload(),
+        "has_data": bool(positions),
+    }
 
 
 def get_positions():
@@ -126,7 +262,8 @@ def get_positions():
     logged_in = False
 
     try:
-        if not login_with_retry():
+        login_result = login_with_retry()
+        if not login_result.get("success"):
             return []
 
         logged_in = True
@@ -282,6 +419,9 @@ def get_watchlist_tickers(watchlist_names=None, max_tickers=None):
         "tickers": [],
         "errors": [],
         "debug": [],
+        "provider_status": _robinhood_auth_status_payload(
+            _login_result(False, "Robinhood watchlist login has not been attempted.", status="unknown")
+        ),
         "summary": {
             "watchlist_count": 0,
             "ticker_count": 0,
@@ -289,7 +429,9 @@ def get_watchlist_tickers(watchlist_names=None, max_tickers=None):
     }
 
     try:
-        if not login_with_retry():
+        login_result = login_with_retry()
+        result["provider_status"] = _robinhood_auth_status_payload(login_result)
+        if not login_result.get("success"):
             result["errors"].append("Robinhood login failed while fetching watchlists.")
             return result
 
@@ -590,6 +732,9 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
         "positions": [],
         "errors": [],
         "debug": [],
+        "provider_status": _robinhood_auth_status_payload(
+            _login_result(False, "Robinhood option login has not been attempted.", status="unknown")
+        ),
     }
 
     if not result["configured"]:
@@ -603,7 +748,9 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
     )
 
     try:
-        if not login_with_retry():
+        login_result = login_with_retry()
+        result["provider_status"] = _robinhood_auth_status_payload(login_result)
+        if not login_result.get("success"):
             result["errors"].append("Robinhood login failed while fetching option positions.")
             return result
         logged_in = True

@@ -930,6 +930,7 @@ def _normalized_provider_status(
     pipeline_status: dict[str, Any],
     log_lines: list[str],
     recommendations: Recommendations | None = None,
+    provider_meta: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config_snapshot = pipeline_status.get("config_snapshot", {}) if isinstance(pipeline_status, dict) else {}
     metric_text = " ".join(
@@ -945,10 +946,22 @@ def _normalized_provider_status(
     rh_seen = "robinhood" in text or "positions" in text
     finnhub_blocked = "finnhub" in text and any(token in text for token in ("403", "forbidden", "candle", "candles unavailable", "stock/candle", "unavailable"))
     tradier_fallback = "tradier fallback" in text or ("fallback" in text and "tradier" in text)
+    rh_meta = ((provider_meta or {}).get("robinhood") or {}) if isinstance(provider_meta, dict) else {}
+    rh_status = str(rh_meta.get("status") or "").lower().strip()
+    rh_failed = rh_status in {"rate_limited", "auth_required", "auth_failed"}
+    rh = {
+        "positions": bool(rh_meta.get("success")) or (rh_seen and not rh_failed),
+        "status": rh_status or ("ok" if rh_seen else "unknown"),
+        "error": rh_meta.get("error"),
+        "rate_limited": bool(rh_meta.get("rate_limited") or rh_status == "rate_limited"),
+        "auth_required": bool(rh_meta.get("auth_required") or rh_status == "auth_required"),
+        "auth_failed": rh_status == "auth_failed",
+        "configured": rh_meta.get("configured"),
+    }
     return {
         "mode": run_mode,
         "dev_limited": run_mode == "dev",
-        "robinhood": {"positions": rh_seen},
+        "robinhood": rh,
         "tradier": {"key": tradier_key, "usable": tradier_key, "historical_fallback": tradier_fallback},
         "finnhub": {"key": finnhub_key, "candles": False if finnhub_blocked else None, "candles_blocked": finnhub_blocked},
         "alpha_vantage": {"key": av_key},
@@ -989,8 +1002,19 @@ def _provider_chips(provider_status: dict[str, Any]) -> str:
     tradier = provider_status.get("tradier", {}) or {}
     finnhub = provider_status.get("finnhub", {}) or {}
     av = provider_status.get("alpha_vantage", {}) or {}
+    rh_status = str(rh.get("status") or "").lower()
+    if rh.get("rate_limited") or rh_status == "rate_limited":
+        rh_label, rh_tone = "RATE LIMITED", "bad"
+    elif rh.get("auth_required") or rh_status == "auth_required":
+        rh_label, rh_tone = "AUTH REQUIRED", "warn"
+    elif rh.get("auth_failed") or rh_status == "auth_failed":
+        rh_label, rh_tone = "AUTH FAILED", "bad"
+    elif rh.get("positions") or rh_status == "ok":
+        rh_label, rh_tone = "OK", "good"
+    else:
+        rh_label, rh_tone = "UNKNOWN", "neutral"
     chips = [
-        _chip("RH", "OK" if rh.get("positions") else "UNKNOWN", "good" if rh.get("positions") else "neutral"),
+        _chip("RH", rh_label, rh_tone),
         _chip("TRADIER", "OK" if tradier.get("usable") else "KEY MISSING", "good" if tradier.get("usable") else "warn"),
     ]
     if tradier.get("historical_fallback"):
@@ -1042,14 +1066,26 @@ def _macro_context_html(recommendations: Recommendations, provider_status: dict[
     ) + "</div>"
 
 
-def _active_calendar_section_html(rows: list[dict[str, Any]]) -> str:
+def _robinhood_unavailable(provider_status: dict[str, Any] | None) -> bool:
+    rh = (provider_status or {}).get("robinhood", {}) or {}
+    status = str(rh.get("status") or "").lower()
+    return bool(rh.get("rate_limited") or rh.get("auth_required") or rh.get("auth_failed") or status in {"rate_limited", "auth_required", "auth_failed"})
+
+
+def _active_calendar_section_html(rows: list[dict[str, Any]], provider_status: dict[str, Any] | None = None) -> str:
     refresh = """
         <div class="refresh-row">
             <button type="button" class="export-btn" onclick="refreshActiveTrades()">Refresh Active Trades</button>
             <span id="refreshActiveStatus" class="refresh-status">Reprices broker-detected open option positions only.</span>
         </div>
     """
-    if not rows:
+    if not rows and _robinhood_unavailable(provider_status):
+        body = refresh + (
+            '<p class="empty">Robinhood unavailable during this run.</p>'
+            '<p class="muted">Portfolio data could not be refreshed, so active broker-detected calendars were not recalculated. '
+            'Manual trade entry is intentionally avoided.</p>'
+        )
+    elif not rows:
         body = refresh + (
             '<p class="empty">No broker-detected active calendars were found.</p>'
             '<p class="muted">Use Refresh Active Trades to recheck broker positions and live option quotes. '
@@ -1115,8 +1151,13 @@ def _active_calendar_section_html(rows: list[dict[str, Any]]) -> str:
     return _section("active-calendars", "Active Calendar Lifecycle", "Broker-detected open calendars; no manual trade tracking.", body, str(len(rows)))
 
 
-def _holdings_section_html(recommendations: Recommendations) -> str:
-    if not recommendations:
+def _holdings_section_html(recommendations: Recommendations, provider_status: dict[str, Any] | None = None) -> str:
+    if not recommendations and _robinhood_unavailable(provider_status):
+        body = (
+            '<p class="empty">Robinhood unavailable during this run.</p>'
+            '<p class="muted">Portfolio data could not be refreshed. Existing holdings should not be interpreted as empty.</p>'
+        )
+    elif not recommendations:
         body = '<p class="empty">No portfolio advisor scores generated.</p>'
     else:
         rows = []
@@ -1320,9 +1361,18 @@ def _build_potential_adds_export(groups: dict[str, list[dict[str, Any]]]) -> str
 
 def _provider_status_text(provider_status: dict[str, Any]) -> str:
     parts = []
+    rh = provider_status.get("robinhood", {}) or {}
     tradier = provider_status.get("tradier", {}) or {}
     finnhub = provider_status.get("finnhub", {}) or {}
-    parts.append("RH OK" if (provider_status.get("robinhood", {}) or {}).get("positions") else "RH unknown")
+    rh_status = str(rh.get("status") or "").lower()
+    if rh.get("rate_limited") or rh_status == "rate_limited":
+        parts.append("RH rate limited")
+    elif rh.get("auth_required") or rh_status == "auth_required":
+        parts.append("RH auth required")
+    elif rh.get("auth_failed") or rh_status == "auth_failed":
+        parts.append("RH auth failed")
+    else:
+        parts.append("RH OK" if rh.get("positions") or rh_status == "ok" else "RH unknown")
     parts.append("TRADIER OK" if tradier.get("usable") else "TRADIER key missing")
     if tradier.get("historical_fallback"):
         parts.append("TRADIER fallback active")
@@ -1642,7 +1692,12 @@ def format_html(
     stock_momentum = stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot)
     calendar_ranking = calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot)
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
-    provider_status = _normalized_provider_status(pipeline_status, parsed_log_lines, parsed_recommendations)
+    provider_status = _normalized_provider_status(
+        pipeline_status,
+        parsed_log_lines,
+        parsed_recommendations,
+        parsed_tradier_snapshot.get("_provider_status") if isinstance(parsed_tradier_snapshot, dict) else None,
+    )
     potential_groups = _potential_add_groups(daily_opportunity, stock_momentum, portfolio_gap, zero_tickers)
 
     position_rows = format_position_rows(positions)
@@ -1706,8 +1761,8 @@ def format_html(
         _macro_context_html(display_recommendations, provider_status),
         None,
     )
-    active_calendar_html = _active_calendar_section_html(active_rows)
-    holdings_html = _holdings_section_html(display_recommendations)
+    active_calendar_html = _active_calendar_section_html(active_rows, provider_status)
+    holdings_html = _holdings_section_html(display_recommendations, provider_status)
     potential_adds_html = _potential_adds_section_html(potential_groups)
     risk_review_html = _risk_review_section_html(potential_groups, display_recommendations)
     blocked_calendar_html = _blocked_calendar_section_html(blocked_rows)

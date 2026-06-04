@@ -314,6 +314,14 @@ def refresh_active_trades():
             print(safe, flush=True)
 
         open_options = detect_open_options_positions(log_print=logger)
+        provider_status = (open_options or {}).get("provider_status", {}) or {}
+        rh_status = (provider_status.get("robinhood") or {}) if isinstance(provider_status, dict) else {}
+        rh_state = str(rh_status.get("status") or "").lower()
+        rh_unavailable = bool(
+            rh_status.get("rate_limited")
+            or rh_status.get("auth_required")
+            or rh_state in {"rate_limited", "auth_required", "auth_failed"}
+        )
         lifecycle = evaluate_calendar_lifecycle(
             open_options=open_options,
             tradier_snapshot={},
@@ -331,6 +339,13 @@ def refresh_active_trades():
             {
                 "status": "ok",
                 "scope": "active_trades_only",
+                "provider_status": provider_status,
+                "provider_unavailable": rh_unavailable,
+                "message": (
+                    "Robinhood unavailable during this run; active trades were not interpreted as empty."
+                    if rh_unavailable
+                    else "Active trades refresh complete."
+                ),
                 "skipped": [
                     "broad earnings discovery",
                     "news fetch",

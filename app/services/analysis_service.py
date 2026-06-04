@@ -48,10 +48,11 @@ from app.services.pipeline_status_service import (
     fail_step,
     finish_pipeline,
     new_pipeline_status,
+    skip_step,
     warn_step,
 )
 from app.services.portfolio_gap_service import build_portfolio_gap_analysis
-from app.services.portfolio_service import get_portfolio_positions
+from app.services.portfolio_service import get_portfolio_positions_with_status
 from app.services.report_service import format_payload
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
 from app.services.tradier_service import get_tradier_snapshot_for_positions
@@ -258,6 +259,57 @@ def _safe_float(value: Any) -> float | None:
         return None
 
 
+def _robinhood_unavailable(provider_status: dict[str, Any] | None) -> bool:
+    status = str((provider_status or {}).get("status") or "").lower()
+    return status in {"rate_limited", "auth_required", "auth_failed"}
+
+
+def _robinhood_skip_log(log_print: Callable[[str], None], provider_status: dict[str, Any]) -> None:
+    status = str(provider_status.get("status") or "unknown")
+    reason = provider_status.get("error") or status
+    if provider_status.get("rate_limited"):
+        reason = "429 rate limit encountered during verification."
+    elif provider_status.get("auth_required"):
+        reason = f"Robinhood authentication/verification required. {reason}"
+    log_print(
+        "[ROBINHOOD]\n"
+        "Login failed.\n\n"
+        "Reason:\n"
+        f"{reason}\n\n"
+        "Skipping:\n"
+        "- holdings\n"
+        "- watchlists\n"
+        "- option detection\n"
+        "- calendar inference\n\n"
+        "Continuing with non-Robinhood modules."
+    )
+
+
+def _robinhood_unavailable_open_options(provider_status: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(EMPTY_OPEN_OPTIONS)
+    payload["source"] = "combined_broker_options"
+    payload["provider_status"] = {"robinhood": provider_status}
+    payload["errors"] = [
+        "Robinhood unavailable during this run; active option/calendar detection was not refreshed."
+    ]
+    payload["summary"] = dict(payload.get("summary") or {})
+    payload["summary"]["robinhood_unavailable"] = True
+    payload["summary"]["provider_status"] = provider_status.get("status")
+    return payload
+
+
+def _robinhood_unavailable_lifecycle(provider_status: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(EMPTY_LIFECYCLE)
+    payload["provider_status"] = {"robinhood": provider_status}
+    payload["errors"] = [
+        "Robinhood unavailable during this run; lifecycle checks were not refreshed."
+    ]
+    payload["summary"] = dict(payload.get("summary") or {})
+    payload["summary"]["robinhood_unavailable"] = True
+    payload["summary"]["provider_status"] = provider_status.get("status")
+    return payload
+
+
 def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
     total = 0.0
     for pos in positions or []:
@@ -290,6 +342,17 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     calendar_ranking: dict[str, Any] = dict(EMPTY_CALENDAR_RANKING)
     earnings_mini_backtest: dict[str, Any] = dict(EMPTY_EARNINGS_BACKTEST)
     trade_memory: dict[str, Any] = dict(EMPTY_TRADE_MEMORY)
+    provider_status: dict[str, Any] = {
+        "robinhood": {
+            "provider": "robinhood",
+            "configured": bool(config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
+            "success": False,
+            "status": "unknown",
+            "error": None,
+            "rate_limited": False,
+            "auth_required": False,
+        }
+    }
 
     clean_mode = normalize_run_mode(run_mode)
     pipeline_status = new_pipeline_status(clean_mode)
@@ -312,6 +375,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     def attach_status() -> None:
         tradier_snapshot["_pipeline_status"] = pipeline_status
+        tradier_snapshot["_provider_status"] = provider_status
 
     def run_optional_step(
         key: str,
@@ -355,32 +419,68 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     begin_step(pipeline_status, "positions", "Fetch Robinhood positions")
     log_print("Fetching Robinhood positions...")
     try:
-        positions = get_portfolio_positions()
+        portfolio_result = get_portfolio_positions_with_status()
+        positions = list((portfolio_result or {}).get("positions") or [])
+        rh_status = ((portfolio_result or {}).get("provider_status") or {})
+        provider_status["robinhood"] = rh_status
         log_print(f"get_positions returned {len(positions)} positions")
-        if not positions:
-            warn_step(pipeline_status, "positions", "No positions found or login failed.")
-            finish_pipeline(pipeline_status, "error")
-            attach_status()
-            log_print("No positions found or login failed.")
-            return None, [], news, recommendations, tradier_snapshot, log
-        complete_step(pipeline_status, "positions", f"Fetched {len(positions)} position(s).")
+        if _robinhood_unavailable(rh_status):
+            _robinhood_skip_log(log_print, rh_status)
+            warn_step(
+                pipeline_status,
+                "positions",
+                f"Robinhood unavailable: {rh_status.get('status') or 'auth_failed'}.",
+                {"provider_status": rh_status},
+            )
+            positions = []
+        elif not positions:
+            warn_step(
+                pipeline_status,
+                "positions",
+                "Robinhood login succeeded, but no open positions were returned.",
+                {"provider_status": rh_status},
+            )
+        else:
+            complete_step(pipeline_status, "positions", f"Fetched {len(positions)} position(s).", {"provider_status": rh_status})
     except Exception as exc:
         log_print(f"ERROR in get_positions: {exc}\n{traceback.format_exc()}")
         fail_step(pipeline_status, "positions", f"Robinhood positions failed: {exc}")
-        finish_pipeline(pipeline_status, "error")
-        attach_status()
-        return None, [], news, recommendations, tradier_snapshot, log
+        provider_status["robinhood"] = {
+            "provider": "robinhood",
+            "configured": bool(config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD),
+            "success": False,
+            "status": "auth_failed",
+            "error": str(exc),
+            "rate_limited": "429" in str(exc) or "Too Many Requests" in str(exc),
+            "auth_required": False,
+        }
+        positions = []
+        _robinhood_skip_log(log_print, provider_status["robinhood"])
 
     portfolio_tickers = list(dict.fromkeys(p.get("ticker") for p in positions if p.get("ticker")))
     log_print(f"Tickers: {portfolio_tickers}")
 
-    watchlist_candidates = run_optional_step(
-        "watchlist_candidates",
-        "Fetching Watchlist Candidate Pipeline v1...",
-        lambda: get_watchlist_candidates(positions=positions, log_print=log_print, run_mode=clean_mode),
-        EMPTY_WATCHLIST,
-        lambda result: f"Watchlist pipeline produced {len((result or {}).get('items', []) or [])} candidate(s).",
-    )
+    robinhood_failed = _robinhood_unavailable(provider_status.get("robinhood"))
+
+    if robinhood_failed:
+        skip_step(
+            pipeline_status,
+            "watchlist_candidates",
+            "Fetching Watchlist Candidate Pipeline v1...",
+            "Skipped because Robinhood login failed; watchlists were not refreshed.",
+        )
+        watchlist_candidates = dict(EMPTY_WATCHLIST)
+        watchlist_candidates["enabled"] = False
+        watchlist_candidates["errors"] = ["Robinhood unavailable; watchlist fetch skipped."]
+        watchlist_candidates["provider_status"] = {"robinhood": provider_status.get("robinhood")}
+    else:
+        watchlist_candidates = run_optional_step(
+            "watchlist_candidates",
+            "Fetching Watchlist Candidate Pipeline v1...",
+            lambda: get_watchlist_candidates(positions=positions, log_print=log_print, run_mode=clean_mode),
+            EMPTY_WATCHLIST,
+            lambda result: f"Watchlist pipeline produced {len((result or {}).get('items', []) or [])} candidate(s).",
+        )
     tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
 
     analysis_positions = merge_watchlist_universe_positions(positions, watchlist_candidates)
@@ -561,13 +661,22 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_watchlist_review"] = watchlist_review
 
-    open_options = run_optional_step(
-        "open_options",
-        "Detecting Open Options Positions v1...",
-        lambda: detect_open_options_positions(log_print=log_print),
-        EMPTY_OPEN_OPTIONS,
-        lambda result: f"Detected {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} open calendar(s).",
-    )
+    if robinhood_failed:
+        skip_step(
+            pipeline_status,
+            "open_options",
+            "Detecting Open Options Positions v1...",
+            "Skipped because Robinhood login failed; active broker option/calendar detection was not refreshed.",
+        )
+        open_options = _robinhood_unavailable_open_options(provider_status.get("robinhood") or {})
+    else:
+        open_options = run_optional_step(
+            "open_options",
+            "Detecting Open Options Positions v1...",
+            lambda: detect_open_options_positions(log_print=log_print),
+            EMPTY_OPEN_OPTIONS,
+            lambda result: f"Detected {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} open calendar(s).",
+        )
     _enrich_open_options_with_underlying_prices(open_options, positions, tradier_snapshot, market_metrics)
     tradier_snapshot["_open_options_positions"] = open_options
 
@@ -577,19 +686,28 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     trade_memory["enabled"] = False
     trade_memory["errors"] = ["Manual trade memory disabled; lifecycle uses auto-detected broker option positions."]
 
-    lifecycle_checks = run_optional_step(
-        "calendar_lifecycle",
-        "Running Calendar Lifecycle Check v1...",
-        lambda: evaluate_calendar_lifecycle(
-            open_options=open_options,
-            tradier_snapshot=tradier_snapshot,
-            earnings_events=merge_earnings_events(earnings_events, earnings_trade_discovery),
-            trade_memory=None,
-            log_print=log_print,
-        ),
-        EMPTY_LIFECYCLE,
-        lambda result: f"Lifecycle checker produced {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} check(s).",
-    )
+    if robinhood_failed:
+        skip_step(
+            pipeline_status,
+            "calendar_lifecycle",
+            "Running Calendar Lifecycle Check v1...",
+            "Skipped because Robinhood login failed; existing active calendar state must not be replaced by empty data.",
+        )
+        lifecycle_checks = _robinhood_unavailable_lifecycle(provider_status.get("robinhood") or {})
+    else:
+        lifecycle_checks = run_optional_step(
+            "calendar_lifecycle",
+            "Running Calendar Lifecycle Check v1...",
+            lambda: evaluate_calendar_lifecycle(
+                open_options=open_options,
+                tradier_snapshot=tradier_snapshot,
+                earnings_events=merge_earnings_events(earnings_events, earnings_trade_discovery),
+                trade_memory=None,
+                log_print=log_print,
+            ),
+            EMPTY_LIFECYCLE,
+            lambda result: f"Lifecycle checker produced {((result or {}).get('summary', {}) or {}).get('calendar_count', 0)} check(s).",
+        )
     tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
 
     account_context = {"account_value_estimate": _estimate_account_value(positions)}

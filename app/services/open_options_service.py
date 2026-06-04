@@ -109,8 +109,11 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
                     "configured": bool(rh_payload.get("configured")),
                     "account_count": len(rh_payload.get("accounts") or []),
                     "position_count": len(rh_payload.get("positions") or []),
+                    "provider_status": rh_payload.get("provider_status") or {},
                 }
             )
+            if rh_payload.get("provider_status"):
+                result.setdefault("provider_status", {})["robinhood"] = rh_payload.get("provider_status")
             for err in rh_payload.get("errors", []) or []:
                 result["errors"].append(f"Robinhood: {err}")
             for acct in rh_payload.get("accounts", []) or []:
