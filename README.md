@@ -500,6 +500,16 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Added token-protected `/refresh-active-trades` for lightweight broker-detected open-options repricing without broad scans.
 - Details: `docs/open_items_cleanup_patch_v1.md`.
 
+### Mega Patch Cleanup v1: Dashboard Hygiene Before Strategy 2
+
+- Tightened Potential Adds membership so avoid/reduce/fail/risk-sourced rows cannot lead actionable add ideas.
+- Added extra zero-value recommendation filtering for main dashboard sections.
+- Added provider and macro scope caveats for dev-limited/fallback-limited market data.
+- Improved Active Calendar zero-state copy and retained the Refresh Active Trades affordance.
+- Added fallback ticker disclosure for expandable portfolio/macro buckets.
+- Monitor payload copy now uses the same toast/fallback behavior as purpose-specific exports.
+- Details: `docs/mega_patch_cleanup_v1_dashboard_hygiene.md`.
+
 ### Railway start command
 
 The app uses `start.sh` via `railway.toml` so Railway expands `$PORT` safely at runtime.

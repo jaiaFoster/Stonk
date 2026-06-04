@@ -203,7 +203,7 @@ UI_OVERHAUL_CSS = """
         .section-body { padding: 0.85rem; }
         .macro-strip {
             display: grid;
-            grid-template-columns: repeat(5, minmax(0, 1fr));
+            grid-template-columns: repeat(6, minmax(0, 1fr));
             gap: 0.55rem;
         }
         .macro-cell, .metric, .risk-card {
@@ -732,7 +732,22 @@ def _ticker_is_zero_value(ticker: Any, zero_tickers: set[str]) -> bool:
 
 
 def _filter_nonzero_recommendations(recommendations: Recommendations, zero_tickers: set[str]) -> Recommendations:
-    return [rec for rec in recommendations if not _ticker_is_zero_value(rec.get("ticker"), zero_tickers)]
+    return [
+        rec for rec in recommendations
+        if not _ticker_is_zero_value(rec.get("ticker"), zero_tickers)
+        and not _zero_value_recommendation(rec)
+    ]
+
+
+def _zero_value_recommendation(rec: dict[str, Any]) -> bool:
+    value = safe_float(_get_first_present(rec, "position_value", "market_value"))
+    allocation = safe_float(rec.get("allocation_pct"))
+    quantity = safe_float(rec.get("quantity"))
+    if quantity is not None and value is not None:
+        return abs(quantity) <= 1e-9 and abs(value) <= 0.01
+    if value is not None and allocation is not None:
+        return abs(value) <= 0.01 and abs(allocation) <= 1e-9
+    return False
 
 
 def _action_group(action: Any) -> str:
@@ -746,6 +761,24 @@ def _action_group(action: Any) -> str:
     if "ADD" in text:
         return "actionable"
     return "watch"
+
+
+def _source_or_text_indicates_risk(raw: dict[str, Any], source: str) -> bool:
+    text = " ".join(
+        str(value)
+        for value in [
+            source,
+            raw.get("source"),
+            raw.get("type"),
+            raw.get("why"),
+            raw.get("main_reason"),
+            raw.get("reason"),
+            " ".join(str(x) for x in (raw.get("reasons", []) or [])),
+            " ".join(str(x) for x in (raw.get("risks", []) or [])),
+        ]
+        if value
+    ).upper()
+    return any(token in text for token in ("RISK REVIEW", "AVOID", "REDUCE", "CUT", "TRIM", "DO NOT ADD", "FAIL"))
 
 
 def _normalized_backtest_label(row: dict[str, Any]) -> str:
@@ -838,7 +871,8 @@ def _potential_add_groups(
             "source": raw.get("source") or source,
             "risks": raw.get("risks", []) or [],
         }
-        groups[_action_group(action)].append(normalized)
+        group = "risk" if _source_or_text_indicates_risk(raw, source) else _action_group(action)
+        groups[group].append(normalized)
         seen.add(ticker)
 
     for item in _daily_actions(daily_opportunity):
@@ -892,15 +926,24 @@ def _portfolio_risk_count(portfolio_gap: dict[str, Any], recommendations: Recomm
     return risks
 
 
-def _normalized_provider_status(pipeline_status: dict[str, Any], log_lines: list[str]) -> dict[str, Any]:
+def _normalized_provider_status(
+    pipeline_status: dict[str, Any],
+    log_lines: list[str],
+    recommendations: Recommendations | None = None,
+) -> dict[str, Any]:
     config_snapshot = pipeline_status.get("config_snapshot", {}) if isinstance(pipeline_status, dict) else {}
-    text = " ".join([str(pipeline_status), " ".join(log_lines)]).lower()
+    metric_text = " ".join(
+        str((rec.get("market_metrics") or {}).get("error") or "")
+        for rec in (recommendations or [])
+        if isinstance(rec.get("market_metrics"), dict)
+    )
+    text = " ".join([str(pipeline_status), " ".join(log_lines), metric_text]).lower()
     run_mode = str(pipeline_status.get("run_mode") or pipeline_status.get("mode") or "prod").lower() if pipeline_status else "prod"
     finnhub_key = bool(config_snapshot.get("has_finnhub_api_key"))
     tradier_key = bool(config_snapshot.get("has_tradier_access_token"))
     av_key = bool(config_snapshot.get("has_alpha_vantage_api_key"))
     rh_seen = "robinhood" in text or "positions" in text
-    finnhub_blocked = "finnhub" in text and any(token in text for token in ("403", "forbidden", "candle", "candles unavailable", "stock/candle"))
+    finnhub_blocked = "finnhub" in text and any(token in text for token in ("403", "forbidden", "candle", "candles unavailable", "stock/candle", "unavailable"))
     tradier_fallback = "tradier fallback" in text or ("fallback" in text and "tradier" in text)
     return {
         "mode": run_mode,
@@ -964,7 +1007,7 @@ def _provider_chips(provider_status: dict[str, Any]) -> str:
     return "".join(chips)
 
 
-def _macro_context_html(recommendations: Recommendations) -> str:
+def _macro_context_html(recommendations: Recommendations, provider_status: dict[str, Any]) -> str:
     metrics = [rec.get("market_metrics", {}) or {} for rec in recommendations if isinstance(rec.get("market_metrics"), dict)]
     with_data = [m for m in metrics if m.get("has_data")]
     above_200 = [m.get("above_sma_200") for m in with_data if m.get("above_sma_200") is not None]
@@ -989,8 +1032,9 @@ def _macro_context_html(recommendations: Recommendations) -> str:
         ("Macro", regime),
         ("Benchmark Trend", trend),
         ("Growth / Tech", "constructive" if regime == "risk-on" else "pressured" if regime == "risk-off" else "mixed"),
-        ("Volatility", "module pending"),
+        ("Volatility", "macro module pending"),
         ("Action Bias", bias),
+        ("Scope", "dev-limited market-data subset" if provider_status.get("dev_limited") else "configured market-data subset"),
     ]
     return '<div class="macro-strip">' + "".join(
         f'<div class="macro-cell"><span class="label">{escape(label)}</span><span class="value">{escape(value)}</span></div>'
@@ -1006,7 +1050,11 @@ def _active_calendar_section_html(rows: list[dict[str, Any]]) -> str:
         </div>
     """
     if not rows:
-        body = refresh + '<p class="empty">No broker-detected active calendars. Refresh checks broker option positions only.</p>'
+        body = refresh + (
+            '<p class="empty">No broker-detected active calendars were found.</p>'
+            '<p class="muted">Use Refresh Active Trades to recheck broker positions and live option quotes. '
+            'Manual trade entry is intentionally avoided.</p>'
+        )
     else:
         cards = []
         for row in rows[:20]:
@@ -1127,9 +1175,11 @@ def _potential_adds_section_html(
 
 def _risk_review_section_html(groups: dict[str, list[dict[str, Any]]], recommendations: Recommendations) -> str:
     risk_items = list(groups.get("risk", []) or [])
+    seen = {str(item.get("ticker") or "").upper().strip() for item in risk_items}
     for rec in recommendations:
         action = str(rec.get("action") or "")
-        if rec.get("risks") or _action_group(action) == "risk":
+        ticker = str(rec.get("ticker") or "").upper().strip()
+        if ticker not in seen and (rec.get("risks") or _action_group(action) == "risk"):
             risk_items.append({
                 "ticker": rec.get("ticker"),
                 "priority_score": rec.get("score"),
@@ -1139,6 +1189,7 @@ def _risk_review_section_html(groups: dict[str, list[dict[str, Any]]], recommend
                 "source": "holding",
                 "risks": rec.get("risks", []) or [],
             })
+            seen.add(ticker)
     if not risk_items:
         body = '<p class="empty">No avoid/reduce/cut risk controls surfaced this run.</p>'
     else:
@@ -1320,14 +1371,14 @@ def _dashboard_script_html() -> str:
             toast.classList.add('show');
             window.setTimeout(() => toast.classList.remove('show'), 3600);
         }
-        async function copyTextWithFallback(text, fallbackElementId) {
+        async function copyTextWithFallback(text, fallbackElementId, successMessage, failureMessage) {
             const fallback = document.getElementById(fallbackElementId);
             try {
                 if (!text) throw new Error('Nothing to copy.');
                 if (!navigator.clipboard || !window.isSecureContext) throw new Error('Clipboard API unavailable.');
                 await navigator.clipboard.writeText(text);
                 if (fallback) fallback.style.display = 'none';
-                showToast('Copied.', false);
+                showToast(successMessage || 'Payload copied.', false);
                 return true;
             } catch (err) {
                 if (fallback) {
@@ -1336,12 +1387,12 @@ def _dashboard_script_html() -> str:
                     fallback.focus();
                     fallback.select();
                 }
-                showToast('Clipboard failed. Fallback text area is ready to select/copy.', true);
+                showToast(failureMessage || 'Copy failed - payload available below.', true);
                 return false;
             }
         }
         function copyExport(key) {
-            return copyTextWithFallback(exportPayloads[key] || '', 'copyFallback');
+            return copyTextWithFallback(exportPayloads[key] || '', 'copyFallback', key === 'fullDebugPayload' ? 'Payload copied.' : 'Copied.', key === 'fullDebugPayload' ? 'Copy failed - payload available below.' : 'Clipboard failed. Fallback text area is ready to select/copy.');
         }
         function downloadExport(key, filename) {
             const text = exportPayloads[key] || '';
@@ -1442,8 +1493,9 @@ def _portfolio_infographic_html(portfolio_gap: dict[str, Any]) -> str:
                 width = max(0.0, min(float(actual or 0), 40.0)) / 40.0 * 100.0
             except (TypeError, ValueError):
                 width = 0.0
-            holdings = row.get("holdings") or row.get("holding_tickers") or row.get("owned_tickers") or row.get("tickers") or []
-            candidates = row.get("candidates") or row.get("watchlist_tickers") or row.get("suggestion_tickers") or row.get("add_tickers") or []
+            fallback = _bucket_fallback_tickers(label)
+            holdings = row.get("holdings") or row.get("holding_tickers") or row.get("owned_tickers") or row.get("tickers") or fallback.get("holdings") or []
+            candidates = row.get("candidates") or row.get("watchlist_tickers") or row.get("suggestion_tickers") or row.get("add_tickers") or fallback.get("candidates") or []
             detail = (
                 f'<details class="bucket-details"><summary><strong>{escape(label)}</strong> · {pct(actual)} / {pct(target)} · '
                 f'{_chip(status, None, _tone_for_text(status))}</summary>'
@@ -1461,6 +1513,23 @@ def _portfolio_infographic_html(portfolio_gap: dict[str, Any]) -> str:
         alignment = "Portfolio vs macro: " + ("; ".join(alignment_notes[:3]) if alignment_notes else "exposure bucket details limited this run.")
         body = f'<p class="muted">{escape(alignment)}</p><div>{"".join(bar_rows) or "<span class=empty>No target bars available.</span>"}</div><div class="risk-grid">{risks}</div>'
     return _section("portfolio-infographic", "Portfolio + Macro Infographic", "Target-vs-actual exposure and portfolio-wide risk context.", body, None)
+
+
+def _bucket_fallback_tickers(label: str) -> dict[str, list[str]]:
+    text = str(label or "").lower()
+    mapping = [
+        (("ai", "semiconductor", "semi"), {"holdings": ["NVDA", "MU", "SOXL"], "candidates": ["CRDO"]}),
+        (("energy", "utilities", "infrastructure"), {"holdings": ["VST", "FSLR"], "candidates": []}),
+        (("healthcare", "biotech"), {"holdings": ["ALGN", "NVO"], "candidates": []}),
+        (("mega-cap", "cloud", "mega cap"), {"holdings": ["AMZN", "GOOGL", "META", "ORCL"], "candidates": []}),
+        (("consumer", "retail"), {"holdings": ["NKE", "SBUX"], "candidates": []}),
+        (("financial",), {"holdings": ["JPM"], "candidates": []}),
+        (("software", "fintech"), {"holdings": ["SOFI", "PYPL", "HOOD"], "candidates": []}),
+    ]
+    for needles, payload in mapping:
+        if any(needle in text for needle in needles):
+            return payload
+    return {"holdings": [], "candidates": []}
 
 
 def _monitor_debug_section_html(
@@ -1500,7 +1569,7 @@ def _monitor_debug_section_html(
             <div class="table-scroll"><h3>Relevant News</h3><table><tr><th>Ticker</th><th>Score</th><th>Headline</th><th>Source</th><th>Published</th><th>Link</th></tr>{news_rows}</table></div>
             <div class="table-scroll"><h3>Tradier Snapshot</h3><table><tr><th>Ticker</th><th>Quote</th><th>Expirations</th><th>Chain</th><th>ATM Call</th><th>ATM Put</th><th>Liquidity</th></tr>{tradier_rows}</table></div>
         </details>
-        <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('payload').innerText)">Copy Advisor Payload</button>
+        <button class="copy-btn" onclick="copyExport('fullDebugPayload')">Copy Advisor Payload</button>
         {payload_debug_html}
         {log_debug_html}
     """
@@ -1573,7 +1642,7 @@ def format_html(
     stock_momentum = stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot)
     calendar_ranking = calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot)
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
-    provider_status = _normalized_provider_status(pipeline_status, parsed_log_lines)
+    provider_status = _normalized_provider_status(pipeline_status, parsed_log_lines, parsed_recommendations)
     potential_groups = _potential_add_groups(daily_opportunity, stock_momentum, portfolio_gap, zero_tickers)
 
     position_rows = format_position_rows(positions)
@@ -1601,7 +1670,17 @@ def format_html(
         if _tone_for_text(_first_text(row.get("verdict"), row.get("action"), row.get("next_action"))) in {"bad", "warn"}
     )
     add_count = len(potential_groups.get("actionable", []) or [])
-    risk_count = _portfolio_risk_count(portfolio_gap, display_recommendations) + len(potential_groups.get("risk", []) or [])
+    risk_tickers = {
+        str(item.get("ticker") or "").upper().strip()
+        for item in (potential_groups.get("risk", []) or [])
+        if item.get("ticker")
+    }
+    risk_tickers.update(
+        str(rec.get("ticker") or "").upper().strip()
+        for rec in display_recommendations
+        if rec.get("risks") or _action_group(rec.get("action")) == "risk"
+    )
+    risk_count = len({ticker for ticker in risk_tickers if ticker}) + len((portfolio_gap or {}).get("risk_rows", []) or [])
     exports = {
         "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap),
         "calendarReport": _build_calendar_report_export(active_rows, unified_calendar_engine, blocked_rows),
@@ -1624,7 +1703,7 @@ def format_html(
         "macro-context",
         "Macro Context Strip",
         "Compact market context; missing macro inputs show as placeholders.",
-        _macro_context_html(display_recommendations),
+        _macro_context_html(display_recommendations, provider_status),
         None,
     )
     active_calendar_html = _active_calendar_section_html(active_rows)

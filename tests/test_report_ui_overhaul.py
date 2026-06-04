@@ -154,6 +154,8 @@ class ReportUiOverhaulTests(unittest.TestCase):
         self.assertIn("Copy Daily Brief", html)
         self.assertIn("Download Full Debug Payload", html)
         self.assertIn("copyTextWithFallback", html)
+        self.assertIn("Payload copied.", html)
+        self.assertIn("Copy failed - payload available below.", html)
 
     def test_provider_status_and_active_calendar_deep_itm_warning(self):
         html = format_html(
@@ -201,6 +203,7 @@ class ReportUiOverhaulTests(unittest.TestCase):
         self.assertIn("CANDLES BLOCKED", html)
         self.assertIn("TRADIER", html)
         self.assertIn("FALLBACK ACTIVE", html)
+        self.assertIn("dev-limited market-data subset", html)
         self.assertIn("SHORT LEG DEEP ITM - CLOSE / ROLL REVIEW REQUIRED", html)
         self.assertIn("leg_side_inferred", html)
         self.assertIn("3.38", html)
@@ -236,6 +239,35 @@ class ReportUiOverhaulTests(unittest.TestCase):
         self.assertIn("Why not actionable", blocked_html)
         self.assertIn("Research-only", blocked_html)
         self.assertIn("Not eligible - options market untradeable", blocked_html)
+
+    def test_active_calendar_empty_state_and_macro_bucket_fallbacks(self):
+        html = format_html(
+            payload="sample",
+            positions=[],
+            news_map={},
+            recommendations=[],
+            tradier_snapshot={
+                "_portfolio_gap": {
+                    "exposure_rows": [
+                        {
+                            "bucket": "AI / Semiconductors",
+                            "actual_pct": 7.7,
+                            "target_pct": 18.0,
+                            "status": "UNDERWEIGHT",
+                        }
+                    ]
+                },
+                "_pipeline_status": {"run_mode": "dev", "config_snapshot": {}},
+            },
+            log_lines=[],
+        )
+
+        self.assertIn("No broker-detected active calendars were found.", html)
+        self.assertIn("Use Refresh Active Trades to recheck broker positions and live option quotes.", html)
+        self.assertIn("Manual trade entry is intentionally avoided.", html)
+        self.assertIn("Refresh Active Trades", html)
+        self.assertIn("NVDA, MU, SOXL", html)
+        self.assertIn("CRDO", html)
 
 
 if __name__ == "__main__":
