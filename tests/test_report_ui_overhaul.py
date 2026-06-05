@@ -269,6 +269,36 @@ class ReportUiOverhaulTests(unittest.TestCase):
         self.assertIn("NVDA, MU, SOXL", html)
         self.assertIn("CRDO", html)
 
+    def test_robinhood_auth_failure_does_not_render_empty_account_state(self):
+        html = format_html(
+            payload="sample",
+            positions=[],
+            news_map={},
+            recommendations=[],
+            tradier_snapshot={
+                "_provider_status": {
+                    "robinhood": {
+                        "provider": "robinhood",
+                        "configured": True,
+                        "success": False,
+                        "status": "rate_limited",
+                        "error": "429 Client Error: Too Many Requests for url: https://api.robinhood.com/push/x/get_prompts_status/",
+                        "rate_limited": True,
+                        "auth_required": False,
+                    }
+                },
+                "_pipeline_status": {"run_mode": "dev", "config_snapshot": {}},
+            },
+            log_lines=["Robinhood 429 Too Many Requests get_prompts_status"],
+        )
+
+        self.assertIn("RH", html)
+        self.assertIn("RATE LIMITED", html)
+        self.assertIn("Robinhood unavailable during this run.", html)
+        self.assertIn("Portfolio data could not be refreshed.", html)
+        self.assertIn("Existing holdings should not be interpreted as empty.", html)
+        self.assertNotIn("No broker-detected active calendars were found.", html)
+
 
 if __name__ == "__main__":
     unittest.main()
