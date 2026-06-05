@@ -63,6 +63,48 @@ class DailyOpportunityEngineTests(unittest.TestCase):
         self.assertEqual(result["actions"][0]["ticker"], "AVGO")
         self.assertEqual(result["actions"][0]["type"], "active_calendar")
 
+    def test_avoid_gap_suggestion_stays_risk_not_stock_add(self):
+        gap = {
+            "suggestions": [
+                {
+                    "ticker": "SOFI",
+                    "score": 88,
+                    "category": "AVOID ADDING / REDUCE RISK",
+                    "reason": "Already too risky for add sizing.",
+                },
+                {
+                    "ticker": "NVDA",
+                    "score": 86,
+                    "category": "CONSIDER ADDING / RESEARCH",
+                    "reason": "Constructive growth bucket candidate.",
+                },
+            ]
+        }
+
+        result = build_daily_opportunity_engine({}, {}, gap, [], log_print=lambda msg: None)
+        by_ticker = {row["ticker"]: row for row in result["actions"]}
+
+        self.assertEqual(by_ticker["SOFI"]["type"], "risk")
+        self.assertIn("AVOID", by_ticker["SOFI"]["action"])
+        self.assertEqual(by_ticker["NVDA"]["type"], "stock_add")
+        self.assertLess(result["actions"].index(by_ticker["NVDA"]), result["actions"].index(by_ticker["SOFI"]))
+
+    def test_zero_value_recommendation_does_not_create_daily_risk(self):
+        recommendations = [
+            {
+                "ticker": "BTC",
+                "quantity": 0,
+                "position_value": 0,
+                "allocation_pct": 0,
+                "action": "AVOID ADDING / REDUCE RISK",
+                "score": 20,
+            }
+        ]
+
+        result = build_daily_opportunity_engine({}, {}, {}, recommendations, log_print=lambda msg: None)
+
+        self.assertEqual(result["actions"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

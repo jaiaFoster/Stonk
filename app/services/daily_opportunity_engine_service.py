@@ -18,13 +18,13 @@ LogFn = Callable[[str], None]
 
 ACTION_TYPE_PRIORITY = {
     "active_calendar": 0,
-    "portfolio_risk": 1,
-    "risk": 1,
-    "calendar": 2,
-    "holding": 3,
-    "stock_add": 4,
-    "stock": 4,
-    "gap": 5,
+    "calendar": 1,
+    "stock_add": 2,
+    "stock": 2,
+    "gap": 3,
+    "holding": 4,
+    "portfolio_risk": 5,
+    "risk": 5,
     "monitor": 6,
 }
 
@@ -72,6 +72,8 @@ def build_daily_opportunity_engine(
         if float(action.get("priority_score") or 0) < float(getattr(config, "DAILY_OPPORTUNITY_MIN_SCORE", 55) or 55):
             if str(action.get("type") or "") not in {"calendar", "active_calendar"}:
                 continue
+        if _zero_value_row(action):
+            continue
         deduped.append(action)
         if len(deduped) >= int(getattr(config, "DAILY_OPPORTUNITY_MAX_ACTIONS", 12) or 12):
             break
@@ -142,8 +144,9 @@ def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) -> list[dict[str, Any]]:
     by_ticker: dict[str, dict[str, Any]] = {}
+    risk_rows: list[dict[str, Any]] = []
 
-    def ensure(ticker: Any) -> dict[str, Any] | None:
+    def ensure(ticker: Any, default_action: str = "WATCH / RESEARCH") -> dict[str, Any] | None:
         symbol = str(ticker or "").upper().strip()
         if not symbol:
             return None
@@ -153,7 +156,7 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
                 "type": "stock_add",
                 "ticker": symbol,
                 "priority_score": 0.0,
-                "action": "CONSIDER ADDING",
+                "action": default_action,
                 "why_parts": [],
                 "next_parts": [],
                 "source_tags": [],
@@ -163,9 +166,13 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
 
     for item in strategy.get("items", []) or []:
         action = str(item.get("action") or "")
-        if action not in {"CONSIDER ADDING", "ADD ON PULLBACK", "WATCH / CONFIRM TREND"}:
+        group = _action_group(action)
+        if group == "risk":
+            risk_rows.append(_risk_action_from_item(item, "Stock Momentum Add Strategy v1"))
             continue
-        row = ensure(item.get("ticker"))
+        if action not in {"CONSIDER ADDING", "ADD ON PULLBACK", "WATCH / CONFIRM TREND", "WATCH / RESEARCH"}:
+            continue
+        row = ensure(item.get("ticker"), action or "WATCH / RESEARCH")
         if not row:
             continue
         score = float(item.get("score") or 0)
@@ -178,12 +185,17 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
             _append_unique(row["next_parts"], str(item.get("next_check")))
 
     for item in gap.get("suggestions", []) or []:
-        row = ensure(item.get("ticker"))
+        action = str(item.get("action") or item.get("category") or "WATCH / RESEARCH")
+        group = _action_group(action)
+        if group == "risk":
+            risk_rows.append(_risk_action_from_item(item, "Portfolio Gap / Sector Suggestions v1", action=action))
+            continue
+        row = ensure(item.get("ticker"), action)
         if not row:
             continue
         score = float(item.get("score") or item.get("total_score") or 58)
         row["priority_score"] = max(float(row.get("priority_score") or 0), score)
-        row["action"] = _merge_stock_action(str(row.get("action") or ""), str(item.get("action") or "CONSIDER ADDING"))
+        row["action"] = _merge_stock_action(str(row.get("action") or ""), action)
         row["source_tags"].append("sector_gap")
         _append_unique(row["why_parts"], item.get("reason") or item.get("rationale") or "Candidate helps fill an aggressive-growth portfolio gap.")
         for bucket in item.get("buckets", []) or []:
@@ -202,7 +214,7 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         row["next_step"] = next_parts[0] if next_parts else "Confirm trend, sizing, sector fit, and thesis before adding."
         row["source"] = "Unified Stock Add Candidate v1 (" + ", ".join(tags or ["stock"]) + ")"
         output.append(row)
-    return output
+    return output + [row for row in risk_rows if not _zero_value_row(row)]
 
 
 def _append_unique(items: list[str], value: Any) -> None:
@@ -213,6 +225,8 @@ def _append_unique(items: list[str], value: Any) -> None:
 
 def _merge_stock_action(existing: str, new: str) -> str:
     combined = " ".join([existing.upper(), new.upper()])
+    if _action_group(combined) == "risk":
+        return new or existing or "RISK REVIEW"
     if "ADD ON PULLBACK" in combined:
         return "ADD ON PULLBACK"
     if "CONSIDER ADDING" in combined or "HIGH-PRIORITY" in combined:
@@ -220,6 +234,30 @@ def _merge_stock_action(existing: str, new: str) -> str:
     if "WATCH" in combined:
         return "WATCH / CONFIRM TREND"
     return new or existing or "CONSIDER ADDING"
+
+
+def _action_group(action: Any) -> str:
+    text = str(action or "").upper()
+    if any(token in text for token in ("AVOID", "REDUCE", "CUT", "TRIM", "DO NOT ADD", "FAIL")):
+        return "risk"
+    if any(token in text for token in ("CONSIDER ADDING", "ADD ON PULLBACK", "REVIEW ADD", "HIGH-PRIORITY CONSIDER ADDING")):
+        return "actionable"
+    return "watch"
+
+
+def _risk_action_from_item(item: dict[str, Any], source: str, action: str | None = None) -> dict[str, Any]:
+    return {
+        "type": "risk",
+        "ticker": item.get("ticker"),
+        "priority_score": float(item.get("score") or item.get("total_score") or 58),
+        "action": action or item.get("action") or item.get("category") or "RISK REVIEW",
+        "why": _first_text(item.get("reason"), item.get("rationale"), item.get("risks"), item.get("reasons"), fallback="Risk/avoid row separated from add ideas."),
+        "next_step": item.get("next_check") or "Review risk controls; do not treat as an add candidate.",
+        "source": source,
+        "quantity": item.get("quantity"),
+        "market_value": item.get("market_value") if item.get("market_value") is not None else item.get("position_value"),
+        "allocation_pct": item.get("allocation_pct"),
+    }
 
 def _stock_momentum_actions(strategy: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
@@ -260,6 +298,8 @@ def _portfolio_gap_actions(gap: dict[str, Any]) -> list[dict[str, Any]]:
 def _portfolio_risk_actions(recommendations: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for rec in recommendations:
+        if _zero_value_row(rec):
+            continue
         action = str(rec.get("action") or "").upper()
         if "AVOID" in action or "REDUCE" in action or float(rec.get("score") or 100) < 42:
             out.append(
@@ -274,6 +314,35 @@ def _portfolio_risk_actions(recommendations: list[dict[str, Any]]) -> list[dict[
                 }
             )
     return out
+
+
+def _zero_value_row(row: dict[str, Any]) -> bool:
+    quantity = _float_or_none(row.get("quantity"))
+    value = _float_or_none(row.get("market_value") if row.get("market_value") is not None else row.get("position_value"))
+    allocation = _float_or_none(row.get("allocation_pct"))
+    if quantity is not None and value is not None:
+        return abs(quantity) <= 1e-9 and abs(value) <= 0.01
+    if value is not None and allocation is not None:
+        return abs(value) <= 0.01 and abs(allocation) <= 1e-9
+    return False
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value in {None, ""}:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_text(*values: Any, fallback: str = "—") -> str:
+    for value in values:
+        if isinstance(value, list) and value:
+            return str(value[0])
+        if value not in (None, "", []):
+            return str(value)
+    return fallback
 
 
 def _active_calendar_why(row: dict[str, Any]) -> str:
