@@ -461,6 +461,9 @@ def format_payload(
     today = date.today().strftime("%B %d, %Y")
     recommendations = recommendations or []
     tradier_snapshot = tradier_snapshot or {}
+    zero_tickers = _zero_tickers_from_positions_and_recommendations(positions, recommendations)
+    display_positions = _filter_nonzero_positions(positions, zero_tickers)
+    display_recommendations = _filter_nonzero_recommendations(recommendations, zero_tickers)
     calendar_candidates = calendar_candidates_from_tradier_snapshot(tradier_snapshot)
     earnings_calendar_strategy = earnings_calendar_strategy_from_tradier_snapshot(tradier_snapshot)
     open_options = open_options_from_tradier_snapshot(tradier_snapshot)
@@ -481,7 +484,7 @@ def format_payload(
         "=== MY STOCK POSITIONS ===",
     ]
 
-    for p in positions:
+    for p in display_positions:
         gain_loss = p.get("gain_loss")
         gain_loss_pct = p.get("gain_loss_pct")
 
@@ -501,7 +504,7 @@ def format_payload(
         )
 
     lines += ["", "=== DAILY OPPORTUNITY ENGINE V1 ==="]
-    lines.extend(format_daily_opportunity_text(daily_opportunity))
+    lines.extend(format_daily_opportunity_text(_filter_daily_opportunity_engine(daily_opportunity, zero_tickers)))
 
     lines += ["", "=== ACTIVE CALENDAR TRADES ==="]
     lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
@@ -563,10 +566,10 @@ def format_payload(
 
     lines += ["", "=== PORTFOLIO SCORING V2 ==="]
 
-    if not recommendations:
+    if not display_recommendations:
         lines.append("No portfolio scoring recommendations generated.")
     else:
-        for rec in recommendations:
+        for rec in display_recommendations:
             reasons = rec.get("reasons", []) or []
             risks = rec.get("risks", []) or []
             score = rec.get("score")
@@ -607,7 +610,7 @@ def format_payload(
                 lines.append(f"  Next check: {next_check}")
 
     lines += ["", "=== MARKET DATA SNAPSHOT ==="]
-    market_rows = [rec for rec in recommendations if (rec.get("market_metrics") or {}).get("has_data")]
+    market_rows = [rec for rec in display_recommendations if (rec.get("market_metrics") or {}).get("has_data")]
     if not market_rows:
         lines.append("No market metrics available for this run.")
     else:
@@ -727,8 +730,28 @@ def _ticker_set_from_zero_positions(positions: list[dict[str, Any]]) -> set[str]
     return {str(pos.get("ticker") or "").upper().strip() for pos in positions if is_zero_value_position(pos)}
 
 
+def _zero_tickers_from_positions_and_recommendations(
+    positions: list[dict[str, Any]],
+    recommendations: Recommendations | None,
+) -> set[str]:
+    zero_tickers = _ticker_set_from_zero_positions(positions)
+    for rec in recommendations or []:
+        ticker = str(rec.get("ticker") or "").upper().strip()
+        if ticker and _zero_value_recommendation(rec):
+            zero_tickers.add(ticker)
+    return zero_tickers
+
+
 def _ticker_is_zero_value(ticker: Any, zero_tickers: set[str]) -> bool:
     return str(ticker or "").upper().strip() in zero_tickers
+
+
+def _filter_nonzero_positions(positions: list[dict[str, Any]], zero_tickers: set[str]) -> list[dict[str, Any]]:
+    return [
+        pos for pos in positions or []
+        if not _ticker_is_zero_value(pos.get("ticker"), zero_tickers)
+        and not is_zero_value_position(pos)
+    ]
 
 
 def _filter_nonzero_recommendations(recommendations: Recommendations, zero_tickers: set[str]) -> Recommendations:
@@ -750,9 +773,20 @@ def _zero_value_recommendation(rec: dict[str, Any]) -> bool:
     return False
 
 
+def _zero_value_action(row: dict[str, Any]) -> bool:
+    value = safe_float(_get_first_present(row, "market_value", "position_value"))
+    allocation = safe_float(row.get("allocation_pct"))
+    quantity = safe_float(row.get("quantity"))
+    if quantity is not None and value is not None:
+        return abs(quantity) <= 1e-9 and abs(value) <= 0.01
+    if value is not None and allocation is not None:
+        return abs(value) <= 0.01 and abs(allocation) <= 1e-9
+    return False
+
+
 def _action_group(action: Any) -> str:
     text = str(action or "").upper()
-    if any(token in text for token in ("AVOID", "REDUCE", "CUT", "TRIM", "DO NOT ADD")):
+    if any(token in text for token in ("AVOID", "REDUCE", "CUT", "TRIM", "DO NOT ADD", "FAIL")):
         return "risk"
     if any(token in text for token in ("WATCH", "RESEARCH", "CONFIRM TREND", "STOCK CANDIDATE")):
         return "watch"
@@ -779,6 +813,32 @@ def _source_or_text_indicates_risk(raw: dict[str, Any], source: str) -> bool:
         if value
     ).upper()
     return any(token in text for token in ("RISK REVIEW", "AVOID", "REDUCE", "CUT", "TRIM", "DO NOT ADD", "FAIL"))
+
+
+def _filter_daily_opportunity_engine(engine: dict[str, Any], zero_tickers: set[str]) -> dict[str, Any]:
+    if not isinstance(engine, dict):
+        return {}
+    filtered = dict(engine)
+    actions = [
+        item for item in (engine.get("actions", []) or [])
+        if isinstance(item, dict)
+        and not _ticker_is_zero_value(item.get("ticker"), zero_tickers)
+        and not _zero_value_action(item)
+    ]
+    filtered["actions"] = actions
+    summary = dict(filtered.get("summary") or {})
+    summary["action_count"] = len(actions)
+    summary["calendar_count"] = sum(1 for item in actions if str(item.get("type") or "") in {"calendar", "active_calendar"})
+    summary["stock_count"] = sum(1 for item in actions if str(item.get("type") or "") in {"stock", "stock_add"})
+    summary["gap_count"] = sum(1 for item in actions if str(item.get("type") or "") == "gap")
+    summary["risk_count"] = sum(
+        1 for item in actions
+        if _action_group(item.get("action")) == "risk"
+        or str(item.get("type") or "") in {"risk", "portfolio_risk"}
+    )
+    filtered["summary"] = summary
+    filtered["has_data"] = bool(actions)
+    return filtered
 
 
 def _normalized_backtest_label(row: dict[str, Any]) -> str:
@@ -859,16 +919,16 @@ def _potential_add_groups(
 
     def add_item(raw: dict[str, Any], source: str) -> None:
         ticker = str(raw.get("ticker") or "").upper().strip()
-        if not ticker or ticker in seen or _ticker_is_zero_value(ticker, zero_tickers):
+        if not ticker or ticker in seen or _ticker_is_zero_value(ticker, zero_tickers) or _zero_value_action(raw):
             return
-        action = str(raw.get("action") or raw.get("verdict") or "WATCH / RESEARCH")
+        action = str(raw.get("action") or raw.get("category") or raw.get("verdict") or "WATCH / RESEARCH")
         normalized = {
             "ticker": ticker,
             "priority_score": _get_first_present(raw, "priority_score", "score", "rank_score"),
             "action": action,
             "why": _first_text(raw.get("why"), raw.get("main_reason"), raw.get("reason"), raw.get("reasons", []), fallback="Review setup"),
             "next_step": _first_text(raw.get("next_step"), raw.get("next_check"), fallback="Next check pending"),
-            "source": raw.get("source") or source,
+            "source": raw.get("source") or raw.get("category_source") or source,
             "risks": raw.get("risks", []) or [],
         }
         group = "risk" if _source_or_text_indicates_risk(raw, source) else _action_group(action)
@@ -1683,9 +1743,13 @@ def format_html(
     if log_lines is not None:
         parsed_log_lines = log_lines
 
-    zero_tickers = _ticker_set_from_zero_positions(positions)
+    zero_tickers = _zero_tickers_from_positions_and_recommendations(positions, parsed_recommendations)
+    display_positions = _filter_nonzero_positions(positions, zero_tickers)
     display_recommendations = _filter_nonzero_recommendations(parsed_recommendations, zero_tickers)
-    daily_opportunity = daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot)
+    daily_opportunity = _filter_daily_opportunity_engine(
+        daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot),
+        zero_tickers,
+    )
     unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot)
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot)
@@ -1700,9 +1764,9 @@ def format_html(
     )
     potential_groups = _potential_add_groups(daily_opportunity, stock_momentum, portfolio_gap, zero_tickers)
 
-    position_rows = format_position_rows(positions)
-    recommendation_rows = format_recommendation_rows(parsed_recommendations)
-    market_rows = format_market_rows(parsed_recommendations)
+    position_rows = format_position_rows(display_positions)
+    recommendation_rows = format_recommendation_rows(display_recommendations)
+    market_rows = format_market_rows(display_recommendations)
     news_rows = format_news_rows(parsed_news)
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
     watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))

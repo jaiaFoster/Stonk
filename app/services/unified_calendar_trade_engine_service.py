@@ -203,7 +203,7 @@ def _build_new_trade_row(
     no_structure_blocker = "" if has_candidate else _no_structure_blocker(quality_row, requirements)
     final = build_final_calendar_verdict(candidate, ranking, None, account_context) if has_candidate else {}
     verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy))
-    entry_plan = _entry_plan(verdict, event, candidate, strategy)
+    entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)
 
     return {
@@ -363,11 +363,25 @@ def _new_trade_verdict(has_candidate: bool, strategy: dict[str, Any]) -> str:
     return "WATCH / STRUCTURE FOUND"
 
 
-def _entry_plan(verdict: str, event: dict[str, Any], candidate: dict[str, Any], strategy: dict[str, Any]) -> str:
+def _entry_plan(
+    verdict: str,
+    event: dict[str, Any],
+    candidate: dict[str, Any],
+    strategy: dict[str, Any],
+    final: dict[str, Any] | None = None,
+) -> str:
     dte = _int_or_none(event.get("days_until_earnings"))
+    final = final or {}
+    trade_type = str(final.get("trade_type") or "")
+    trade_type_label = str(final.get("trade_type_label") or "")
+    blocker = str(final.get("main_blocker") or final.get("hard_fail_reason") or "").lower()
     if verdict.startswith("FAIL"):
         if not candidate:
             return "No entry. This earnings event did not produce a valid Tradier calendar candidate under current liquidity/date settings."
+        if trade_type == "pre_earnings_financing_or_directional_long_vol" or "PRE-EARNINGS" in trade_type_label.upper() or "LONG-VOL" in trade_type_label.upper():
+            if "debit" in blocker or "too large" in blocker or "DEBIT" in verdict.upper():
+                return "No entry. Research-only pre-earnings financing / long-vol structure; debit/account guardrail failed. Do not treat as an entry setup unless a lower-debit structure passes all filters."
+            return "No entry. Research-only pre-earnings financing / long-vol structure, not a true earnings IV-crush calendar."
         return strategy.get("next_check") or "No entry until the earnings/calendar relationship passes requirements."
     if "URGENT" in verdict:
         return "Manual live review only. Recheck earnings timing, bid/ask, short-leg event risk, and max debit before any entry."

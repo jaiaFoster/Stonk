@@ -1,6 +1,6 @@
 import unittest
 
-from app.services.report_service import format_html
+from app.services.report_service import format_html, format_payload
 
 
 class ReportUiOverhaulTests(unittest.TestCase):
@@ -298,6 +298,48 @@ class ReportUiOverhaulTests(unittest.TestCase):
         self.assertIn("Portfolio data could not be refreshed.", html)
         self.assertIn("Existing holdings should not be interpreted as empty.", html)
         self.assertNotIn("No broker-detected active calendars were found.", html)
+
+    def test_zero_value_crypto_and_risk_rows_are_filtered_consistently(self):
+        positions = [
+            {"ticker": "BTC", "quantity": 0.0, "market_value": 0.0, "account": "Crypto"},
+            {"ticker": "SOL", "quantity": 0.0, "market_value": 0.0, "account": "Crypto"},
+            {"ticker": "NVDA", "quantity": 2, "market_value": 1800, "account": "Roth IRA"},
+        ]
+        recommendations = [
+            {"ticker": "BTC", "quantity": 0.0, "position_value": 0.0, "allocation_pct": 0.0, "action": "AVOID ADDING / REDUCE RISK", "risks": ["Zero crypto row"]},
+            {"ticker": "SOL", "quantity": 0.0, "position_value": 0.0, "allocation_pct": 0.0, "action": "AVOID ADDING / REDUCE RISK", "risks": ["Zero crypto row"]},
+            {"ticker": "NVDA", "position_value": 1800, "allocation_pct": 4.0, "action": "CONSIDER ADDING", "reasons": ["Constructive"]},
+        ]
+        snapshot = {
+            "_daily_opportunity_engine": {
+                "actions": [
+                    {"type": "stock_add", "ticker": "BTC", "quantity": 0, "market_value": 0, "action": "AVOID ADDING / REDUCE RISK", "priority_score": 99},
+                    {"type": "risk", "ticker": "SOFI", "action": "AVOID ADDING / REDUCE RISK", "priority_score": 80, "why": "Risk row"},
+                    {"type": "stock_add", "ticker": "NVDA", "action": "CONSIDER ADDING", "priority_score": 90, "why": "Momentum"},
+                ]
+            },
+            "_portfolio_gap": {
+                "suggestions": [
+                    {"ticker": "SOFI", "category": "AVOID ADDING / REDUCE RISK", "score": 80, "reason": "Risk row"},
+                    {"ticker": "NVDA", "category": "CONSIDER ADDING / RESEARCH", "score": 90, "reason": "Momentum"},
+                ]
+            },
+            "_pipeline_status": {"run_mode": "dev", "config_snapshot": {}},
+        }
+
+        payload = format_payload(positions, {}, recommendations, snapshot)
+        html = format_html("debug", positions, {}, recommendations, snapshot, [])
+
+        self.assertNotIn("BTC: 0.0000 shares", payload)
+        self.assertNotIn("SOL: 0.0000 shares", payload)
+        self.assertNotIn("BTC: AVOID ADDING", payload)
+        potential_html = html[html.index('id="potential-adds"'):html.index('id="risk-review"')]
+        risk_html = html[html.index('id="risk-review"'):html.index('id="blocked-calendars"')]
+        self.assertIn("NVDA", potential_html)
+        self.assertNotIn("BTC", potential_html)
+        self.assertNotIn("SOFI", potential_html)
+        self.assertIn("SOFI", risk_html)
+        self.assertNotIn("BTC", risk_html)
 
 
 if __name__ == "__main__":
