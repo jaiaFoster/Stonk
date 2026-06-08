@@ -27,6 +27,33 @@ class CalendarRankingServiceTests(unittest.TestCase):
         self.assertIn("27 < 50 minimum", criteria["Open interest"])
         self.assertIn("0 < 10 preferred minimum", criteria["Same-day volume"])
 
+    def test_insufficient_candles_block_backtest_not_candidate_verdict(self):
+        ranking = build_calendar_ranking(
+            [
+                {
+                    "ticker": "AVGO",
+                    "front_expiration": "2026-06-12",
+                    "back_expiration": "2026-07-17",
+                    "max_leg_spread_pct": 5,
+                    "min_leg_open_interest": 100,
+                    "min_leg_volume": 50,
+                    "debit_pct_underlying": 2,
+                    "iv_edge": 3,
+                    "earnings_timing": {"captures_event": True},
+                    "earnings_event": {"earnings_date": "2026-06-11", "session_label": "AMC", "is_timestamp_confirmed": True},
+                    "candle_quality": {"confidence": "low", "selected_provider": "tradier"},
+                }
+            ],
+            {"items": [{"ticker": "AVGO", "score": 85, "is_preferred_setup": True, "earnings": {"earnings_date": "2026-06-11", "session_label": "AMC", "is_timestamp_confirmed": True}}]},
+            log_print=lambda msg: None,
+        )
+
+        row = ranking["items"][0]
+        self.assertTrue(row["passes_all_criteria"])
+        self.assertFalse(row["backtest_eligible"])
+        self.assertEqual(row["backtest_mode"], "skipped_insufficient_candles")
+        self.assertIn("insufficient_historical_candle_data", row["backtest_blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()

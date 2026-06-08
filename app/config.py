@@ -41,6 +41,13 @@ FINNHUB_API_KEY = os.environ.get("FINNHUB_API_KEY")
 ALPHA_VANTAGE_API_KEY = os.environ.get("ALPHA_VANTAGE_API_KEY")
 MARKET_BENCHMARK_TICKER = os.environ.get("MARKET_BENCHMARK_TICKER", "QQQ")
 MARKET_DATA_USE_TRADIER_FALLBACK = _bool_env("MARKET_DATA_USE_TRADIER_FALLBACK", True)
+MARKET_DATA_PROVIDER_ORDER = [
+    provider.strip().lower()
+    for provider in os.environ.get("MARKET_DATA_PROVIDER_ORDER", "finnhub,tradier,alphavantage").split(",")
+    if provider.strip()
+]
+MARKET_DATA_CANDLE_REQUIRED_BARS = _int_env("MARKET_DATA_CANDLE_REQUIRED_BARS", 240)
+MARKET_DATA_CANDLE_RECENT_DAYS = _int_env("MARKET_DATA_CANDLE_RECENT_DAYS", 7)
 TRADIER_HISTORICAL_LOOKBACK_DAYS = _int_env("TRADIER_HISTORICAL_LOOKBACK_DAYS", 460)
 TRADIER_HISTORICAL_INTERVAL = os.environ.get("TRADIER_HISTORICAL_INTERVAL", "daily").strip().lower()
 MARKET_DATA_MAX_TICKERS_PER_RUN = _int_env("MARKET_DATA_MAX_TICKERS_PER_RUN", 20)
@@ -126,7 +133,7 @@ EARNINGS_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_MAX_TICKERS_PER_RUN", 8)
 # events, then runs Tradier option-chain/calendar scoring only on those tickers.
 EARNINGS_DISCOVERY_ENABLED = _bool_env("EARNINGS_DISCOVERY_ENABLED", True)
 EARNINGS_DISCOVERY_START_DAYS = _int_env("EARNINGS_DISCOVERY_START_DAYS", 4)
-EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 14)
+EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 21)
 EARNINGS_DISCOVERY_MAX_EVENTS = _int_env("EARNINGS_DISCOVERY_MAX_EVENTS", 25)
 # Raw discovery and optionability are intentionally separate. Dev mode should
 # limit expensive Tradier checks, not randomly truncate the raw earnings list to
@@ -161,6 +168,15 @@ CALENDAR_BACKTEST_MAX_EVENTS = _int_env("CALENDAR_BACKTEST_MAX_EVENTS", 10)
 CALENDAR_BACKTEST_LOOKBACK_DAYS = _int_env("CALENDAR_BACKTEST_LOOKBACK_DAYS", 900)
 CALENDAR_BACKTEST_ENTRY_DAYS_BEFORE = _int_env("CALENDAR_BACKTEST_ENTRY_DAYS_BEFORE", 7)
 CALENDAR_BACKTEST_EXIT_DAYS_AFTER = _int_env("CALENDAR_BACKTEST_EXIT_DAYS_AFTER", 1)
+
+# --- Automatically generated calendar opportunity cache ---
+# This stores scanner snapshots only. It is not manual trade memory/tracking.
+CALENDAR_OPPORTUNITY_CACHE_ENABLED = _bool_env("CALENDAR_OPPORTUNITY_CACHE_ENABLED", True)
+CALENDAR_OPPORTUNITY_DB_PATH = os.environ.get(
+    "CALENDAR_OPPORTUNITY_DB_PATH",
+    "/app/data/calendar_opportunities.sqlite3" if os.path.isdir("/app/data") else "data/calendar_opportunities.sqlite3",
+)
+CALENDAR_OPPORTUNITY_CACHE_RECENT_LIMIT = _int_env("CALENDAR_OPPORTUNITY_CACHE_RECENT_LIMIT", 20)
 
 # --- Calendar final verdict / hard-fail layer ---
 CALENDAR_HARD_FAIL_MAX_LEG_SPREAD_PCT = _int_env("CALENDAR_HARD_FAIL_MAX_LEG_SPREAD_PCT", 25)

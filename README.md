@@ -1,6 +1,26 @@
 # Algo Stock Advisor
 
-## Latest patch: Options Lifecycle Accuracy v1
+## Latest patch: Calendar Reliability + Opportunity Cache v1
+
+Calendar candle/history requests now use configurable per-ticker provider fallback:
+
+```text
+MARKET_DATA_PROVIDER_ORDER=finnhub,tradier,alphavantage
+MARKET_DATA_CANDLE_REQUIRED_BARS=240
+```
+
+Each result includes candle-quality metadata and provider attempts. Calendar mini-backtests require high/medium candle quality, while a candle-provider failure alone does not turn a valid calendar structure into a failed trade verdict.
+
+Automatically discovered calendar candidates are upserted into a scanner-generated SQLite audit cache:
+
+```text
+CALENDAR_OPPORTUNITY_CACHE_ENABLED=true
+CALENDAR_OPPORTUNITY_DB_PATH=/app/data/calendar_opportunities.sqlite3
+```
+
+This cache is not manual trade memory and does not place or track trades. The default earnings discovery horizon is now `+4..+21` days.
+
+## Previous patch: Options Lifecycle Accuracy v1
 
 This app intentionally avoids manual trade input. Active option trades should come from broker detection.
 
@@ -168,6 +188,8 @@ FINNHUB_API_KEY=...
 ALPHA_VANTAGE_API_KEY=...
 TRADIER_ENV=prod
 MARKET_DATA_USE_TRADIER_FALLBACK=true
+MARKET_DATA_PROVIDER_ORDER=finnhub,tradier,alphavantage
+MARKET_DATA_CANDLE_REQUIRED_BARS=240
 EARNINGS_PROVIDER_ORDER=finnhub,alphavantage
 EARNINGS_MERGE_PROVIDER_EVENTS=true
 REPORT_SHOW_CALENDAR_DEBUG_SECTIONS=false
@@ -187,7 +209,7 @@ You can also run one request in dev mode with `?mode=dev`.
 
 ```text
 EARNINGS_DISCOVERY_START_DAYS=2
-EARNINGS_DISCOVERY_END_DAYS=4
+EARNINGS_DISCOVERY_END_DAYS=21
 EARNINGS_DISCOVERY_RAW_EVENT_LIMIT=100
 EARNINGS_DISCOVERY_DEV_RAW_EVENT_LIMIT=50
 EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK=12
@@ -442,7 +464,7 @@ This patch expands the earnings-calendar strategy layer before the major UI over
 
 ```text
 EARNINGS_DISCOVERY_START_DAYS=4
-EARNINGS_DISCOVERY_END_DAYS=14
+EARNINGS_DISCOVERY_END_DAYS=21
 EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE=6
 EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE=12
 EARNINGS_CALENDAR_LATE_ENTRY_DTE=4

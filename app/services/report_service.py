@@ -9,6 +9,7 @@ from datetime import date
 from html import escape
 from typing import Any
 
+from app import config
 from app.services.report_assets import REPORT_CSS, collapsible_pre
 
 
@@ -1007,6 +1008,7 @@ def _normalized_provider_status(
     finnhub_blocked = "finnhub" in text and any(token in text for token in ("403", "forbidden", "candle", "candles unavailable", "stock/candle", "unavailable"))
     tradier_fallback = "tradier fallback" in text or ("fallback" in text and "tradier" in text)
     rh_meta = ((provider_meta or {}).get("robinhood") or {}) if isinstance(provider_meta, dict) else {}
+    candle_meta = ((provider_meta or {}).get("candles") or {}) if isinstance(provider_meta, dict) else {}
     rh_status = str(rh_meta.get("status") or "").lower().strip()
     rh_failed = rh_status in {"rate_limited", "auth_required", "auth_failed"}
     rh = {
@@ -1025,6 +1027,7 @@ def _normalized_provider_status(
         "tradier": {"key": tradier_key, "usable": tradier_key, "historical_fallback": tradier_fallback},
         "finnhub": {"key": finnhub_key, "candles": False if finnhub_blocked else None, "candles_blocked": finnhub_blocked},
         "alpha_vantage": {"key": av_key},
+        "candles": candle_meta,
     }
 
 
@@ -1062,6 +1065,7 @@ def _provider_chips(provider_status: dict[str, Any]) -> str:
     tradier = provider_status.get("tradier", {}) or {}
     finnhub = provider_status.get("finnhub", {}) or {}
     av = provider_status.get("alpha_vantage", {}) or {}
+    candles = provider_status.get("candles", {}) or {}
     rh_status = str(rh.get("status") or "").lower()
     if rh.get("rate_limited") or rh_status == "rate_limited":
         rh_label, rh_tone = "RATE LIMITED", "bad"
@@ -1086,6 +1090,9 @@ def _provider_chips(provider_status: dict[str, Any]) -> str:
     else:
         chips.append(_chip("FINNHUB", "KEY MISSING", "neutral"))
     chips.append(_chip("AV", "OK" if av.get("key") else "—", "good" if av.get("key") else "neutral"))
+    if candles.get("ticker_count"):
+        selected = ", ".join(str(item).upper() for item in (candles.get("selected_providers") or [])) or "NONE"
+        chips.append(_chip("CANDLES", f"{candles.get('success_count', 0)}/{candles.get('ticker_count', 0)} {selected}", "good" if candles.get("success_count") else "warn"))
     if provider_status.get("dev_limited"):
         chips.append(_chip("MODE", "dev · market data scope limited", "warn"))
     return "".join(chips)
@@ -1424,6 +1431,7 @@ def _provider_status_text(provider_status: dict[str, Any]) -> str:
     rh = provider_status.get("robinhood", {}) or {}
     tradier = provider_status.get("tradier", {}) or {}
     finnhub = provider_status.get("finnhub", {}) or {}
+    candles = provider_status.get("candles", {}) or {}
     rh_status = str(rh.get("status") or "").lower()
     if rh.get("rate_limited") or rh_status == "rate_limited":
         parts.append("RH rate limited")
@@ -1440,6 +1448,9 @@ def _provider_status_text(provider_status: dict[str, Any]) -> str:
         parts.append("FINNHUB key OK; candles blocked")
     elif finnhub.get("key"):
         parts.append("FINNHUB key OK")
+    if candles.get("ticker_count"):
+        selected = ",".join(str(item) for item in (candles.get("selected_providers") or [])) or "none"
+        parts.append(f"candles {candles.get('success_count', 0)}/{candles.get('ticker_count', 0)} via {selected}")
     if provider_status.get("dev_limited"):
         parts.append("dev-limited market data scope")
     return "; ".join(parts)
@@ -1579,6 +1590,49 @@ def _blocked_calendar_section_html(rows: list[dict[str, Any]]) -> str:
             </details>""")
         body = "".join(cards)
     return _section("blocked-calendars", "Calendar Candidates / Blocked Setups", "Rejected and watch-only setups are informational, not actionable orders.", body, str(len(rows)))
+
+
+def _calendar_reliability_section_html(
+    candle_status: dict[str, Any],
+    opportunity_cache: dict[str, Any],
+    earnings_quality: dict[str, Any],
+    calendar_ranking: dict[str, Any],
+    earnings_backtest: dict[str, Any],
+) -> str:
+    quality_summary = (earnings_quality or {}).get("summary", {}) or {}
+    cache_summary = (opportunity_cache or {}).get("summary", {}) or {}
+    ranking_summary = (calendar_ranking or {}).get("summary", {}) or {}
+    backtest_summary = (earnings_backtest or {}).get("summary", {}) or {}
+    candle_rows = [row for row in (candle_status or {}).values() if isinstance(row, dict)]
+    candle_success = sum(1 for row in candle_rows if row.get("provider"))
+    metrics = f"""
+        <div class="metric-grid">
+            <div class="metric"><span class="label">Earnings Window</span><span class="value">+{getattr(config, 'EARNINGS_DISCOVERY_START_DAYS', 4)}..+{getattr(config, 'EARNINGS_DISCOVERY_END_DAYS', 21)} days</span></div>
+            <div class="metric"><span class="label">Raw / Checked</span><span class="value">{quality_summary.get('raw_event_count', 0)} / {quality_summary.get('checked_count', 0)}</span></div>
+            <div class="metric"><span class="label">Final Candidates</span><span class="value">{ranking_summary.get('candidate_count', 0)}</span></div>
+            <div class="metric"><span class="label">Candle Success</span><span class="value">{candle_success}/{len(candle_rows)}</span></div>
+            <div class="metric"><span class="label">Cache Writes</span><span class="value">{cache_summary.get('write_count', 0)}</span></div>
+            <div class="metric"><span class="label">Backtests</span><span class="value">{backtest_summary.get('with_history_count', 0)} with history</span></div>
+        </div>
+    """
+    recent_rows = []
+    for row in (opportunity_cache or {}).get("recent", []) or []:
+        if not isinstance(row, dict):
+            continue
+        recent_rows.append(
+            f"""
+            <div class="decision-card add-row">
+                <span class="ticker">{_safe_text(row.get('symbol'), 'UNKNOWN')}</span>
+                <span>{_safe_text(row.get('earnings_date'), 'unknown earnings')}</span>
+                <span>{_chip(_safe_text(row.get('final_verdict'), 'WATCH'), None, _tone_for_text(row.get('final_verdict')))}</span>
+                <span>{_safe_text(row.get('main_blocker'), 'No main blocker')}</span>
+                <span class="muted">Seen {row.get('seen_count', 1)}x; last {escape(str(row.get('last_seen_at') or 'unknown'))}</span>
+            </div>
+            """
+        )
+    recent = "".join(recent_rows) or '<p class="empty">No cached calendar opportunities yet.</p>'
+    body = metrics + f'<details class="debug-details"><summary>Recent Calendar Opportunities</summary>{recent}</details>'
+    return _section("calendar-reliability", "Calendar Reliability", "Provider fallback, discovery coverage, and scanner-generated opportunity history.", body, None)
 
 
 def _portfolio_infographic_html(portfolio_gap: dict[str, Any]) -> str:
@@ -1755,6 +1809,10 @@ def format_html(
     portfolio_gap = portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot)
     calendar_ranking = calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot)
+    earnings_backtest = earnings_mini_backtest_from_tradier_snapshot(parsed_tradier_snapshot)
+    candle_status = _snapshot_dict(parsed_tradier_snapshot, "_candle_status")
+    opportunity_cache = _snapshot_dict(parsed_tradier_snapshot, "_calendar_opportunity_cache")
+    earnings_quality = _snapshot_dict(parsed_tradier_snapshot, "_earnings_discovery_quality")
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     provider_status = _normalized_provider_status(
         pipeline_status,
@@ -1774,7 +1832,7 @@ def format_html(
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap)
     stock_momentum_rows = format_stock_momentum_rows(stock_momentum)
     calendar_ranking_rows = format_calendar_ranking_rows(calendar_ranking)
-    earnings_mini_backtest_rows = format_earnings_mini_backtest_rows(earnings_mini_backtest_from_tradier_snapshot(parsed_tradier_snapshot))
+    earnings_mini_backtest_rows = format_earnings_mini_backtest_rows(earnings_backtest)
     pipeline_status_rows = format_pipeline_status_rows(pipeline_status)
     pipeline_summary_html = format_pipeline_summary(pipeline_status)
     payload_debug_html = collapsible_pre("Full Advisor Payload", payload, "payload", "payload")
@@ -1830,6 +1888,13 @@ def format_html(
     potential_adds_html = _potential_adds_section_html(potential_groups)
     risk_review_html = _risk_review_section_html(potential_groups, display_recommendations)
     blocked_calendar_html = _blocked_calendar_section_html(blocked_rows)
+    calendar_reliability_html = _calendar_reliability_section_html(
+        candle_status,
+        opportunity_cache,
+        earnings_quality,
+        calendar_ranking,
+        earnings_backtest,
+    )
     portfolio_infographic_html = _portfolio_infographic_html(portfolio_gap)
     export_toolbar_html = _export_toolbar_html(exports)
     monitor_debug_html = _monitor_debug_section_html(
@@ -1871,6 +1936,7 @@ def format_html(
             <a href="#potential-adds">Potential Adds</a>
             <a href="#risk-review">Risk Review</a>
             <a href="#blocked-calendars">Blocked Calendars</a>
+            <a href="#calendar-reliability">Calendar Reliability</a>
             <a href="#portfolio-infographic">Portfolio</a>
             <a href="#exports">Exports</a>
             <a href="#monitor-debug">Monitor</a>
@@ -1882,6 +1948,7 @@ def format_html(
         {potential_adds_html}
         {risk_review_html}
         {blocked_calendar_html}
+        {calendar_reliability_html}
         {portfolio_infographic_html}
         {monitor_debug_html}
         {_dashboard_script_html()}
@@ -1895,6 +1962,13 @@ def pipeline_status_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | No
     if not tradier_snapshot:
         return {}
     raw = tradier_snapshot.get("_pipeline_status", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _snapshot_dict(tradier_snapshot: TradierSnapshot | None, key: str) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get(key, {}) or {}
     return raw if isinstance(raw, dict) else {}
 
 

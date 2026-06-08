@@ -23,7 +23,7 @@ from app.providers.earnings_provider import (
     EarningsRateLimitError,
     get_provider,
 )
-from app.providers.tradier_provider import TradierProvider
+from app.services.candle_service import get_candle_history
 from app.utils.log_safety import sanitize_for_log
 
 LogFn = Callable[[str], None]
@@ -64,19 +64,13 @@ def build_earnings_mini_backtest(
         return _finalize(result)
 
     provider = get_provider()
-    tradier = TradierProvider()
     if not provider.is_configured:
         result["errors"].append("No earnings provider configured for historical earnings lookup.")
         logger("Earnings Mini-Backtest v1 skipped: no earnings provider configured.")
         return _finalize(result)
-    if not tradier.is_configured:
-        result["errors"].append("TRADIER_ACCESS_TOKEN not configured for historical candles.")
-        logger("Earnings Mini-Backtest v1 skipped: TRADIER_ACCESS_TOKEN not configured.")
-        return _finalize(result)
-
     max_candidates = max(1, int(getattr(config, "CALENDAR_BACKTEST_MAX_CANDIDATES", 3) or 3))
     for row in eligible[:max_candidates]:
-        item = _backtest_one(row, provider, tradier, logger)
+        item = _backtest_one(row, provider, logger)
         item["mode"] = "eligibility"
         item["mode_status"] = "eligibility"
         result["items"].append(item)
@@ -99,10 +93,9 @@ def build_manual_calendar_backtest(
     logger = log_print or (lambda msg: print(msg, flush=True))
     row = {"ticker": ticker, "rank_score": None}
     provider = get_provider()
-    tradier = TradierProvider()
     if not ticker:
         return {"ticker": ticker, "mode": mode, "mode_status": "skipped_no_candidate", "has_data": False, "events": [], "summary": {}, "errors": ["Missing ticker."]}
-    if not provider.is_configured or not tradier.is_configured:
+    if not provider.is_configured:
         return {
             "ticker": ticker,
             "mode": mode,
@@ -110,9 +103,9 @@ def build_manual_calendar_backtest(
             "has_data": False,
             "events": [],
             "summary": {},
-            "errors": ["Earnings provider and TRADIER_ACCESS_TOKEN are required for manual historical diagnostics."],
+            "errors": ["An earnings provider is required for manual historical diagnostics."],
         }
-    out = _backtest_one(row, provider, tradier, logger)
+    out = _backtest_one(row, provider, logger)
     out["mode"] = mode
     out["mode_status"] = mode
     out["requested_params"] = dict(params or {})
@@ -140,8 +133,9 @@ def _diagnostic_item(row: dict[str, Any]) -> dict[str, Any]:
     blocker = str(final.get("main_blocker") or row.get("main_blocker") or "")
     hard = str(final.get("hard_fail_reason") or "")
     untradeable = "spread" in hard.lower() or "liquidity" in hard.lower() or "untradeable" in blocker.lower()
-    status = "skipped_untradeable" if untradeable and bool(getattr(config, "CALENDAR_DIAGNOSTIC_BACKTEST_SKIP_IF_UNTRADEABLE", True)) else "diagnostic"
-    explanation = "Diagnostic backtest not run. Main blocker is execution quality." if status == "skipped_untradeable" else "Diagnostic context available; failed candidate remains ineligible."
+    insufficient = "insufficient_historical_candle_data" in (row.get("backtest_blockers") or [])
+    status = "skipped_insufficient_candles" if insufficient else "skipped_untradeable" if untradeable and bool(getattr(config, "CALENDAR_DIAGNOSTIC_BACKTEST_SKIP_IF_UNTRADEABLE", True)) else "diagnostic"
+    explanation = "Diagnostic backtest not run. Historical candle quality is insufficient." if status == "skipped_insufficient_candles" else "Diagnostic backtest not run. Main blocker is execution quality." if status == "skipped_untradeable" else "Diagnostic context available; failed candidate remains ineligible."
     return {
         "ticker": row.get("ticker"),
         "ranking_score": row.get("rank_score"),
@@ -150,11 +144,12 @@ def _diagnostic_item(row: dict[str, Any]) -> dict[str, Any]:
         "has_data": False,
         "events": [],
         "summary": {"event_count": 0, "interpretation": explanation},
-        "errors": [hard or blocker or "Candidate failed final verdict criteria."],
+        "errors": ["insufficient_historical_candle_data"] if insufficient else [hard or blocker or "Candidate failed final verdict criteria."],
+        "candle_quality": row.get("candle_quality") or {},
     }
 
 
-def _backtest_one(row: dict[str, Any], earnings_provider: Any, tradier: TradierProvider, logger: LogFn) -> dict[str, Any]:
+def _backtest_one(row: dict[str, Any], earnings_provider: Any, logger: LogFn) -> dict[str, Any]:
     ticker = str(row.get("ticker") or "").upper().strip()
     lookback_days = int(getattr(config, "CALENDAR_BACKTEST_LOOKBACK_DAYS", 900) or 900)
     max_events = int(getattr(config, "CALENDAR_BACKTEST_MAX_EVENTS", 10) or 10)
@@ -195,12 +190,20 @@ def _backtest_one(row: dict[str, Any], earnings_provider: Any, tradier: TradierP
 
     history_start = (parsed_events[-1][0] - timedelta(days=14)).isoformat()
     history_end = (parsed_events[0][0] + timedelta(days=7)).isoformat()
-    try:
-        candles = tradier.get_historical_quotes(ticker, history_start, history_end, interval="daily")
-    except Exception as exc:
-        safe = sanitize_for_log(exc, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
-        out["errors"].append(str(safe))
-        logger(f"Earnings Mini-Backtest {ticker}: candle history unavailable — {safe}")
+    candle_result = get_candle_history(
+        ticker,
+        start_date=history_start,
+        end_date=history_end,
+        lookback_days=lookback_days,
+        log_print=logger,
+    )
+    candles = candle_result.get("bars", []) or []
+    out["candle_quality"] = candle_result.get("quality") or {}
+    out["candle_provider"] = candle_result.get("provider")
+    if not candles:
+        out["errors"].append("insufficient_historical_candle_data")
+        out["mode_status"] = "skipped_insufficient_candles"
+        logger(f"Earnings Mini-Backtest {ticker}: candle history unavailable after all providers.")
         return out
 
     candle_by_date = {_parse_date(c.get("date")): c for c in candles if _parse_date(c.get("date"))}

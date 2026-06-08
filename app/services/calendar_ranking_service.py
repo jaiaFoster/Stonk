@@ -139,7 +139,13 @@ def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any]) -> dict
 
     min_passed = int(getattr(config, "CALENDAR_RANKING_MIN_PASSED_REQUIREMENTS", 7) or 7)
     min_score = float(getattr(config, "CALENDAR_RANKING_MIN_SCORE_TO_BACKTEST", 70) or 70)
-    backtest_eligible = bool(passes_all and pass_count >= min_passed and rank_score >= min_score)
+    candle_quality = candidate.get("candle_quality") if isinstance(candidate.get("candle_quality"), dict) else {}
+    candle_confidence = str(candle_quality.get("confidence") or "missing").lower()
+    candle_backtest_ok = candle_confidence in {"high", "medium"}
+    backtest_eligible = bool(passes_all and pass_count >= min_passed and rank_score >= min_score and candle_backtest_ok)
+    backtest_blockers: list[str] = []
+    if not candle_backtest_ok:
+        backtest_blockers.append("insufficient_historical_candle_data")
 
     action = "PASS / BACKTEST" if backtest_eligible else "PASS / WATCH" if passes_all else "FAIL / DO NOT BACKTEST"
     if timing_label == "LATE" and passes_all:
@@ -154,6 +160,11 @@ def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any]) -> dict
         "days_until_earnings": dte,
         "passes_all_criteria": passes_all,
         "backtest_eligible": backtest_eligible,
+        "backtest_eligibility": backtest_eligible,
+        "backtest_mode": "eligibility_backtest" if backtest_eligible else "skipped_insufficient_candles" if not candle_backtest_ok else "not_eligible",
+        "backtest_blockers": backtest_blockers,
+        "candle_quality": candle_quality,
+        "candle_provider": candle_quality.get("selected_provider"),
         "passed_requirement_count": pass_count,
         "failed_requirement_count": len(hard_fails),
         "criteria": criteria,

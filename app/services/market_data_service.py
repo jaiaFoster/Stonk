@@ -17,6 +17,7 @@ from app import config
 from app.models.market_metrics import MarketMetrics
 from app.providers.market_data_provider import FinnhubMarketDataProvider
 from app.providers.tradier_provider import TradierProvider
+from app.services.candle_service import get_candle_history
 from app.utils.log_safety import sanitize_for_log
 
 CRYPTO_TICKERS = {"BTC", "ETH", "SOL", "DOGE", "ADA", "XRP", "LTC", "BCH", "AVAX", "MATIC"}
@@ -47,32 +48,57 @@ def get_market_metrics_for_positions(
         log("No equity tickers found for Market Data v1.")
         return {}
 
-    finnhub_result = _try_finnhub_metrics(tickers, benchmark_ticker, log)
-    if _has_any_data(finnhub_result):
-        return finnhub_result
+    benchmark_history = get_candle_history(benchmark_ticker, log_print=log)
+    benchmark_metrics = _metrics_from_candle_result(
+        benchmark_ticker,
+        benchmark_history,
+        benchmark_ticker,
+        None,
+    )
+    result: dict[str, dict[str, Any]] = {}
+    for ticker in tickers:
+        history = benchmark_history if ticker == benchmark_ticker else get_candle_history(ticker, log_print=log)
+        result[ticker] = _metrics_from_candle_result(
+            ticker,
+            history,
+            benchmark_ticker,
+            benchmark_metrics if benchmark_metrics.get("has_data") else None,
+        )
+    success = sum(1 for item in result.values() if item.get("has_data"))
+    log(f"Multi-provider Market Data fetched for {success}/{len(tickers)} equity ticker(s)")
+    return result
 
-    first_error = _first_error(finnhub_result)
-    if not config.MARKET_DATA_USE_TRADIER_FALLBACK:
-        return finnhub_result
 
-    log("Market Data v1: Finnhub unavailable; using Tradier historical quotes fallback.")
-    tradier_result = _try_tradier_historical_metrics(tickers, benchmark_ticker, log)
-    if _has_any_data(tradier_result):
-        return tradier_result
-
-    # Preserve the Finnhub error when both providers fail, because that is what
-    # currently explains most empty metric rows in the report.
-    if finnhub_result:
-        return finnhub_result
-    return {
-        ticker: MarketMetrics.unavailable(
+def _metrics_from_candle_result(
+    ticker: str,
+    history: dict[str, Any],
+    benchmark_ticker: str,
+    benchmark_metrics: dict[str, Any] | None,
+) -> dict[str, Any]:
+    bars = history.get("bars", []) if isinstance(history, dict) else []
+    quality = history.get("quality", {}) if isinstance(history, dict) else {}
+    provider = history.get("provider") if isinstance(history, dict) else None
+    if not bars:
+        errors = "; ".join(str(item.get("error")) for item in (history.get("errors", []) or []) if isinstance(item, dict))
+        metrics = MarketMetrics.unavailable(
             ticker=ticker,
             benchmark_ticker=benchmark_ticker,
-            source="market_data",
-            error=first_error or "No market data provider returned usable candles.",
+            source=str(provider or "multi_provider_candles"),
+            error=errors or "All configured candle providers failed.",
         ).to_dict()
-        for ticker in tickers
-    }
+    else:
+        metrics = _build_metrics_from_tradier_days(
+            ticker=ticker,
+            days=bars,
+            benchmark_ticker=benchmark_ticker,
+            benchmark_metrics=benchmark_metrics,
+        ).to_dict()
+        metrics["source"] = str(provider or "multi_provider_candles")
+    metrics["candle_quality"] = quality
+    metrics["candle_provider"] = provider
+    metrics["candle_status"] = history.get("status") if isinstance(history, dict) else "missing"
+    metrics["candle_providers_attempted"] = quality.get("providers_attempted", []) if isinstance(quality, dict) else []
+    return metrics
 
 
 def _try_finnhub_metrics(
