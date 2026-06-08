@@ -18,6 +18,7 @@ from typing import Any, Callable
 from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
+from app.services.calendar_opportunity_cache_service import cache_calendar_opportunities
 from app.services.calendar_ranking_service import build_calendar_ranking
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.daily_opportunity_engine_service import build_daily_opportunity_engine
@@ -25,6 +26,7 @@ from app.services.earnings_calendar_strategy_service import evaluate_earnings_ca
 from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
 from app.services.earnings_service import discover_upcoming_earnings_for_calendar_trades, get_earnings_for_positions
 from app.services.earnings_mini_backtest_service import build_earnings_mini_backtest
+from app.services.candle_service import get_candle_history
 from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.open_options_service import detect_open_options_positions
 from app.services.pipeline_helpers import (
@@ -189,6 +191,15 @@ EMPTY_EARNINGS_BACKTEST = {
     "summary": {"candidate_count": 0, "with_history_count": 0},
 }
 
+EMPTY_CALENDAR_OPPORTUNITY_CACHE = {
+    "source": "calendar_opportunity_cache_v1",
+    "enabled": True,
+    "has_data": False,
+    "recent": [],
+    "errors": [],
+    "summary": {"write_count": 0, "recent_count": 0},
+}
+
 
 def _enrich_open_options_with_underlying_prices(
     open_options: dict[str, Any] | None,
@@ -325,6 +336,30 @@ def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
     return round(total, 2) if total > 0 else None
 
 
+def _attach_candidate_candle_quality(
+    calendar_candidates: list[dict[str, Any]],
+    log_print: Callable[[str], None],
+) -> dict[str, Any]:
+    status: dict[str, Any] = {}
+    for candidate in calendar_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        ticker = str(candidate.get("ticker") or "").upper().strip()
+        if not ticker:
+            continue
+        if ticker not in status:
+            history = get_candle_history(ticker, log_print=log_print)
+            status[ticker] = {
+                "provider": history.get("provider"),
+                "status": history.get("status"),
+                "quality": history.get("quality") or {},
+                "errors": history.get("errors") or [],
+            }
+        candidate["candle_quality"] = status[ticker].get("quality") or {}
+        candidate["candle_provider"] = status[ticker].get("provider")
+    return status
+
+
 def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log: list[str] = []
     news: dict[str, list[dict[str, Any]]] = {}
@@ -341,6 +376,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     daily_opportunity_engine: dict[str, Any] = {}
     calendar_ranking: dict[str, Any] = dict(EMPTY_CALENDAR_RANKING)
     earnings_mini_backtest: dict[str, Any] = dict(EMPTY_EARNINGS_BACKTEST)
+    calendar_opportunity_cache: dict[str, Any] = dict(EMPTY_CALENDAR_OPPORTUNITY_CACHE)
+    candle_status: dict[str, Any] = {}
     trade_memory: dict[str, Any] = dict(EMPTY_TRADE_MEMORY)
     provider_status: dict[str, Any] = {
         "robinhood": {
@@ -611,12 +648,27 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         [],
         lambda result: f"Calendar scanner produced {len(result or [])} earnings-discovery candidate(s).",
     )
+    candle_status = run_optional_step(
+        "calendar_candle_rescue",
+        "Running Calendar Candidate Candle Rescue...",
+        lambda: _attach_candidate_candle_quality(calendar_candidates, log_print),
+        {},
+        lambda result: f"Candle rescue selected usable data for {sum(1 for item in (result or {}).values() if item.get('provider'))}/{len(result or {})} candidate ticker(s).",
+    )
+    provider_status["candles"] = {
+        "provider": "multi_provider_candles",
+        "configured_order": list(config.MARKET_DATA_PROVIDER_ORDER),
+        "success_count": sum(1 for item in candle_status.values() if isinstance(item, dict) and item.get("provider")),
+        "ticker_count": len(candle_status),
+        "selected_providers": sorted({str(item.get("provider")) for item in candle_status.values() if isinstance(item, dict) and item.get("provider")}),
+    }
     tradier_snapshot["_calendar_spread_candidates"] = {
         "items": calendar_candidates,
         "has_data": bool(calendar_candidates),
         "source": "tradier",
         "universe_source": "earnings_discovery_v1",
     }
+    tradier_snapshot["_candle_status"] = candle_status
 
     earnings_calendar_strategy = run_optional_step(
         "earnings_calendar_strategy",
@@ -743,6 +795,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
     )
     tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
+
+    calendar_opportunity_cache = run_optional_step(
+        "calendar_opportunity_cache",
+        "Updating Calendar Opportunity Cache v1...",
+        lambda: cache_calendar_opportunities(
+            (unified_calendar_engine or {}).get("new_trade_rows", []) or [],
+            log_print=log_print,
+        ),
+        EMPTY_CALENDAR_OPPORTUNITY_CACHE,
+        lambda result: f"Calendar opportunity cache wrote {((result or {}).get('summary', {}) or {}).get('write_count', 0)} row(s).",
+    )
+    tradier_snapshot["_calendar_opportunity_cache"] = calendar_opportunity_cache
 
     earnings_mini_backtest = run_optional_step(
         "earnings_mini_backtest",

@@ -324,6 +324,8 @@ def _main_reason(status: str, trade_label: str, ranking: dict[str, Any], candida
 
 
 def _backtest_status(ranking: dict[str, Any], backtest: dict[str, Any] | None, status: str, blockers: list[str]) -> str:
+    if "insufficient_historical_candle_data" in (ranking.get("backtest_blockers") or []):
+        return "skipped_insufficient_candles"
     if status != "PASS":
         blocker_text = " ".join(blockers).lower()
         if blockers and any(term in blocker_text for term in ("untradeable", "spread", "liquidity", "open interest", "volume")):
