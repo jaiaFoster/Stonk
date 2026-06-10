@@ -64,6 +64,11 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         warnings.append("ALPHA_VANTAGE_API_KEY is missing; earnings discovery relies primarily on Finnhub.")
     if not config.MARKET_DATA_USE_TRADIER_FALLBACK:
         warnings.append("MARKET_DATA_USE_TRADIER_FALLBACK is off; Finnhub candle restrictions may leave momentum blank.")
+    if config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED != config.EARNINGS_DISCOVERY_END_DAYS:
+        warnings.append(
+            f"Railway requested EARNINGS_DISCOVERY_END_DAYS={config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED}; "
+            f"runtime enforced the intended value of {config.EARNINGS_DISCOVERY_END_DAYS} days."
+        )
 
     limits = {
         "run_mode": clean_mode,
@@ -81,6 +86,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "earnings_discovery_dev_max_optionable_to_check": config.EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK,
         "earnings_discovery_max_final_candidates": config.EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES,
         "earnings_discovery_window_days": f"+{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS}",
+        "earnings_discovery_end_days_requested": config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED,
+        "earnings_discovery_end_override_adjusted": config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED != config.EARNINGS_DISCOVERY_END_DAYS,
         "earnings_calendar_ideal_entry_window": f"{getattr(config, 'EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE', 6)}-{getattr(config, 'EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE', 12)} DTE",
         "calendar_earnings_event_aware_expirations": getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True),
         "calendar_backtest_enabled": getattr(config, "CALENDAR_BACKTEST_ENABLED", True),

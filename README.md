@@ -6,7 +6,10 @@ Strategy 2 is a standalone, read-only options scanner for momentum-confirmed
 same-expiration debit verticals where the short wing is relatively rich. It
 requires momentum, skew, liquidity, controlled debit, and asymmetric payoff.
 It is separate from the earnings-calendar strategy and adds no manual trade
-entry, tracking, or execution. See `docs/skew_momentum_vertical_strategy_v1.md`.
+entry, tracking, or execution. WATCH rows are informational; only PASS rows can
+enter Daily Opportunity. The dashboard includes a Strategy 2 KPI, candidate
+section, recent cache history, and dedicated exports. Dev mode may cap scan
+breadth. See `docs/skew_momentum_vertical_strategy_v1.md`.
 
 ## Latest patch: Pre-Strategy Dashboard Hygiene + Strategy Interface Prep
 
@@ -463,7 +466,7 @@ This patch expands the earnings-calendar strategy layer before the major UI over
 
 ### What changed
 
-- Earnings trade discovery now looks farther ahead by default: `+4..+14` calendar days instead of `+2..+4`.
+- Earnings trade discovery uses the intended `+4..+21` calendar-day window.
 - Earnings calendar expiration selection is now event-aware:
   - Prefer a short/front leg that expires before the earnings event.
   - Prefer a long/back leg that remains open after the earnings event.

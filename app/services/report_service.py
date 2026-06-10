@@ -475,6 +475,8 @@ def format_payload(
     unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
+    skew_vertical = skew_momentum_vertical_from_tradier_snapshot(tradier_snapshot)
+    skew_vertical_cache = _snapshot_dict(tradier_snapshot, "_skew_momentum_vertical_cache")
     daily_opportunity = daily_opportunity_from_tradier_snapshot(tradier_snapshot)
     calendar_ranking = calendar_ranking_from_tradier_snapshot(tradier_snapshot)
     earnings_mini_backtest = earnings_mini_backtest_from_tradier_snapshot(tradier_snapshot)
@@ -518,6 +520,9 @@ def format_payload(
 
     lines += ["", "=== STOCK MOMENTUM ADD STRATEGY V1 ==="]
     lines.extend(format_stock_momentum_text(stock_momentum))
+
+    lines += ["", "=== SKEW MOMENTUM VERTICAL STRATEGY V1 ==="]
+    lines.extend(format_skew_momentum_vertical_text(skew_vertical, skew_vertical_cache))
 
     lines += ["", "=== WATCHLIST STOCK CANDIDATE REVIEW V2 ==="]
     if not watchlist_review or not watchlist_review.get("items"):
@@ -1040,8 +1045,13 @@ def _top_summary_html(
     blocked_count: int,
     pipeline_status: dict[str, Any],
     provider_status: dict[str, Any],
+    skew_vertical: dict[str, Any],
 ) -> str:
     mode = _first_text(pipeline_status.get("mode"), pipeline_status.get("run_mode"), fallback="dev/prod")
+    skew = _skew_vertical_summary(skew_vertical)
+    skew_value = "OFF" if not skew["enabled"] else (
+        "0" if skew["row_count"] == 0 else f"{skew['pass_count']}P · {skew['watch_count']}W · {skew['fail_count']}F"
+    )
     return f"""
     <header class="top-summary">
         <div class="summary-title">
@@ -1054,6 +1064,7 @@ def _top_summary_html(
             {_chip("RISK", risk_count, "warn" if risk_count else "neutral", "#risk-review")}
             {_chip("ADDS", adds_count, "good" if adds_count else "neutral", "#actionable-adds")}
             {_chip("BLOCKED", blocked_count, "bad" if blocked_count else "neutral", "#blocked-calendars")}
+            {_chip("SKEW", skew_value, "good" if skew["pass_count"] else "warn" if skew["watch_count"] or skew["fail_count"] else "neutral", "#skew-verticals")}
             {_chip("MODE", mode, "neutral")}
             {_provider_chips(provider_status)}
         </div>
@@ -1218,13 +1229,20 @@ def _active_calendar_section_html(rows: list[dict[str, Any]], provider_status: d
     return _section("active-calendars", "Active Calendar Lifecycle", "Broker-detected open calendars; no manual trade tracking.", body, str(len(rows)))
 
 
-def _skew_vertical_section_html(strategy: dict[str, Any]) -> str:
+def _skew_vertical_section_html(strategy: dict[str, Any], cache: dict[str, Any]) -> str:
     passes = strategy.get("pass_items", []) or []
     watches = strategy.get("watch_items", []) or []
     blocked = strategy.get("blocked_items", []) or []
     items = list(passes) + list(watches) + list(blocked)
+    summary = _skew_vertical_summary(strategy)
+    mode_caveat = (
+        f'<p class="muted">Dev mode: Strategy 2 scan limited to {summary["runtime_ticker_cap"]} tickers this run. '
+        f'Configured max: {summary["configured_max_tickers"]}. Scanned: {escape(", ".join(summary["scanned_tickers"]) or "none")}.</p>'
+        if summary["run_mode"] == "dev" else
+        f'<p class="muted">Scanned: {escape(", ".join(summary["scanned_tickers"]) or "none")}.</p>'
+    )
     if not items:
-        body = '<p class="empty">No Skew Momentum Vertical candidates were produced this run.</p>'
+        body = mode_caveat + '<p class="empty">No Skew Momentum Vertical candidates were produced this run.</p>'
         if (strategy.get("errors") or []):
             body += f'<p class="muted">{escape(str((strategy.get("errors") or [""])[0]))}</p>'
     else:
@@ -1257,20 +1275,64 @@ def _skew_vertical_section_html(strategy: dict[str, Any]) -> str:
                     <div class="metric"><span class="label">Max Profit</span><span class="value">{money(row.get('max_profit'))}</span></div>
                     <div class="metric"><span class="label">Reward / Risk</span><span class="value">{number(row.get('reward_risk'), 2)}</span></div>
                     <div class="metric"><span class="label">Breakeven</span><span class="value">{money(row.get('breakeven'))}</span></div>
-                    <div class="metric"><span class="label">Short IV Edge</span><span class="value">{number(row.get('short_iv_edge'), 3)}</span></div>
-                    <div class="metric"><span class="label">Short Financing</span><span class="value">{pct(row.get('short_premium_financing_pct'))}</span></div>
+                    <div class="metric"><span class="label">Short IV Edge</span><span class="value">{number(row.get('short_iv_edge'), 3)}<br><span class="muted">Need ≥ {number(config.SKEW_VERTICAL_MIN_SHORT_IV_EDGE, 3)}</span></span></div>
+                    <div class="metric"><span class="label">Short Financing</span><span class="value">{pct(row.get('short_premium_financing_pct'))}<br><span class="muted">Need ≥ {pct(config.SKEW_VERTICAL_MIN_SHORT_PREMIUM_FINANCING_PCT)}</span></span></div>
                 </div>
                 <div class="detail-block">
                     <strong>Momentum</strong><p>{_safe_text(row.get('momentum_reason'), 'Unavailable')}</p>
                     <strong>Skew</strong><p>{_safe_text(row.get('skew_reason'), 'No valid skew edge measured.')}</p>
                     <strong>Main blocker</strong><p>{_safe_text(row.get('primary_blocker'), 'None')}</p>
+                    <strong>Momentum components</strong><p>{_safe_text(", ".join(f"{key}: {value}" for key, value in (((row.get('payload') or {}).get('market_metrics') or row.get('momentum_components') or {}).items()) if key in {'above_sma_50', 'above_sma_200', 'return_3m_pct', 'return_6m_pct', 'relative_strength_6m_pct'}), 'Unavailable')}</p>
                     <strong>Requirements</strong>{_compact_ul([f"{item.get('status')}: {item.get('name')} - {item.get('detail')}" for item in (row.get('requirements') or [])])}
                     <strong>Provider / risk notes</strong>{_compact_ul((row.get('provider_notes') or []) + (row.get('risk_notes') or []))}
                 </div>
             </details>""")
-        body = "".join(cards)
+        body = mode_caveat + "".join(cards)
+    body += _recent_skew_vertical_cache_html(cache)
     subtitle = "Momentum-confirmed, skew-financed defined-risk verticals. PASS rows only enter Daily Opportunity."
-    return _section("skew-verticals", "Skew Momentum Vertical Candidates", subtitle, body, str(len(passes)))
+    count = f"{summary['row_count']} · PASS {summary['pass_count']} · WATCH {summary['watch_count']} · FAIL {summary['fail_count']} · SCANNED {summary['scanned_count']}"
+    return _section("skew-verticals", "Skew Momentum Vertical Candidates", subtitle, body, count)
+
+
+def _skew_vertical_summary(strategy: dict[str, Any]) -> dict[str, Any]:
+    summary = (strategy or {}).get("summary", {}) or {}
+    passes = (strategy or {}).get("pass_items", []) or []
+    watches = (strategy or {}).get("watch_items", []) or []
+    blocked = (strategy or {}).get("blocked_items", []) or []
+    items = (strategy or {}).get("items", []) or []
+    scanned = list(summary.get("scanned_tickers") or (strategy or {}).get("scanned_tickers") or [])
+    return {
+        "enabled": bool(summary.get("enabled", (strategy or {}).get("enabled", True))),
+        "row_count": int(summary.get("candidate_count", len(items) or len(passes) + len(watches) + len(blocked)) or 0),
+        "pass_count": int(summary.get("pass_count", len(passes)) or 0),
+        "watch_count": int(summary.get("watch_count", len(watches)) or 0),
+        "fail_count": int(summary.get("blocked_count", len(blocked)) or 0),
+        "active_count": int(summary.get("active_count", len((strategy or {}).get("active_items", []) or [])) or 0),
+        "scanned_count": int(summary.get("scanned_ticker_count", len(scanned)) or 0),
+        "scanned_tickers": scanned,
+        "run_mode": str(summary.get("run_mode") or (strategy or {}).get("run_mode") or "unknown"),
+        "configured_max_tickers": summary.get("configured_max_tickers", (strategy or {}).get("configured_max_tickers", config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN)),
+        "runtime_ticker_cap": summary.get("runtime_ticker_cap", (strategy or {}).get("runtime_ticker_cap", config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN)),
+    }
+
+
+def _recent_skew_vertical_cache_html(cache: dict[str, Any]) -> str:
+    recent = (cache or {}).get("recent", []) or []
+    summary = (cache or {}).get("summary", {}) or {}
+    if not recent:
+        return f'<details class="debug-details"><summary>Recent Skew Vertical Opportunities</summary><p class="muted">Cache wrote {summary.get("write_count", 0)} rows; no recent rows available.</p></details>'
+    rows = "".join(
+        f"<tr><td>{_safe_text(row.get('ticker'), 'UNKNOWN')}</td><td>{_safe_text(row.get('direction'), 'review')}</td>"
+        f"<td>{_safe_text(row.get('expiration'), 'unavailable')}</td><td>{_safe_text(row.get('final_verdict'), 'UNKNOWN')}</td>"
+        f"<td>{number(row.get('score'), 1)}</td><td>{_safe_text(row.get('main_blocker'), 'None')}</td>"
+        f"<td>{_safe_text(row.get('seen_count'), '1')}</td><td>{_safe_text(row.get('last_seen_at'), 'unavailable')}</td></tr>"
+        for row in recent[:10]
+    )
+    return f"""
+    <details class="debug-details">
+        <summary>Recent Skew Vertical Opportunities · cache wrote {summary.get('write_count', 0)} · recent {summary.get('recent_count', len(recent))}</summary>
+        <div class="table-scroll"><table><tr><th>Ticker</th><th>Direction</th><th>Expiration</th><th>Verdict</th><th>Score</th><th>Blocker</th><th>Seen</th><th>Last Seen</th></tr>{rows}</table></div>
+    </details>"""
 
 
 def _holdings_section_html(recommendations: Recommendations, provider_status: dict[str, Any] | None = None) -> str:
@@ -1388,7 +1450,9 @@ def _build_daily_brief_export(
     groups: dict[str, list[dict[str, Any]]],
     blocked_rows: list[dict[str, Any]],
     portfolio_gap: dict[str, Any],
+    skew_vertical: dict[str, Any],
 ) -> str:
+    skew = _skew_vertical_summary(skew_vertical)
     lines = [
         f"Daily Brief - {today}",
         f"Mode: {provider_status.get('mode', 'unknown')}",
@@ -1408,6 +1472,18 @@ def _build_daily_brief_export(
             lines.append(f"- {item.get('ticker')}: {item.get('action')} | score {number(item.get('priority_score'), 1)} | {item.get('why')}")
     else:
         lines.append("- None cleared.")
+    lines += [
+        "",
+        "Skew Verticals:",
+        f"{skew['pass_count']} actionable, {skew['watch_count']} watch, {skew['fail_count']} fail.",
+    ]
+    best_watch = ((skew_vertical or {}).get("watch_items", []) or [])
+    if best_watch:
+        row = best_watch[0]
+        lines.append(
+            f"Best watch: {row.get('ticker', 'UNKNOWN')} {_first_text(row.get('direction'), fallback='review')} vertical, "
+            f"blocked because {_first_text(row.get('primary_blocker'), row.get('skew_reason'), row.get('momentum_reason'), fallback='requirements did not pass')}."
+        )
     lines += ["", f"Risk review rows: {len(groups.get('risk', []))}", f"Blocked calendar candidates: {len(blocked_rows)}"]
     exposures = portfolio_gap.get("exposure_rows", []) or []
     if exposures:
@@ -1415,6 +1491,81 @@ def _build_daily_brief_export(
         for row in exposures[:5]:
             lines.append(f"- {_first_text(row.get('bucket'), row.get('sector'), row.get('theme'), fallback='Bucket')}: {pct(row.get('actual_pct') or row.get('current_pct'))} / {pct(row.get('target_pct'))} | {_first_text(row.get('status'), row.get('label'), fallback='review')}")
     return "\n".join(lines)
+
+
+def _build_skew_vertical_report_export(
+    today: str,
+    provider_status: dict[str, Any],
+    strategy: dict[str, Any],
+    cache: dict[str, Any],
+) -> str:
+    summary = _skew_vertical_summary(strategy)
+    cache_summary = (cache or {}).get("summary", {}) or {}
+    lines = [
+        "Skew Momentum Vertical Report",
+        f"Run date: {today}",
+        f"Mode: {summary['run_mode']}",
+        f"Strategy: {'enabled' if summary['enabled'] else 'disabled'}",
+        f"Scanned: {summary['scanned_count']} ticker(s) - {', '.join(summary['scanned_tickers']) or 'none'}",
+        f"Rows: {summary['pass_count']} pass / {summary['watch_count']} watch / {summary['fail_count']} fail",
+        f"Active open skew verticals: {summary['active_count']}",
+        f"Cache: wrote {cache_summary.get('write_count', 0)}; recent {cache_summary.get('recent_count', 0)}",
+        "",
+    ]
+    for key, title in (("pass_items", "PASS"), ("watch_items", "WATCH"), ("blocked_items", "FAIL")):
+        lines.append(title + ":")
+        rows = (strategy or {}).get(key, []) or []
+        if not rows:
+            lines.append("- None")
+        for row in rows[:20]:
+            spread = row.get("possible_spread") if isinstance(row.get("possible_spread"), dict) else {}
+            structure = (
+                f"Buy {spread.get('long_strike')} {spread.get('option_type', '')} / Sell {spread.get('short_strike')} {spread.get('option_type', '')}, {row.get('dte', 'unavailable')} DTE"
+                if spread else "No vertical constructed"
+            )
+            lines += [
+                f"- {row.get('ticker', 'UNKNOWN')} - {_first_text(row.get('direction'), fallback='Review')} - {row.get('verdict', 'UNKNOWN')} - Score {number(row.get('score'), 1)}",
+                f"  Structure: {structure}",
+                f"  Debit: {option_money(row.get('conservative_debit'))}; Max profit: {money(row.get('max_profit'))}; R/R: {number(row.get('reward_risk'), 2)}",
+                f"  Momentum: {_first_text(row.get('momentum_reason'), fallback='unavailable')}",
+                f"  Skew: {_first_text(row.get('skew_reason'), fallback='unavailable')}",
+                f"  Next: {_first_text(row.get('next_action'), fallback='Review requirements')}",
+            ]
+        lines.append("")
+    lines += [
+        "Data caveats:",
+        f"- Runtime cap: {summary['runtime_ticker_cap']}; configured max: {summary['configured_max_tickers']}.",
+        "- Tradier supplies Strategy 2 options-chain data.",
+        "- " + _provider_status_text(provider_status),
+    ]
+    return "\n".join(lines)
+
+
+def _build_options_strategies_report_export(
+    active_rows: list[dict[str, Any]],
+    unified_calendar_engine: dict[str, Any],
+    blocked_rows: list[dict[str, Any]],
+    skew_vertical: dict[str, Any],
+    provider_status: dict[str, Any],
+) -> str:
+    calendar_summary = (unified_calendar_engine or {}).get("summary", {}) or {}
+    skew = _skew_vertical_summary(skew_vertical)
+    return "\n".join([
+        "Options Strategies Report",
+        "",
+        f"Active options lifecycle: {len(active_rows)} broker-detected calendar(s); {skew['active_count']} active skew vertical(s).",
+        f"Calendar strategy: {calendar_summary.get('pass_count', 0)} pass / {calendar_summary.get('watch_count', 0)} watch / {calendar_summary.get('fail_count', len(blocked_rows))} fail.",
+        f"Skew vertical strategy: {skew['pass_count']} pass / {skew['watch_count']} watch / {skew['fail_count']} fail.",
+        "",
+        "Calendar blocked/watch rows:",
+        *[f"- {row.get('ticker', 'UNKNOWN')}: {_first_text(row.get('verdict'), row.get('action'))} - {_first_text(row.get('main_blocker'), fallback='review requirements')}" for row in blocked_rows[:15]],
+        "",
+        "Skew watch/fail rows:",
+        *[f"- {row.get('ticker', 'UNKNOWN')}: {row.get('verdict', 'UNKNOWN')} - {_first_text(row.get('primary_blocker'), row.get('next_action'), fallback='review requirements')}" for row in ((skew_vertical or {}).get('watch_items', []) or [])[:10]],
+        *[f"- {row.get('ticker', 'UNKNOWN')}: {row.get('verdict', 'UNKNOWN')} - {_first_text(row.get('primary_blocker'), fallback='review requirements')}" for row in ((skew_vertical or {}).get('blocked_items', []) or [])[:10]],
+        "",
+        "Provider caveats: " + _provider_status_text(provider_status),
+    ])
 
 
 def _build_calendar_report_export(active_rows: list[dict[str, Any]], unified_calendar_engine: dict[str, Any], blocked_rows: list[dict[str, Any]]) -> str:
@@ -1525,6 +1676,8 @@ def _export_toolbar_html(exports: dict[str, str]) -> str:
             <div class="export-toolbar">
                 <button type="button" class="export-btn" onclick="copyExport('dailyBrief')">Copy Daily Brief</button>
                 <button type="button" class="export-btn" onclick="copyExport('calendarReport')">Copy Calendar Report</button>
+                <button type="button" class="export-btn" onclick="copyExport('skewVerticalReport')">Copy Skew Verticals Report</button>
+                <button type="button" class="export-btn" onclick="copyExport('optionsStrategiesReport')">Copy Options Strategies Report</button>
                 <button type="button" class="export-btn" onclick="copyExport('holdingsReport')">Copy Holdings Report</button>
                 <button type="button" class="export-btn" onclick="copyExport('potentialAdds')">Copy Potential Adds</button>
                 <button type="button" class="export-btn" onclick="downloadExport('fullDebugPayload', 'algo-stock-advisor-full-debug-payload.txt')">Download Full Debug Payload</button>
@@ -1733,6 +1886,7 @@ def _calendar_scanner_breadth_warning(
         or 1
     )
     limits = (
+        f"earnings discovery window +{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS} days; "
         f"optionability cap {optionable_cap}; full calendar ticker cap {getattr(config, 'CALENDAR_MAX_TICKERS_PER_RUN', 2)}; "
         f"Tradier ticker cap {getattr(config, 'TRADIER_MAX_TICKERS_PER_RUN', 2)}; "
         f"chain expirations/ticker {getattr(config, 'TRADIER_CHAIN_EXPIRATIONS_PER_TICKER', 1)}; "
@@ -1822,8 +1976,13 @@ def _monitor_debug_section_html(
     tradier_rows: str,
     payload_debug_html: str,
     log_debug_html: str,
+    skew_vertical_summary_html: str,
 ) -> str:
     body = f"""
+        <details class="debug-details">
+            <summary>Strategy 2 Summary</summary>
+            {skew_vertical_summary_html}
+        </details>
         <details class="debug-details">
             <summary>Pipeline Status</summary>
             {pipeline_summary_html}
@@ -1848,6 +2007,33 @@ def _monitor_debug_section_html(
         {log_debug_html}
     """
     return _section("monitor-debug", "Monitor / Debug", "Provider details, raw tables, payload, and run log are collapsed by default.", body, None)
+
+
+def _skew_vertical_monitor_summary_html(strategy: dict[str, Any], cache: dict[str, Any], daily_opportunity: dict[str, Any]) -> str:
+    skew = _skew_vertical_summary(strategy)
+    cache_summary = (cache or {}).get("summary", {}) or {}
+    included = ((daily_opportunity or {}).get("summary", {}) or {}).get("skew_vertical_count", 0)
+    blockers: dict[str, int] = {}
+    for row in ((strategy or {}).get("watch_items", []) or []) + ((strategy or {}).get("blocked_items", []) or []):
+        blocker = _first_text(row.get("primary_blocker"), row.get("verdict"), fallback="Unknown")
+        blockers[blocker] = blockers.get(blocker, 0) + 1
+    primary = max(blockers, key=blockers.get) if blockers else "None"
+    cells = [
+        ("Enabled", "yes" if skew["enabled"] else "no"),
+        ("Mode", skew["run_mode"]),
+        ("Scanned", f"{skew['scanned_count']} / max {skew['configured_max_tickers']}"),
+        ("Runtime cap", str(skew["runtime_ticker_cap"])),
+        ("Rows", str(skew["row_count"])),
+        ("Pass / Watch / Fail", f"{skew['pass_count']} / {skew['watch_count']} / {skew['fail_count']}"),
+        ("Cache writes / recent", f"{cache_summary.get('write_count', 0)} / {cache_summary.get('recent_count', 0)}"),
+        ("Daily Opportunity included", str(included)),
+        ("Primary provider", "Tradier options + configured candle providers"),
+        ("Primary blocker", primary),
+    ]
+    return '<div class="metric-grid">' + "".join(
+        f'<div class="metric"><span class="label">{escape(label)}</span><span class="value">{escape(value)}</span></div>'
+        for label, value in cells
+    ) + "</div>"
 
 
 def _section(section_id: str, title: str, kicker: str, body: str, count: str | None) -> str:
@@ -1923,6 +2109,7 @@ def format_html(
     earnings_backtest = earnings_mini_backtest_from_tradier_snapshot(parsed_tradier_snapshot)
     candle_status = _snapshot_dict(parsed_tradier_snapshot, "_candle_status")
     opportunity_cache = _snapshot_dict(parsed_tradier_snapshot, "_calendar_opportunity_cache")
+    skew_vertical_cache = _snapshot_dict(parsed_tradier_snapshot, "_skew_momentum_vertical_cache")
     earnings_quality = _snapshot_dict(parsed_tradier_snapshot, "_earnings_discovery_quality")
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     provider_status = _normalized_provider_status(
@@ -1970,8 +2157,10 @@ def format_html(
     )
     risk_count = len({ticker for ticker in risk_tickers if ticker}) + len((portfolio_gap or {}).get("risk_rows", []) or [])
     exports = {
-        "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap),
+        "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap, skew_vertical),
         "calendarReport": _build_calendar_report_export(active_rows, unified_calendar_engine, blocked_rows),
+        "skewVerticalReport": _build_skew_vertical_report_export(today, provider_status, skew_vertical, skew_vertical_cache),
+        "optionsStrategiesReport": _build_options_strategies_report_export(active_rows, unified_calendar_engine, blocked_rows, skew_vertical, provider_status),
         "holdingsReport": _build_holdings_report_export(display_recommendations),
         "potentialAdds": _build_potential_adds_export(potential_groups),
         "fullDebugPayload": payload,
@@ -1986,6 +2175,7 @@ def format_html(
         blocked_count=len(blocked_rows),
         pipeline_status=pipeline_status,
         provider_status=provider_status,
+        skew_vertical=skew_vertical,
     )
     macro_html = _section(
         "macro-context",
@@ -1995,7 +2185,7 @@ def format_html(
         None,
     )
     active_calendar_html = _active_calendar_section_html(active_rows, provider_status)
-    skew_vertical_html = _skew_vertical_section_html(skew_vertical)
+    skew_vertical_html = _skew_vertical_section_html(skew_vertical, skew_vertical_cache)
     holdings_html = _holdings_section_html(display_recommendations, provider_status)
     potential_adds_html = _potential_adds_section_html(potential_groups)
     risk_review_html = _risk_review_section_html(potential_groups, display_recommendations)
@@ -2027,6 +2217,7 @@ def format_html(
         tradier_rows=tradier_rows,
         payload_debug_html=payload_debug_html,
         log_debug_html=log_debug_html,
+        skew_vertical_summary_html=_skew_vertical_monitor_summary_html(skew_vertical, skew_vertical_cache, daily_opportunity),
     )
 
     return f"""<!DOCTYPE html>
@@ -3228,13 +3419,32 @@ def skew_momentum_vertical_from_tradier_snapshot(tradier_snapshot: TradierSnapsh
     return raw if isinstance(raw, dict) else {}
 
 
+def format_skew_momentum_vertical_text(strategy: dict[str, Any], cache: dict[str, Any] | None = None) -> list[str]:
+    summary = _skew_vertical_summary(strategy)
+    cache_summary = (cache or {}).get("summary", {}) or {}
+    lines = [
+        f"Enabled {'yes' if summary['enabled'] else 'no'} | Mode {summary['run_mode']} | "
+        f"Scanned {summary['scanned_count']} / cap {summary['runtime_ticker_cap']} | "
+        f"Rows {summary['row_count']} | Pass {summary['pass_count']} | Watch {summary['watch_count']} | Fail {summary['fail_count']} | "
+        f"Cache writes {cache_summary.get('write_count', 0)}"
+    ]
+    for row in ((strategy or {}).get("items", []) or [])[:20]:
+        lines.append(
+            f"{row.get('ticker', 'UNKNOWN')}: {_first_text(row.get('direction'), fallback='Review')} | "
+            f"{row.get('verdict', 'UNKNOWN')} | Score {number(row.get('score'), 1)} | "
+            f"Next {_first_text(row.get('next_action'), fallback='Review requirements')}"
+        )
+    return lines
+
+
 def format_daily_opportunity_text(engine: dict[str, Any]) -> list[str]:
     if not engine:
         return ["Daily Opportunity Engine did not run for this report."]
     summary = engine.get("summary", {}) or {}
     lines = [
         f"Actions {summary.get('action_count', 0)} | Calendar {summary.get('calendar_count', 0)} | "
-        f"Stock {summary.get('stock_count', 0)} | Gap {summary.get('gap_count', 0)} | Risk {summary.get('risk_count', 0)}"
+        f"Skew Vertical {summary.get('skew_vertical_count', 0)} | Stock {summary.get('stock_count', 0)} | "
+        f"Gap {summary.get('gap_count', 0)} | Risk {summary.get('risk_count', 0)}"
     ]
     actions = engine.get("actions", []) or []
     if not actions:

@@ -8,7 +8,7 @@ The previous discovery window was too tight. It found names such as CRDO and HPE
 
 ## New behavior
 
-- Raw earnings discovery defaults to +4..+14 days.
+- Raw earnings discovery defaults to +4..+21 days.
 - Quality filtering prioritizes the ideal entry window before spending Tradier optionability checks.
 - Calendar spread scanning uses the attached earnings event to select expirations:
   - short/front expiration before the earnings event
@@ -32,7 +32,7 @@ It does not yet simulate historical option chains, IV crush, or actual calendar-
 
 ```text
 EARNINGS_DISCOVERY_START_DAYS=4
-EARNINGS_DISCOVERY_END_DAYS=14
+EARNINGS_DISCOVERY_END_DAYS=21
 EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE=6
 EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE=12
 CALENDAR_BACKTEST_ENABLED=true

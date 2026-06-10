@@ -90,8 +90,17 @@ def build_daily_opportunity_engine(
         "Daily Opportunity Engine v1 produced "
         f"{summary.get('action_count', 0)} action(s): "
         f"{summary.get('calendar_count', 0)} calendar, "
+        f"{summary.get('skew_vertical_count', 0)} skew_vertical, "
         f"{summary.get('stock_count', 0)} stock, "
         f"{summary.get('risk_count', 0)} risk."
+    )
+    skew_summary = (skew_momentum_vertical_strategy or {}).get("summary", {}) or {}
+    logger(
+        "Strategy 2 summary: "
+        f"{skew_summary.get('pass_count', 0)} pass, "
+        f"{skew_summary.get('watch_count', 0)} watch, "
+        f"{skew_summary.get('blocked_count', 0)} fail; "
+        f"{summary.get('skew_vertical_count', 0)} included in Daily Opportunity."
     )
     if bool(getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True)):
         logger("Daily Opportunity Engine: active_calendar rows prioritized above stock_add rows.")

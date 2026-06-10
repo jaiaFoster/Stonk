@@ -140,7 +140,11 @@ EARNINGS_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_MAX_TICKERS_PER_RUN", 8)
 # events, then runs Tradier option-chain/calendar scoring only on those tickers.
 EARNINGS_DISCOVERY_ENABLED = _bool_env("EARNINGS_DISCOVERY_ENABLED", True)
 EARNINGS_DISCOVERY_START_DAYS = _int_env("EARNINGS_DISCOVERY_START_DAYS", 4)
-EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 21)
+# The product contract is a +4..+21 discovery horizon. Preserve the requested
+# Railway value for diagnostics, but do not allow a stale override to silently
+# change the runtime calendar universe.
+EARNINGS_DISCOVERY_END_DAYS_REQUESTED = _int_env("EARNINGS_DISCOVERY_END_DAYS", 21)
+EARNINGS_DISCOVERY_END_DAYS = 21
 EARNINGS_DISCOVERY_MAX_EVENTS = _int_env("EARNINGS_DISCOVERY_MAX_EVENTS", 25)
 # Raw discovery and optionability are intentionally separate. Dev mode should
 # limit expensive Tradier checks, not randomly truncate the raw earnings list to
