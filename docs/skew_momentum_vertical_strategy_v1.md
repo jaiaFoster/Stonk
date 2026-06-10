@@ -44,6 +44,27 @@ Fatal liquidity, debit, reward/risk, or data-quality failures override score.
 Only `PASS` rows enter Daily Opportunity. Watch and fail rows remain visible in
 the Strategy 2 dashboard section with a blocker and next action.
 
+High scores do not override fatal requirements. A high-score WATCH row can have
+strong momentum and payoff quality while still being non-actionable because the
+short wing is not rich enough, liquidity is weak, or direction is unconfirmed.
+
+## Dashboard And Exports
+
+The top `SKEW` KPI shows current-run PASS/WATCH/FAIL counts without implying
+WATCH rows are actionable. The Strategy 2 section shows row, pass, watch, fail,
+and scanned-ticker counts, plus the runtime cap and recent scanner-generated
+cache history.
+
+`Copy Skew Verticals Report` exports Strategy 2 decisions even when PASS is
+zero. `Copy Options Strategies Report` combines active options lifecycle,
+calendar strategy, Strategy 2, blocked/watch rows, and provider caveats. Daily
+Brief always summarizes Strategy 2; Daily Opportunity still receives PASS rows
+only.
+
+Dev mode intentionally narrows scan breadth. The dashboard and exports disclose
+the configured max, runtime cap, and tickers scanned so a narrow run is not
+mistaken for full-universe coverage.
+
 ## Risk And Product Guardrails
 
 - No order placement.

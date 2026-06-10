@@ -105,6 +105,19 @@ class DailyOpportunityEngineTests(unittest.TestCase):
 
         self.assertEqual(result["actions"], [])
 
+    def test_strategy_two_watch_excluded_and_summary_logged(self):
+        logs = []
+        strategy = {
+            "pass_items": [],
+            "watch_items": [{"ticker": "NVDA", "score": 90, "verdict": "WATCH / SKEW NOT RICH ENOUGH"}],
+            "blocked_items": [],
+            "summary": {"pass_count": 0, "watch_count": 1, "blocked_count": 0},
+        }
+        result = build_daily_opportunity_engine({}, {}, {}, [], log_print=logs.append, skew_momentum_vertical_strategy=strategy)
+        self.assertEqual(result["actions"], [])
+        self.assertTrue(any("0 skew_vertical" in line for line in logs))
+        self.assertTrue(any("Strategy 2 summary: 0 pass, 1 watch, 0 fail; 0 included" in line for line in logs))
+
 
 if __name__ == "__main__":
     unittest.main()

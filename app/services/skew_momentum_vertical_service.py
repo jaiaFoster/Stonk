@@ -40,6 +40,10 @@ def build_skew_momentum_vertical_strategy(
         "errors": [],
         "summary": {},
         "lifecycle_status": "deferred",
+        "run_mode": str(run_mode or "prod").lower(),
+        "scanned_tickers": [],
+        "configured_max_tickers": int(config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN),
+        "runtime_ticker_cap": int(config.SKEW_VERTICAL_DEV_MAX_TICKERS_PER_RUN if str(run_mode).lower() == "dev" else config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN),
     }
     if not result["enabled"]:
         result["errors"].append("SKEW_VERTICAL_STRATEGY_ENABLED=false")
@@ -50,6 +54,7 @@ def build_skew_momentum_vertical_strategy(
         return _finalize(result)
 
     universe = build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode)
+    result["scanned_tickers"] = list(universe)
     logger(f"Strategy 2 Skew Momentum Vertical scanning {len(universe)} capped ticker(s): {universe}")
     for ticker in universe:
         metrics = (market_metrics or {}).get(ticker) or {}
@@ -288,6 +293,12 @@ def _finalize(result):
         "blocked_count": len(result["blocked_items"]),
         "active_count": len(result.get("active_items") or []),
         "lifecycle_status": result.get("lifecycle_status"),
+        "enabled": bool(result.get("enabled")),
+        "run_mode": result.get("run_mode"),
+        "scanned_ticker_count": len(result.get("scanned_tickers") or []),
+        "scanned_tickers": list(result.get("scanned_tickers") or []),
+        "configured_max_tickers": result.get("configured_max_tickers"),
+        "runtime_ticker_cap": result.get("runtime_ticker_cap"),
     }
     return result
 
