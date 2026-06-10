@@ -1,6 +1,18 @@
 # Algo Stock Advisor
 
-## Latest patch: Calendar Reliability + Opportunity Cache v1
+## Latest patch: Pre-Strategy Dashboard Hygiene + Strategy Interface Prep
+
+Calendar opportunities now use normalized, auditable display states such as
+`PASSED_ENTRY_REVIEW`, `BLOCKED_PRECHECK`, `BLOCKED_NO_STRUCTURE`,
+`BLOCKED_RANKING`, and `PROVIDER_LIMITED`. The Calendar Reliability section
+shows the complete discovery-to-verdict funnel, recent cached opportunities,
+recoverability hints, and explicit provider-safety scan limits.
+
+The normalized opportunity shape is strategy-agnostic so a future strategy can
+emit the same display contract without mixing its scoring logic into the
+earnings-calendar engine. Strategy 2 is not implemented by this patch.
+
+## Previous patch: Calendar Reliability + Opportunity Cache v1
 
 Calendar candle/history requests now use configurable per-ticker provider fallback:
 
