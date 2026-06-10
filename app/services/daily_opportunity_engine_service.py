@@ -18,14 +18,16 @@ LogFn = Callable[[str], None]
 
 ACTION_TYPE_PRIORITY = {
     "active_calendar": 0,
-    "calendar": 1,
-    "stock_add": 2,
-    "stock": 2,
-    "gap": 3,
-    "holding": 4,
-    "portfolio_risk": 5,
-    "risk": 5,
-    "monitor": 6,
+    "active_skew_vertical": 1,
+    "calendar": 2,
+    "skew_vertical": 3,
+    "stock_add": 4,
+    "stock": 4,
+    "gap": 5,
+    "holding": 6,
+    "portfolio_risk": 7,
+    "risk": 7,
+    "monitor": 8,
 }
 
 
@@ -35,6 +37,7 @@ def build_daily_opportunity_engine(
     portfolio_gap_analysis: dict[str, Any] | None,
     recommendations: list[dict[str, Any]] | None,
     log_print: LogFn | None = None,
+    skew_momentum_vertical_strategy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     logger = log_print or (lambda msg: print(msg, flush=True))
     result: dict[str, Any] = {
@@ -51,6 +54,7 @@ def build_daily_opportunity_engine(
 
     actions: list[dict[str, Any]] = []
     actions.extend(_calendar_actions(unified_calendar_engine or {}))
+    actions.extend(_skew_vertical_actions(skew_momentum_vertical_strategy or {}))
     # Stock add ideas are intentionally consolidated by ticker so the top-level
     # daily view does not show separate momentum/gap/watchlist rows for the same
     # candidate. Detailed strategy tables can stay lower in the report until the
@@ -70,7 +74,7 @@ def build_daily_opportunity_engine(
         # their raw trade score is low. A losing calendar can be the most
         # important thing to look at today.
         if float(action.get("priority_score") or 0) < float(getattr(config, "DAILY_OPPORTUNITY_MIN_SCORE", 55) or 55):
-            if str(action.get("type") or "") not in {"calendar", "active_calendar"}:
+            if str(action.get("type") or "") not in {"calendar", "active_calendar", "active_skew_vertical"}:
                 continue
         if _zero_value_row(action):
             continue
@@ -92,6 +96,33 @@ def build_daily_opportunity_engine(
     if bool(getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True)):
         logger("Daily Opportunity Engine: active_calendar rows prioritized above stock_add rows.")
     return finalized
+
+
+def _skew_vertical_actions(strategy: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in strategy.get("active_items", []) or []:
+        out.append({
+            "type": "active_skew_vertical",
+            "ticker": row.get("ticker"),
+            "priority_score": max(90.0, float(row.get("priority") or row.get("score") or 0)),
+            "action": row.get("verdict") or "ACTIVE VERTICAL REVIEW",
+            "why": row.get("primary_reason") or "Broker-detected active skew momentum vertical.",
+            "next_step": row.get("next_action") or "Reprice the broker-detected position.",
+            "source": "Skew Momentum Vertical Lifecycle",
+        })
+    for row in strategy.get("pass_items", []) or []:
+        if not str(row.get("verdict") or "").startswith("PASS"):
+            continue
+        out.append({
+            "type": "skew_vertical",
+            "ticker": row.get("ticker"),
+            "priority_score": float(row.get("priority") or row.get("score") or 0),
+            "action": row.get("verdict"),
+            "why": row.get("primary_reason") or row.get("momentum_reason"),
+            "next_step": row.get("next_action") or "Recheck live bid/ask before entry.",
+            "source": "Skew Momentum Vertical Strategy v1",
+        })
+    return out
 
 
 def _daily_sort_key(item: dict[str, Any]) -> tuple[int, float]:
@@ -376,6 +407,7 @@ def _finalize(result: dict[str, Any]) -> dict[str, Any]:
     result["summary"] = {
         "action_count": len(actions),
         "calendar_count": sum(1 for a in actions if a.get("type") in {"calendar", "active_calendar"}),
+        "skew_vertical_count": sum(1 for a in actions if a.get("type") in {"skew_vertical", "active_skew_vertical"}),
         "stock_count": sum(1 for a in actions if a.get("type") in {"stock", "stock_add"}),
         "gap_count": sum(1 for a in actions if a.get("type") == "gap"),
         "risk_count": sum(1 for a in actions if a.get("type") == "risk"),

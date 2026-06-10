@@ -1,5 +1,13 @@
 # Algo Stock Advisor
 
+## Strategy 2 - Skew Momentum Vertical Spread
+
+Strategy 2 is a standalone, read-only options scanner for momentum-confirmed
+same-expiration debit verticals where the short wing is relatively rich. It
+requires momentum, skew, liquidity, controlled debit, and asymmetric payoff.
+It is separate from the earnings-calendar strategy and adds no manual trade
+entry, tracking, or execution. See `docs/skew_momentum_vertical_strategy_v1.md`.
+
 ## Latest patch: Pre-Strategy Dashboard Hygiene + Strategy Interface Prep
 
 Calendar opportunities now use normalized, auditable display states such as

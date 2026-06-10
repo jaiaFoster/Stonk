@@ -1218,6 +1218,61 @@ def _active_calendar_section_html(rows: list[dict[str, Any]], provider_status: d
     return _section("active-calendars", "Active Calendar Lifecycle", "Broker-detected open calendars; no manual trade tracking.", body, str(len(rows)))
 
 
+def _skew_vertical_section_html(strategy: dict[str, Any]) -> str:
+    passes = strategy.get("pass_items", []) or []
+    watches = strategy.get("watch_items", []) or []
+    blocked = strategy.get("blocked_items", []) or []
+    items = list(passes) + list(watches) + list(blocked)
+    if not items:
+        body = '<p class="empty">No Skew Momentum Vertical candidates were produced this run.</p>'
+        if (strategy.get("errors") or []):
+            body += f'<p class="muted">{escape(str((strategy.get("errors") or [""])[0]))}</p>'
+    else:
+        cards = []
+        for row in items[:30]:
+            spread = row.get("possible_spread") if isinstance(row.get("possible_spread"), dict) else {}
+            direction = str(row.get("direction") or "review").title()
+            option_type = str(spread.get("option_type") or "").upper()
+            structure = (
+                f"Buy {option_money(spread.get('long_strike'))}{option_type[:1]} / "
+                f"Sell {option_money(spread.get('short_strike'))}{option_type[:1]}"
+                if spread else "No valid vertical constructed"
+            )
+            verdict = str(row.get("verdict") or "UNKNOWN REVIEW")
+            cards.append(f"""
+            <details class="decision-card" {'open' if verdict.startswith('PASS') else ''}>
+                <summary>
+                    <div class="strip-summary">
+                        <span class="ticker">{_safe_text(row.get('ticker'), 'UNKNOWN')}</span>
+                        <span>{_chip(direction, None, 'neutral')}</span>
+                        <span>{_chip(verdict, None, _tone_for_text(verdict))}</span>
+                        <span>Score {number(row.get('score'), 1)}</span>
+                        <span>{escape(structure)}</span>
+                        <span>{escape(str(row.get('dte') if row.get('dte') is not None else '—'))} DTE</span>
+                    </div>
+                    <div class="section-kicker">{_safe_text(row.get('next_action'), 'Review requirements')}</div>
+                </summary>
+                <div class="metric-grid">
+                    <div class="metric"><span class="label">Conservative Debit</span><span class="value">{option_money(row.get('conservative_debit'))}</span></div>
+                    <div class="metric"><span class="label">Max Profit</span><span class="value">{money(row.get('max_profit'))}</span></div>
+                    <div class="metric"><span class="label">Reward / Risk</span><span class="value">{number(row.get('reward_risk'), 2)}</span></div>
+                    <div class="metric"><span class="label">Breakeven</span><span class="value">{money(row.get('breakeven'))}</span></div>
+                    <div class="metric"><span class="label">Short IV Edge</span><span class="value">{number(row.get('short_iv_edge'), 3)}</span></div>
+                    <div class="metric"><span class="label">Short Financing</span><span class="value">{pct(row.get('short_premium_financing_pct'))}</span></div>
+                </div>
+                <div class="detail-block">
+                    <strong>Momentum</strong><p>{_safe_text(row.get('momentum_reason'), 'Unavailable')}</p>
+                    <strong>Skew</strong><p>{_safe_text(row.get('skew_reason'), 'No valid skew edge measured.')}</p>
+                    <strong>Main blocker</strong><p>{_safe_text(row.get('primary_blocker'), 'None')}</p>
+                    <strong>Requirements</strong>{_compact_ul([f"{item.get('status')}: {item.get('name')} - {item.get('detail')}" for item in (row.get('requirements') or [])])}
+                    <strong>Provider / risk notes</strong>{_compact_ul((row.get('provider_notes') or []) + (row.get('risk_notes') or []))}
+                </div>
+            </details>""")
+        body = "".join(cards)
+    subtitle = "Momentum-confirmed, skew-financed defined-risk verticals. PASS rows only enter Daily Opportunity."
+    return _section("skew-verticals", "Skew Momentum Vertical Candidates", subtitle, body, str(len(passes)))
+
+
 def _holdings_section_html(recommendations: Recommendations, provider_status: dict[str, Any] | None = None) -> str:
     if not recommendations and _robinhood_unavailable(provider_status):
         body = (
@@ -1863,6 +1918,7 @@ def format_html(
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot)
+    skew_vertical = skew_momentum_vertical_from_tradier_snapshot(parsed_tradier_snapshot)
     calendar_ranking = calendar_ranking_from_tradier_snapshot(parsed_tradier_snapshot)
     earnings_backtest = earnings_mini_backtest_from_tradier_snapshot(parsed_tradier_snapshot)
     candle_status = _snapshot_dict(parsed_tradier_snapshot, "_candle_status")
@@ -1939,6 +1995,7 @@ def format_html(
         None,
     )
     active_calendar_html = _active_calendar_section_html(active_rows, provider_status)
+    skew_vertical_html = _skew_vertical_section_html(skew_vertical)
     holdings_html = _holdings_section_html(display_recommendations, provider_status)
     potential_adds_html = _potential_adds_section_html(potential_groups)
     risk_review_html = _risk_review_section_html(potential_groups, display_recommendations)
@@ -1989,6 +2046,7 @@ def format_html(
         <nav class="quick-nav" aria-label="Report sections">
             <a href="#macro-context">Macro</a>
             <a href="#active-calendars">Active Calendars</a>
+            <a href="#skew-verticals">Skew Verticals</a>
             <a href="#holdings">Holdings</a>
             <a href="#potential-adds">Potential Adds</a>
             <a href="#risk-review">Risk Review</a>
@@ -2001,6 +2059,7 @@ def format_html(
         {export_toolbar_html}
         {macro_html}
         {active_calendar_html}
+        {skew_vertical_html}
         {holdings_html}
         {potential_adds_html}
         {risk_review_html}
@@ -3159,6 +3218,13 @@ def daily_opportunity_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | 
     if not tradier_snapshot:
         return {}
     raw = tradier_snapshot.get("_daily_opportunity_engine", {}) or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def skew_momentum_vertical_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+    if not tradier_snapshot:
+        return {}
+    raw = tradier_snapshot.get("_skew_momentum_vertical_strategy", {}) or {}
     return raw if isinstance(raw, dict) else {}
 
 
