@@ -1598,41 +1598,96 @@ def _calendar_reliability_section_html(
     earnings_quality: dict[str, Any],
     calendar_ranking: dict[str, Any],
     earnings_backtest: dict[str, Any],
+    unified_calendar_engine: dict[str, Any],
+    pipeline_status: dict[str, Any],
 ) -> str:
     quality_summary = (earnings_quality or {}).get("summary", {}) or {}
     cache_summary = (opportunity_cache or {}).get("summary", {}) or {}
     ranking_summary = (calendar_ranking or {}).get("summary", {}) or {}
-    backtest_summary = (earnings_backtest or {}).get("summary", {}) or {}
+    final_summary = (unified_calendar_engine or {}).get("summary", {}) or {}
     candle_rows = [row for row in (candle_status or {}).values() if isinstance(row, dict)]
     candle_success = sum(1 for row in candle_rows if row.get("provider"))
+    scanner_candidates = ranking_summary.get("candidate_count", 0)
+    breadth_warning = _calendar_scanner_breadth_warning(quality_summary, scanner_candidates, pipeline_status)
     metrics = f"""
         <div class="metric-grid">
-            <div class="metric"><span class="label">Earnings Window</span><span class="value">+{getattr(config, 'EARNINGS_DISCOVERY_START_DAYS', 4)}..+{getattr(config, 'EARNINGS_DISCOVERY_END_DAYS', 21)} days</span></div>
-            <div class="metric"><span class="label">Raw / Checked</span><span class="value">{quality_summary.get('raw_event_count', 0)} / {quality_summary.get('checked_count', 0)}</span></div>
-            <div class="metric"><span class="label">Final Candidates</span><span class="value">{ranking_summary.get('candidate_count', 0)}</span></div>
-            <div class="metric"><span class="label">Candle Success</span><span class="value">{candle_success}/{len(candle_rows)}</span></div>
+            <div class="metric"><span class="label">Raw Earnings</span><span class="value">{quality_summary.get('raw_event_count', 0)}</span></div>
+            <div class="metric"><span class="label">Optionability Checked</span><span class="value">{quality_summary.get('checked_count', 0)}</span></div>
+            <div class="metric"><span class="label">Precheck Passed</span><span class="value">{quality_summary.get('passed_count', 0)}</span></div>
+            <div class="metric"><span class="label">Scanner Candidates</span><span class="value">{scanner_candidates}</span></div>
+            <div class="metric"><span class="label">Ranking Passes</span><span class="value">{ranking_summary.get('pass_count', 0)}</span></div>
+            <div class="metric"><span class="label">Final Pass / Watch / Fail</span><span class="value">{final_summary.get('pass_count', 0)} / {final_summary.get('watch_count', 0)} / {final_summary.get('fail_count', 0)}</span></div>
             <div class="metric"><span class="label">Cache Writes</span><span class="value">{cache_summary.get('write_count', 0)}</span></div>
-            <div class="metric"><span class="label">Backtests</span><span class="value">{backtest_summary.get('with_history_count', 0)} with history</span></div>
+            <div class="metric"><span class="label">Candle Rescue</span><span class="value">{candle_success}/{len(candle_rows)}</span></div>
         </div>
     """
     recent_rows = []
     for row in (opportunity_cache or {}).get("recent", []) or []:
         if not isinstance(row, dict):
             continue
+        payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+        requirements = payload.get("requirements", []) if isinstance(payload, dict) else []
+        provider_errors = payload.get("provider_notes", []) if isinstance(payload, dict) else []
+        raw_scanner = payload.get("raw_scanner_verdict") if isinstance(payload, dict) else None
         recent_rows.append(
             f"""
-            <div class="decision-card add-row">
-                <span class="ticker">{_safe_text(row.get('symbol'), 'UNKNOWN')}</span>
-                <span>{_safe_text(row.get('earnings_date'), 'unknown earnings')}</span>
-                <span>{_chip(_safe_text(row.get('final_verdict'), 'WATCH'), None, _tone_for_text(row.get('final_verdict')))}</span>
-                <span>{_safe_text(row.get('main_blocker'), 'No main blocker')}</span>
-                <span class="muted">Seen {row.get('seen_count', 1)}x; last {escape(str(row.get('last_seen_at') or 'unknown'))}</span>
-            </div>
+            <details class="decision-card">
+                <summary>
+                    <div class="blocked-row">
+                        <span class="ticker">{_safe_text(row.get('symbol') or row.get('ticker'), 'UNKNOWN')}</span>
+                        <span>{_safe_text(row.get('earnings_date'), 'unknown earnings')}</span>
+                        <span>{_chip(_safe_text(row.get('display_state_label'), 'Cached Recent'), None, str(row.get('display_tone') or 'neutral'))}</span>
+                        <span>{_safe_text(row.get('final_verdict'), 'WATCH')}</span>
+                        <span>{_safe_text(row.get('primary_blocker') or row.get('main_blocker') or row.get('primary_reason'), 'No main blocker')}</span>
+                    </div>
+                    <div class="section-kicker">Score {number(row.get('ranking_score') if row.get('ranking_score') is not None else row.get('score'), 1)} · {escape(str(row.get('candle_provider') or 'candle provider unavailable'))} / {escape(str(row.get('candle_quality') or 'missing'))} · seen {row.get('seen_count', 1)}x · last {escape(str(row.get('last_seen_at') or 'unknown'))}</div>
+                </summary>
+                <div class="detail-block">
+                    <strong>Next action</strong>: {_safe_text(row.get('next_action'), 'Review requirements.')}<br>
+                    <strong>Recoverability</strong>: {_safe_text(row.get('recoverability_hint'), 'Re-run scanner after inputs change.')}<br>
+                    <strong>Raw scanner verdict</strong>: {_safe_text(raw_scanner, 'Unavailable')}<br>
+                    <strong>Backtest</strong>: {_safe_text(row.get('backtest_status'), 'Unavailable')}<br>
+                    <strong>Requirements</strong>{_compact_ul([f"{item.get('status', 'WARN')}: {item.get('name', 'Check')} - {item.get('detail', '')}" for item in requirements if isinstance(item, dict)], 8)}
+                    <strong>Provider notes</strong>{_compact_ul(provider_errors, 5)}
+                </div>
+            </details>
             """
         )
     recent = "".join(recent_rows) or '<p class="empty">No cached calendar opportunities yet.</p>'
-    body = metrics + f'<details class="debug-details"><summary>Recent Calendar Opportunities</summary>{recent}</details>'
+    caveat = f'<div class="detail-block"><strong>Coverage caveat</strong>: {escape(breadth_warning)}</div>'
+    body = metrics + caveat + f'<div class="subsection-title">Recent Calendar Opportunities</div>{recent}'
     return _section("calendar-reliability", "Calendar Reliability", "Provider fallback, discovery coverage, and scanner-generated opportunity history.", body, None)
+
+
+def _calendar_scanner_breadth_warning(
+    quality_summary: dict[str, Any],
+    scanner_candidates: Any,
+    pipeline_status: dict[str, Any],
+) -> str:
+    raw = int(quality_summary.get("raw_event_count") or 0)
+    checked = int(quality_summary.get("checked_count") or 0)
+    passed = int(quality_summary.get("passed_count") or 0)
+    scanned = int(scanner_candidates or 0)
+    run_mode = str((pipeline_status or {}).get("run_mode") or "prod").lower()
+    optionable_cap = int(
+        getattr(
+            config,
+            "EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK" if run_mode == "dev" else "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK",
+            6 if run_mode == "dev" else 12,
+        )
+        or 1
+    )
+    limits = (
+        f"optionability cap {optionable_cap}; full calendar ticker cap {getattr(config, 'CALENDAR_MAX_TICKERS_PER_RUN', 2)}; "
+        f"Tradier ticker cap {getattr(config, 'TRADIER_MAX_TICKERS_PER_RUN', 2)}; "
+        f"chain expirations/ticker {getattr(config, 'TRADIER_CHAIN_EXPIRATIONS_PER_TICKER', 1)}; "
+        f"expiration pairs/ticker {getattr(config, 'CALENDAR_MAX_EXPIRATION_PAIRS_PER_TICKER', 1)}; "
+        f"candidates/ticker {getattr(config, 'CALENDAR_MAX_CANDIDATES_PER_TICKER', 1)}"
+    )
+    return (
+        f"Calendar discovery found {raw} raw event(s), checked {checked}, passed {passed} precheck, "
+        f"and generated {scanned} full scanner candidate(s). Current provider-safety limits: {limits}."
+    )
 
 
 def _portfolio_infographic_html(portfolio_gap: dict[str, Any]) -> str:
@@ -1894,6 +1949,8 @@ def format_html(
         earnings_quality,
         calendar_ranking,
         earnings_backtest,
+        unified_calendar_engine,
+        pipeline_status,
     )
     portfolio_infographic_html = _portfolio_infographic_html(portfolio_gap)
     export_toolbar_html = _export_toolbar_html(exports)

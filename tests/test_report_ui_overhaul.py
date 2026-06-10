@@ -341,6 +341,61 @@ class ReportUiOverhaulTests(unittest.TestCase):
         self.assertIn("SOFI", risk_html)
         self.assertNotIn("BTC", risk_html)
 
+    def test_calendar_reliability_shows_coverage_breadth_and_recent_state(self):
+        html = format_html(
+            "debug",
+            [],
+            {},
+            [],
+            {
+                "_earnings_discovery_quality": {
+                    "summary": {
+                        "raw_event_count": 100,
+                        "checked_count": 6,
+                        "passed_count": 3,
+                    }
+                },
+                "_calendar_ranking": {"summary": {"candidate_count": 2, "pass_count": 1}},
+                "_unified_calendar_trade_engine": {
+                    "summary": {"pass_count": 1, "watch_count": 0, "fail_count": 1}
+                },
+                "_calendar_opportunity_cache": {
+                    "summary": {"write_count": 2},
+                    "recent": [
+                        {
+                            "symbol": "ADBE",
+                            "earnings_date": "2026-06-18",
+                            "display_state_label": "Blocked Final Verdict",
+                            "display_tone": "bad",
+                            "final_verdict": "FAIL / DEBIT TOO LARGE",
+                            "primary_reason": "Debit too large",
+                            "recoverability_hint": "Needs a lower-debit structure.",
+                            "seen_count": 2,
+                            "last_seen_at": "2026-06-10T12:00:00+00:00",
+                            "payload": {
+                                "raw_scanner_verdict": "PASS / POSSIBLE ENTRY SETUP",
+                                "requirements": [{"status": "FAIL", "name": "Debit size", "detail": "Too large"}],
+                            },
+                        }
+                    ],
+                },
+                "_candle_status": {"ADBE": {"provider": "tradier"}},
+                "_pipeline_status": {"run_mode": "dev", "config_snapshot": {}},
+            },
+            [],
+        )
+
+        reliability = html[html.index('id="calendar-reliability"'):html.index('id="portfolio-infographic"')]
+        self.assertIn("Raw Earnings", reliability)
+        self.assertIn("Optionability Checked", reliability)
+        self.assertIn("Scanner Candidates", reliability)
+        self.assertIn("Final Pass / Watch / Fail", reliability)
+        self.assertIn("Coverage caveat", reliability)
+        self.assertIn("full calendar ticker cap", reliability)
+        self.assertIn("Recent Calendar Opportunities", reliability)
+        self.assertIn("Blocked Final Verdict", reliability)
+        self.assertIn("Needs a lower-debit structure.", reliability)
+
 
 if __name__ == "__main__":
     unittest.main()

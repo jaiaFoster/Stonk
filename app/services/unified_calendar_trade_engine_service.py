@@ -22,6 +22,7 @@ from datetime import date
 from typing import Any, Callable
 
 from app import config
+from app.services.calendar_opportunity_state_service import attach_calendar_display_fields
 from app.services.calendar_verdict_service import build_final_calendar_verdict
 
 LogFn = Callable[[str], None]
@@ -107,9 +108,10 @@ def build_unified_calendar_trade_engine(
             row["requirements"].insert(0, _req("Earnings discovery", "WARN", "Candidate exists, but no matching discovery event was attached."))
             new_rows.append(row)
 
+    new_rows = [attach_calendar_display_fields(row) for row in new_rows]
     new_rows.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
 
-    open_rows = _build_open_trade_rows(open_options, lifecycle_checks)
+    open_rows = [attach_calendar_display_fields(row) for row in _build_open_trade_rows(open_options, lifecycle_checks)]
 
     result["new_trade_rows"] = new_rows
     result["open_trade_rows"] = open_rows
@@ -206,7 +208,10 @@ def _build_new_trade_row(
     entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)
 
-    return {
+    row = {
+        "strategy_id": "earnings_calendar",
+        "strategy_label": "Earnings Calendar",
+        "source": "unified_calendar_trade_engine_v1",
         "ticker": ticker,
         "type": "new_earnings_calendar_candidate",
         "score": round(max(0.0, min(100.0, float(score or 0.0))), 1),
@@ -224,12 +229,14 @@ def _build_new_trade_row(
         "earnings": _compact_event(event),
         "candidate": candidate,
         "strategy": strategy,
+        "ranking": ranking,
         "quality_precheck": quality_row,
         "possible_spread": possible_spread,
         "requirements": requirements,
         "reasons": _dedupe((final.get("reasons") or []) + (strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),
         "risks": _dedupe((final.get("blockers") or []) + (strategy.get("risks", []) if strategy else []) + (candidate.get("risks", []) if candidate else [])),
     }
+    return row
 
 
 def _no_structure_blocker(quality_row: dict[str, Any], requirements: list[dict[str, str]]) -> str:
@@ -306,6 +313,10 @@ def _build_open_trade_rows(open_options: dict[str, Any], lifecycle_checks: dict[
         for check in checks:
             rows.append(
                 {
+                    "strategy_id": "earnings_calendar",
+                    "strategy_label": "Earnings Calendar",
+                    "source": "calendar_lifecycle_v1",
+                    "type": "open_calendar",
                     "ticker": str(check.get("ticker") or check.get("underlying") or "UNKNOWN").upper(),
                     "score": _score_open_trade(check),
                     "verdict": check.get("action") or "HOLD / MONITOR",
@@ -328,6 +339,10 @@ def _build_open_trade_rows(open_options: dict[str, Any], lifecycle_checks: dict[
     for cal in calendars:
         rows.append(
             {
+                "strategy_id": "earnings_calendar",
+                "strategy_label": "Earnings Calendar",
+                "source": "open_options_detector_v2",
+                "type": "open_calendar",
                 "ticker": str(cal.get("ticker") or cal.get("underlying") or "UNKNOWN").upper(),
                 "score": 50.0,
                 "verdict": "OPEN / NEEDS LIFECYCLE CHECK",

@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Callable
 
 from app import config
+from app.services.calendar_opportunity_state_service import attach_calendar_display_fields
 
 LogFn = Callable[[str], None]
 
@@ -47,20 +48,21 @@ def cache_calendar_opportunities(
                 if isinstance(row, dict) and _upsert(conn, row, run_id or uuid.uuid4().hex):
                     writes += 1
             conn.commit()
-            recent = [
-                dict(item)
-                for item in conn.execute(
+            recent = []
+            for item in conn.execute(
                     """
                     SELECT symbol, earnings_date, trade_type, final_verdict, main_blocker,
                            score, ranking_score, candidate_status, first_seen_at, last_seen_at,
-                           seen_count, candle_provider, candle_quality, backtest_status
+                           seen_count, candle_provider, candle_quality, backtest_status,
+                           display_state, display_state_label, display_tone, primary_reason,
+                           next_action, recoverability_hint, payload_json
                     FROM calendar_opportunities
                     ORDER BY last_seen_at DESC
                     LIMIT ?
                     """,
                     (max(1, int(config.CALENDAR_OPPORTUNITY_CACHE_RECENT_LIMIT or 20)),),
-                ).fetchall()
-            ]
+                ).fetchall():
+                recent.append(_recent_row(dict(item)))
         finally:
             conn.close()
         result["recent"] = recent
@@ -107,15 +109,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             candle_quality TEXT,
             backtest_status TEXT,
             payload_json TEXT,
+            display_state TEXT,
+            display_state_label TEXT,
+            display_tone TEXT,
+            primary_reason TEXT,
+            next_action TEXT,
+            recoverability_hint TEXT,
             first_seen_at TEXT,
             last_seen_at TEXT,
             seen_count INTEGER NOT NULL DEFAULT 1
         )
         """
     )
+    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(calendar_opportunities)").fetchall()}
+    for column in (
+        "display_state",
+        "display_state_label",
+        "display_tone",
+        "primary_reason",
+        "next_action",
+        "recoverability_hint",
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE calendar_opportunities ADD COLUMN {column} TEXT")
 
 
 def _upsert(conn: sqlite3.Connection, row: dict[str, Any], run_id: str) -> bool:
+    row = attach_calendar_display_fields(row)
     ticker = str(row.get("ticker") or row.get("symbol") or "").upper().strip()
     if not ticker:
         return False
@@ -162,6 +182,12 @@ def _upsert(conn: sqlite3.Connection, row: dict[str, Any], run_id: str) -> bool:
         "candle_quality": str(quality.get("confidence") or "missing"),
         "backtest_status": str(row.get("backtest_mode") or row.get("backtest_status") or final.get("backtest_status") or ""),
         "payload_json": json.dumps(row, separators=(",", ":"), default=str),
+        "display_state": str(row.get("display_state") or ""),
+        "display_state_label": str(row.get("display_state_label") or ""),
+        "display_tone": str(row.get("display_tone") or ""),
+        "primary_reason": str(row.get("primary_reason") or ""),
+        "next_action": str(row.get("next_action") or ""),
+        "recoverability_hint": str(row.get("recoverability_hint") or ""),
         "first_seen_at": now,
         "last_seen_at": now,
     }
@@ -190,6 +216,19 @@ def _status(row: dict[str, Any]) -> str:
     if "FAIL" in verdict or "REJECT" in verdict:
         return "blocked"
     return "watch"
+
+
+def _recent_row(row: dict[str, Any]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    try:
+        decoded = json.loads(str(row.get("payload_json") or "{}"))
+        payload = decoded if isinstance(decoded, dict) else {}
+    except Exception:
+        payload = {}
+    merged = dict(payload)
+    merged.update({key: value for key, value in row.items() if key != "payload_json" and value not in (None, "")})
+    merged["payload"] = payload
+    return attach_calendar_display_fields(merged, cached=True)
 
 
 def _num(value: Any) -> float | None:
