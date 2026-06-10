@@ -1,0 +1,376 @@
+"""Strategy 2: read-only Skew Momentum Vertical Spread scanner."""
+
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Any, Callable
+
+from app import config
+from app.providers.tradier_provider import TradierProvider
+from app.services.skew_momentum_vertical_ranking_service import rank_skew_momentum_vertical
+from app.services.skew_momentum_vertical_verdict_service import apply_skew_momentum_vertical_verdict
+from app.utils.log_safety import sanitize_for_log
+
+LogFn = Callable[[str], None]
+
+
+def build_skew_momentum_vertical_strategy(
+    positions: list[dict[str, Any]] | None,
+    watchlist_candidates: dict[str, Any] | None,
+    portfolio_gap_analysis: dict[str, Any] | None,
+    market_metrics: dict[str, dict[str, Any]] | None,
+    earnings_events: dict[str, dict[str, Any]] | None = None,
+    account_context: dict[str, Any] | None = None,
+    run_mode: str = "prod",
+    log_print: LogFn | None = None,
+    provider: TradierProvider | None = None,
+) -> dict[str, Any]:
+    logger = log_print or (lambda msg: None)
+    result = {
+        "source": "skew_momentum_vertical_strategy_v1",
+        "strategy_id": "skew_momentum_vertical",
+        "strategy_label": "Skew Momentum Vertical",
+        "enabled": bool(config.SKEW_VERTICAL_STRATEGY_ENABLED),
+        "has_data": False,
+        "items": [],
+        "pass_items": [],
+        "watch_items": [],
+        "blocked_items": [],
+        "active_items": [],
+        "errors": [],
+        "summary": {},
+        "lifecycle_status": "deferred",
+    }
+    if not result["enabled"]:
+        result["errors"].append("SKEW_VERTICAL_STRATEGY_ENABLED=false")
+        return _finalize(result)
+    provider = provider or TradierProvider()
+    if not provider.is_configured:
+        result["errors"].append("Tradier token unavailable; Strategy 2 requires live option-chain data.")
+        return _finalize(result)
+
+    universe = build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode)
+    logger(f"Strategy 2 Skew Momentum Vertical scanning {len(universe)} capped ticker(s): {universe}")
+    for ticker in universe:
+        metrics = (market_metrics or {}).get(ticker) or {}
+        direction = momentum_direction(metrics)
+        if not direction["direction"]:
+            result["items"].append(_watch_momentum_row(ticker, direction, metrics))
+            continue
+        try:
+            quote = (provider.get_quotes([ticker], greeks=False) or {}).get(ticker, {})
+            underlying = _first_num(quote.get("last"), quote.get("close"), quote.get("bid"))
+            if not underlying or underlying < float(config.SKEW_VERTICAL_MIN_UNDERLYING_PRICE):
+                result["items"].append(_blocked_data_row(ticker, direction, "Underlying quote missing or below configured minimum."))
+                continue
+            average_volume = _first_num(quote.get("average_volume"))
+            if average_volume is not None and average_volume < float(config.SKEW_VERTICAL_MIN_AVERAGE_VOLUME):
+                result["items"].append(_blocked_data_row(ticker, direction, f"Average stock volume {average_volume:.0f} is below the configured minimum."))
+                continue
+            expirations = _eligible_expirations(provider.get_expirations(ticker))[: max(1, int(config.SKEW_VERTICAL_EXPIRATIONS_PER_TICKER))]
+            candidates: list[dict[str, Any]] = []
+            for expiration in expirations:
+                chain = provider.get_option_chain(ticker, expiration, greeks=True)
+                candidates.extend(
+                    construct_vertical_candidates(
+                        ticker=ticker,
+                        direction=direction,
+                        underlying_price=underlying,
+                        expiration=expiration,
+                        chain=chain,
+                        metrics=metrics,
+                        earnings_event=(earnings_events or {}).get(ticker) or {},
+                        account_context=account_context or {},
+                    )
+                )
+            if not candidates:
+                result["items"].append(_blocked_no_vertical_row(ticker, direction, "No valid same-expiration vertical survived structure and quote checks."))
+            else:
+                candidates.sort(key=lambda row: float(row.get("score") or 0), reverse=True)
+                result["items"].extend(candidates[: max(1, int(config.SKEW_VERTICAL_MAX_CANDIDATES_PER_TICKER))])
+        except Exception as exc:
+            safe_error = sanitize_for_log(exc, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
+            result["errors"].append(f"{ticker}: {safe_error}")
+            result["items"].append(_blocked_data_row(ticker, direction, f"Tradier options data unavailable: {safe_error}"))
+    result["items"].sort(key=lambda row: (0 if str(row.get("verdict")).startswith("PASS") else 1, -float(row.get("score") or 0)))
+    logger(f"Strategy 2 produced {len(result['items'])} decision row(s).")
+    return _finalize(result)
+
+
+def build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode="prod") -> list[str]:
+    ordered: list[str] = []
+    sources: list[Any] = []
+    if config.SKEW_VERTICAL_INCLUDE_HOLDINGS:
+        sources.extend((positions or []))
+    if config.SKEW_VERTICAL_INCLUDE_WATCHLIST:
+        sources.extend((watchlist_candidates or {}).get("items", []) or [])
+    if config.SKEW_VERTICAL_INCLUDE_PORTFOLIO_GAP:
+        sources.extend((portfolio_gap_analysis or {}).get("suggestions", []) or [])
+    sources.extend({"ticker": ticker} for ticker in (market_metrics or {}))
+    for row in sources:
+        ticker = str((row or {}).get("ticker") or "").upper().strip()
+        if ticker and ticker not in {"BTC", "ETH", "SOL", "DOGE"} and ticker not in ordered:
+            ordered.append(ticker)
+    cap = int(config.SKEW_VERTICAL_DEV_MAX_TICKERS_PER_RUN if str(run_mode).lower() == "dev" else config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN)
+    return ordered[: max(1, cap)]
+
+
+def momentum_direction(metrics: dict[str, Any]) -> dict[str, Any]:
+    if not metrics.get("has_data"):
+        return {"direction": None, "score": 0.0, "confirmed": False, "reason": "Momentum data unavailable.", "components": {}}
+    components = {
+        "above_50d": 15 if metrics.get("above_sma_50") is True else -15,
+        "above_200d": 20 if metrics.get("above_sma_200") is True else -20,
+        "return_3m": _signed_component(metrics.get("return_3m_pct"), 15),
+        "return_6m": _signed_component(metrics.get("return_6m_pct"), 20),
+        "relative_strength": _signed_component(metrics.get("relative_strength_6m_pct"), 15),
+        "return_12m": _signed_component(metrics.get("return_12m_pct"), 15),
+    }
+    net = sum(components.values())
+    bullish_score = max(0.0, min(100.0, 50 + net))
+    bearish_score = max(0.0, min(100.0, 50 - net))
+    if config.SKEW_VERTICAL_ALLOW_BULLISH and bullish_score >= float(config.SKEW_VERTICAL_MIN_MOMENTUM_SCORE):
+        direction, score = "bullish", bullish_score
+    elif config.SKEW_VERTICAL_ALLOW_BEARISH and bearish_score >= float(config.SKEW_VERTICAL_MIN_BEARISH_MOMENTUM_SCORE):
+        direction, score = "bearish", bearish_score
+    else:
+        direction, score = None, max(bullish_score, bearish_score)
+    reason = (
+        f"{direction.title()} momentum confirmed: 3M {_signed(metrics.get('return_3m_pct'))}, "
+        f"6M {_signed(metrics.get('return_6m_pct'))}, "
+        f"{'above' if metrics.get('above_sma_50') else 'below'} 50D and "
+        f"{'above' if metrics.get('above_sma_200') else 'below'} 200D."
+        if direction else "Momentum is mixed or below the configured directional threshold."
+    )
+    return {"direction": direction, "score": round(score, 1), "confirmed": bool(direction), "reason": reason, "components": components}
+
+
+def construct_vertical_candidates(
+    ticker: str,
+    direction: dict[str, Any],
+    underlying_price: float,
+    expiration: str,
+    chain: list[dict[str, Any]],
+    metrics: dict[str, Any] | None = None,
+    earnings_event: dict[str, Any] | None = None,
+    account_context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    option_type = "call" if direction.get("direction") == "bullish" else "put"
+    options = [row for row in chain or [] if str(row.get("option_type") or "").lower() == option_type and _usable_quote(row)]
+    options.sort(key=lambda row: float(row.get("strike") or 0))
+    dte = _dte(expiration)
+    out: list[dict[str, Any]] = []
+    for long_leg in options:
+        long_strike = float(long_leg.get("strike") or 0)
+        if abs(long_strike - underlying_price) / underlying_price * 100 > float(config.SKEW_VERTICAL_MAX_ATM_DISTANCE_PCT):
+            continue
+        long_delta_ok, long_delta_approximated = _delta_eligible(long_leg, underlying_price, "long")
+        if not long_delta_ok:
+            continue
+        for short_leg in options:
+            short_strike = float(short_leg.get("strike") or 0)
+            valid_order = short_strike > long_strike if option_type == "call" else short_strike < long_strike
+            width = abs(short_strike - long_strike)
+            if not valid_order or not (float(config.SKEW_VERTICAL_MIN_WIDTH_DOLLARS) <= width <= float(config.SKEW_VERTICAL_MAX_WIDTH_DOLLARS)):
+                continue
+            short_delta_ok, short_delta_approximated = _delta_eligible(short_leg, underlying_price, "short")
+            if not short_delta_ok:
+                continue
+            row = _candidate_row(ticker, direction, underlying_price, expiration, dte, option_type, long_leg, short_leg, metrics or {}, earnings_event or {}, account_context or {})
+            row["delta_approximated"] = bool(long_delta_approximated or short_delta_approximated)
+            if row["delta_approximated"]:
+                row["provider_notes"].append("Delta unavailable for one or more legs; strike moneyness approximation used.")
+            row["ranking"] = rank_skew_momentum_vertical(row)
+            row["score"] = row["ranking"]["total_score"]
+            out.append(apply_skew_momentum_vertical_verdict(row))
+    return out
+
+
+def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, long_leg, short_leg, metrics, earnings_event, account_context):
+    width = abs(float(short_leg["strike"]) - float(long_leg["strike"]))
+    conservative_debit = float(long_leg["ask"]) - float(short_leg["bid"])
+    mid_debit = float(long_leg["mid"]) - float(short_leg["mid"])
+    max_risk = conservative_debit * 100
+    max_profit = max(0.0, width - conservative_debit) * 100
+    rr = max_profit / max(max_risk, 0.01)
+    financing = float(short_leg["bid"]) / max(float(long_leg["ask"]), 0.01) * 100
+    iv_edge = float(short_leg.get("iv") or 0) - float(long_leg.get("iv") or 0)
+    debit_pct = conservative_debit / width * 100
+    long_spread = _spread_pct(long_leg)
+    short_spread = _spread_pct(short_leg)
+    spread_market_width_pct = max(0.0, conservative_debit - mid_debit) / max(mid_debit, 0.01) * 100
+    liquidity_pass = all([
+        _liquid_leg(long_leg), _liquid_leg(short_leg),
+        long_spread <= float(config.SKEW_VERTICAL_MAX_LEG_SPREAD_PCT),
+        short_spread <= float(config.SKEW_VERTICAL_MAX_LEG_SPREAD_PCT),
+        spread_market_width_pct <= float(config.SKEW_VERTICAL_MAX_SPREAD_MARKET_WIDTH_PCT),
+    ])
+    skew_pass = iv_edge >= float(config.SKEW_VERTICAL_MIN_SHORT_IV_EDGE) and financing >= float(config.SKEW_VERTICAL_MIN_SHORT_PREMIUM_FINANCING_PCT)
+    event_risk = _event_inside(earnings_event, dte)
+    account_value = _first_num(account_context.get("account_value_estimate"))
+    account_risk_pct = max_risk / account_value * 100 if account_value else None
+    requirements = [
+        _req("Momentum confirmation", direction.get("confirmed"), direction.get("reason"), "momentum"),
+        _req("Usable options chain", True, "Same-expiration quoted legs found.", "no_chain"),
+        _req("Liquidity", liquidity_pass, f"Leg spreads {long_spread:.1f}% / {short_spread:.1f}%; OI {long_leg.get('open_interest')}/{short_leg.get('open_interest')}.", "liquidity"),
+        _req("Skew financing", skew_pass, f"Short IV edge {iv_edge:.3f}; short premium finances {financing:.1f}% of long ask.", "skew"),
+        _req("Debit limit", max_risk <= float(config.SKEW_VERTICAL_MAX_DEBIT_DOLLARS) and debit_pct <= float(config.SKEW_VERTICAL_MAX_DEBIT_PCT_OF_WIDTH), f"Conservative debit ${conservative_debit:.2f}; {debit_pct:.1f}% of width.", "debit"),
+        _req("Reward/risk", rr >= float(config.SKEW_VERTICAL_MIN_REWARD_RISK), f"Conservative reward/risk {rr:.2f}.", "reward_risk"),
+        _req("Data quality", bool(long_leg.get("iv") is not None and short_leg.get("iv") is not None), "Tradier quotes and IV present for both legs.", "data_quality"),
+    ]
+    if account_risk_pct is not None:
+        requirements.append(_req("Account risk", account_risk_pct <= float(config.SKEW_VERTICAL_MAX_ACCOUNT_RISK_PCT), f"Max risk is {account_risk_pct:.2f}% of estimated account value.", "debit"))
+    breakeven = float(long_leg["strike"]) + conservative_debit if option_type == "call" else float(long_leg["strike"]) - conservative_debit
+    spread = {
+        "expiration": expiration,
+        "option_type": option_type,
+        "long_strike": float(long_leg["strike"]),
+        "short_strike": float(short_leg["strike"]),
+        "width": width,
+        "conservative_debit": round(conservative_debit, 2),
+        "mid_debit": round(mid_debit, 2),
+    }
+    return {
+        "strategy_id": "skew_momentum_vertical",
+        "strategy_label": "Skew Momentum Vertical",
+        "source": "skew_momentum_vertical_strategy_v1",
+        "ticker": ticker,
+        "direction": direction.get("direction"),
+        "momentum_confirmed": direction.get("confirmed"),
+        "momentum_score": direction.get("score"),
+        "momentum_reason": direction.get("reason"),
+        "skew_pass": skew_pass,
+        "skew_reason": f"Short {option_type} IV edge {iv_edge:.3f}; financing {financing:.1f}% of long premium.",
+        "short_iv_edge": round(iv_edge, 4),
+        "short_premium_financing_pct": round(financing, 1),
+        "possible_spread": spread,
+        "dte": dte,
+        "underlying_price": underlying,
+        "conservative_debit": round(conservative_debit, 2),
+        "mid_debit": round(mid_debit, 2),
+        "max_risk": round(max_risk, 2),
+        "max_profit": round(max_profit, 2),
+        "reward_risk": round(rr, 2),
+        "breakeven": round(breakeven, 2),
+        "debit_pct_of_width": round(debit_pct, 1),
+        "long_leg_spread_pct": round(long_spread, 1),
+        "short_leg_spread_pct": round(short_spread, 1),
+        "spread_market_width_pct": round(spread_market_width_pct, 1),
+        "liquidity_pass": liquidity_pass,
+        "data_quality_pass": bool(long_leg.get("iv") is not None and short_leg.get("iv") is not None),
+        "event_risk": event_risk,
+        "event_risk_allowed": bool(config.SKEW_VERTICAL_ALLOW_EARNINGS_EVENT_RISK),
+        "requirements": requirements,
+        "risk_notes": ([f"Earnings event may fall inside the {dte}-DTE position window."] if event_risk else []) + ["Defined risk equals conservative debit."],
+        "provider_notes": ["Tradier option-chain quotes; conservative debit uses long ask minus short bid."],
+        "primary_reason": f"{direction.get('reason')} {f'Short-wing financing {financing:.1f}% with IV edge {iv_edge:.3f}.'}",
+        "long_leg": long_leg,
+        "short_leg": short_leg,
+        "account_risk_pct": round(account_risk_pct, 2) if account_risk_pct is not None else None,
+        "payload": {"long_leg": long_leg, "short_leg": short_leg, "market_metrics": metrics},
+    }
+
+
+def _finalize(result):
+    for row in result["items"]:
+        row.setdefault("priority", row.get("score"))
+        row.setdefault("risk_notes", [])
+        row.setdefault("provider_notes", [])
+        row.setdefault("payload", {})
+    result["pass_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("PASS")]
+    result["watch_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("WATCH")]
+    result["blocked_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("FAIL")]
+    result["has_data"] = bool(result["items"])
+    result["summary"] = {
+        "candidate_count": len(result["items"]),
+        "pass_count": len(result["pass_items"]),
+        "watch_count": len(result["watch_items"]),
+        "blocked_count": len(result["blocked_items"]),
+        "active_count": len(result.get("active_items") or []),
+        "lifecycle_status": result.get("lifecycle_status"),
+    }
+    return result
+
+
+def _watch_momentum_row(ticker, direction, metrics):
+    return apply_skew_momentum_vertical_verdict({"strategy_id": "skew_momentum_vertical", "strategy_label": "Skew Momentum Vertical", "source": "skew_momentum_vertical_strategy_v1", "ticker": ticker, "direction": None, "score": direction.get("score"), "momentum_score": direction.get("score"), "momentum_confirmed": False, "momentum_reason": direction.get("reason"), "skew_pass": False, "primary_reason": direction.get("reason"), "requirements": [_req("Momentum confirmation", False, direction.get("reason"), "momentum")], "risk_notes": [], "provider_notes": [], "payload": {"market_metrics": metrics}})
+
+
+def _blocked_data_row(ticker, direction, detail):
+    return apply_skew_momentum_vertical_verdict({"strategy_id": "skew_momentum_vertical", "strategy_label": "Skew Momentum Vertical", "source": "skew_momentum_vertical_strategy_v1", "ticker": ticker, "direction": direction.get("direction"), "score": 0, "momentum_confirmed": bool(direction.get("confirmed")), "skew_pass": False, "primary_reason": detail, "requirements": [_req("Data quality", False, detail, "data_quality")], "risk_notes": [], "provider_notes": [detail]})
+
+
+def _blocked_no_vertical_row(ticker, direction, detail):
+    return apply_skew_momentum_vertical_verdict({"strategy_id": "skew_momentum_vertical", "strategy_label": "Skew Momentum Vertical", "source": "skew_momentum_vertical_strategy_v1", "ticker": ticker, "direction": direction.get("direction"), "score": direction.get("score"), "momentum_confirmed": bool(direction.get("confirmed")), "skew_pass": False, "primary_reason": detail, "requirements": [_req("Valid vertical", False, detail, "no_vertical")], "risk_notes": [], "provider_notes": []})
+
+
+def _eligible_expirations(expirations):
+    eligible = [(abs(_dte(raw) - int(config.SKEW_VERTICAL_TARGET_DTE)), str(raw)) for raw in expirations or [] if int(config.SKEW_VERTICAL_MIN_DTE) <= _dte(raw) <= int(config.SKEW_VERTICAL_MAX_DTE)]
+    eligible.sort()
+    return [raw for _, raw in eligible]
+
+
+def _event_inside(event, dte):
+    raw = event.get("earnings_date") or event.get("date")
+    if not raw:
+        return False
+    event_dte = _dte(str(raw))
+    return 0 <= event_dte <= dte and event_dte <= int(config.SKEW_VERTICAL_AVOID_EARNINGS_WITHIN_DAYS)
+
+
+def _dte(raw):
+    try:
+        return (datetime.strptime(str(raw)[:10], "%Y-%m-%d").date() - date.today()).days
+    except ValueError:
+        return -1
+
+
+def _usable_quote(row):
+    return all(_first_num(row.get(key)) and _first_num(row.get(key)) > 0 for key in ("strike", "bid", "ask", "mid"))
+
+
+def _delta_eligible(row, underlying, leg):
+    delta = _first_num(row.get("delta"))
+    if delta is not None:
+        absolute = abs(delta)
+        low = float(config.SKEW_VERTICAL_LONG_DELTA_MIN if leg == "long" else config.SKEW_VERTICAL_SHORT_DELTA_MIN)
+        high = float(config.SKEW_VERTICAL_LONG_DELTA_MAX if leg == "long" else config.SKEW_VERTICAL_SHORT_DELTA_MAX)
+        return low <= absolute <= high, False
+    distance = abs(float(row.get("strike") or 0) - underlying) / max(underlying, 0.01) * 100
+    if leg == "long":
+        return distance <= float(config.SKEW_VERTICAL_MAX_ATM_DISTANCE_PCT), True
+    return distance > 0 and distance <= max(float(config.SKEW_VERTICAL_MAX_ATM_DISTANCE_PCT) * 3, 10), True
+
+
+def _liquid_leg(row):
+    return int(row.get("open_interest") or 0) >= int(config.SKEW_VERTICAL_MIN_OPEN_INTEREST) or int(row.get("volume") or 0) >= int(config.SKEW_VERTICAL_MIN_VOLUME)
+
+
+def _spread_pct(row):
+    return (float(row["ask"]) - float(row["bid"])) / max(float(row["mid"]), 0.01) * 100
+
+
+def _req(name, passed, detail, code):
+    return {"name": name, "status": "PASS" if passed else "FAIL", "detail": str(detail or ""), "code": code}
+
+
+def _signed_component(value, points):
+    number = _first_num(value)
+    if number is None:
+        return 0
+    return points if number > 0 else -points if number < 0 else 0
+
+
+def _signed(value):
+    number = _first_num(value)
+    return "unavailable" if number is None else f"{number:+.1f}%"
+
+
+def _first_num(*values):
+    for value in values:
+        try:
+            if value not in (None, ""):
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None

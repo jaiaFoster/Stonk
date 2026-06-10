@@ -449,12 +449,16 @@ def get_watchlist_tickers(watchlist_names=None, max_tickers=None):
             safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.RUN_TOKEN])
             result["errors"].append(f"get_all_watchlists failed: {safe_error}")
 
-        try:
-            all_watchlist_names_payload = r.account.get_all_watchlists(info="name") or []
-            result["debug"].append(f"get_all_watchlists(info='name') type={type(all_watchlist_names_payload).__name__}")
-        except Exception as e:
-            safe_error = sanitize_for_log(e, [config.ROBINHOOD_PASSWORD, config.RUN_TOKEN])
-            result["debug"].append(f"get_all_watchlists(info='name') unavailable: {safe_error}")
+        # robin_stocks' info="name" projection assumes every row contains a
+        # name key. Some Robinhood payloads do not, so only use that helper as
+        # a fallback after defensively parsing the full response.
+        names_from_full = _discover_watchlist_names(all_watchlists_payload, None)
+        if not names_from_full:
+            try:
+                all_watchlist_names_payload = r.account.get_all_watchlists(info="name") or []
+                result["debug"].append(f"get_all_watchlists(info='name') type={type(all_watchlist_names_payload).__name__}")
+            except Exception:
+                result["debug"].append("get_all_watchlists(info='name') unavailable; using defensive full-payload parsing.")
 
         discovered_names = _discover_watchlist_names(all_watchlists_payload, all_watchlist_names_payload)
         result["available_watchlist_names"] = discovered_names

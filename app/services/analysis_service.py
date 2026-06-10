@@ -57,6 +57,8 @@ from app.services.portfolio_gap_service import build_portfolio_gap_analysis
 from app.services.portfolio_service import get_portfolio_positions_with_status
 from app.services.report_service import format_payload
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
+from app.services.skew_momentum_vertical_service import build_skew_momentum_vertical_strategy
+from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
 from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
 from app.services.watchlist_review_service import review_watchlist_candidates
@@ -374,6 +376,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     portfolio_gap_analysis: dict[str, Any] = {}
     stock_momentum_strategy: dict[str, Any] = {}
     daily_opportunity_engine: dict[str, Any] = {}
+    skew_momentum_vertical_strategy: dict[str, Any] = {}
     calendar_ranking: dict[str, Any] = dict(EMPTY_CALENDAR_RANKING)
     earnings_mini_backtest: dict[str, Any] = dict(EMPTY_EARNINGS_BACKTEST)
     calendar_opportunity_cache: dict[str, Any] = dict(EMPTY_CALENDAR_OPPORTUNITY_CACHE)
@@ -878,6 +881,32 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_stock_momentum_strategy"] = stock_momentum_strategy
 
+    skew_momentum_vertical_strategy = run_optional_step(
+        "skew_momentum_vertical",
+        "Running Skew Momentum Vertical Strategy v1...",
+        lambda: build_skew_momentum_vertical_strategy(
+            positions=positions,
+            watchlist_candidates=watchlist_candidates,
+            portfolio_gap_analysis=portfolio_gap_analysis,
+            market_metrics=market_metrics,
+            earnings_events=earnings_events,
+            account_context=account_context,
+            run_mode=clean_mode,
+            log_print=log_print,
+        ),
+        {"source": "skew_momentum_vertical_strategy_v1", "enabled": True, "has_data": False, "items": [], "pass_items": [], "watch_items": [], "blocked_items": [], "active_items": [], "errors": [], "summary": {}},
+        lambda result: f"Skew momentum vertical strategy produced {len((result or {}).get('items', []) or [])} decision row(s).",
+    )
+    tradier_snapshot["_skew_momentum_vertical_strategy"] = skew_momentum_vertical_strategy
+    skew_vertical_cache = run_optional_step(
+        "skew_vertical_opportunity_cache",
+        "Updating Strategy 2 Opportunity Cache v1...",
+        lambda: cache_skew_momentum_vertical_opportunities((skew_momentum_vertical_strategy or {}).get("items", []) or [], log_print=log_print),
+        {"source": "skew_momentum_vertical_cache_v1", "enabled": True, "has_data": False, "recent": [], "summary": {}, "errors": []},
+        lambda result: f"Strategy 2 opportunity cache wrote {((result or {}).get('summary', {}) or {}).get('write_count', 0)} row(s).",
+    )
+    tradier_snapshot["_skew_momentum_vertical_cache"] = skew_vertical_cache
+
     daily_opportunity_engine = run_optional_step(
         "daily_opportunity",
         "Running Daily Opportunity Engine v1...",
@@ -887,6 +916,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             portfolio_gap_analysis=portfolio_gap_analysis,
             recommendations=recommendations,
             log_print=log_print,
+            skew_momentum_vertical_strategy=skew_momentum_vertical_strategy,
         ),
         {"source": "daily_opportunity_engine_v1", "enabled": True, "has_data": False, "actions": [], "errors": [], "summary": {}},
         lambda result: f"Daily opportunity engine produced {len((result or {}).get('actions', []) or [])} action(s).",

@@ -103,6 +103,16 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_unknown_timestamp_can_pass": getattr(config, "CALENDAR_UNKNOWN_TIMESTAMP_CAN_PASS", False),
         "daily_opportunity_prioritize_active_calendars": getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True),
         "calendar_lifecycle_fetch_underlying_quotes": getattr(config, "CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES", True),
+        "skew_vertical_max_tickers_per_run": config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN,
+        "skew_vertical_dev_max_tickers_per_run": config.SKEW_VERTICAL_DEV_MAX_TICKERS_PER_RUN,
+        "skew_vertical_dte_range": f"{config.SKEW_VERTICAL_MIN_DTE}-{config.SKEW_VERTICAL_MAX_DTE}",
+        "skew_vertical_liquidity": f"OI>={config.SKEW_VERTICAL_MIN_OPEN_INTEREST}; volume>={config.SKEW_VERTICAL_MIN_VOLUME}; leg spread<={config.SKEW_VERTICAL_MAX_LEG_SPREAD_PCT}%",
+        "skew_vertical_skew_thresholds": f"IV edge>={config.SKEW_VERTICAL_MIN_SHORT_IV_EDGE}; financing>={config.SKEW_VERTICAL_MIN_SHORT_PREMIUM_FINANCING_PCT}%",
+        "skew_vertical_max_debit_dollars": config.SKEW_VERTICAL_MAX_DEBIT_DOLLARS,
+        "skew_vertical_max_account_risk_pct": config.SKEW_VERTICAL_MAX_ACCOUNT_RISK_PCT,
+        "skew_vertical_lifecycle_enabled": config.SKEW_VERTICAL_LIFECYCLE_ENABLED,
+        "skew_vertical_opportunity_cache_enabled": config.SKEW_VERTICAL_OPPORTUNITY_CACHE_ENABLED,
+        "skew_vertical_opportunity_db_path": config.SKEW_VERTICAL_OPPORTUNITY_DB_PATH,
     }
 
     enabled_modules = {
@@ -124,6 +134,9 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_trade_type_rules": True,
         "daily_opportunity_active_calendar_priority": getattr(config, "DAILY_OPPORTUNITY_PRIORITIZE_ACTIVE_CALENDARS", True),
         "lifecycle_underlying_quote_enrichment": getattr(config, "CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES", True),
+        "skew_momentum_vertical": config.SKEW_VERTICAL_STRATEGY_ENABLED,
+        "skew_vertical_lifecycle": config.SKEW_VERTICAL_LIFECYCLE_ENABLED,
+        "skew_vertical_opportunity_cache": config.SKEW_VERTICAL_OPPORTUNITY_CACHE_ENABLED,
     }
 
     ready_count = sum(1 for provider in providers.values() if provider["ready"])
