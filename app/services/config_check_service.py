@@ -67,7 +67,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
     if config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED != config.EARNINGS_DISCOVERY_END_DAYS:
         warnings.append(
             f"Railway requested EARNINGS_DISCOVERY_END_DAYS={config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED}; "
-            f"runtime enforced the intended value of {config.EARNINGS_DISCOVERY_END_DAYS} days."
+            f"Railway EARNINGS_DISCOVERY_END_DAYS requests {config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED}, "
+            f"but application minimum is {config.EARNINGS_DISCOVERY_END_DAYS}. Update Railway variable to {config.EARNINGS_DISCOVERY_END_DAYS}."
         )
 
     limits = {

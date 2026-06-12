@@ -34,6 +34,7 @@ install_werkzeug_redaction_filter()
 
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()
+ACTIVE_TRADE_REFRESH_LOCK = threading.Lock()
 RUN_JOBS: dict[str, dict[str, Any]] = {}
 ACTIVE_JOB_ID: str | None = None
 MAX_JOB_AGE_SECONDS = 60 * 60
@@ -99,12 +100,18 @@ def home():
                 summary = json.loads(snapshot.get("summary_json") or "{}")
                 report = summary.get("report_data") or {}
                 payload = json.loads(snapshot.get("payload_json") or '""')
+                report_snapshot = report.get("tradier_snapshot", {}) or {}
+                report_snapshot["_report_snapshot"] = {
+                    "run_id": snapshot.get("run_id"),
+                    "generated_at": snapshot.get("completed_at"),
+                    "source": "persistent snapshot",
+                }
                 return format_html(
                     payload,
                     report.get("positions", []),
                     report.get("news", {}),
                     report.get("recommendations", []),
-                    report.get("tradier_snapshot", {}),
+                    report_snapshot,
                     report.get("log", []),
                 ), 200
         except Exception as exc:
@@ -339,6 +346,8 @@ def refresh_active_trades():
     if not _valid_run_token(token):
         abort(403)
 
+    if not ACTIVE_TRADE_REFRESH_LOCK.acquire(blocking=False):
+        return jsonify({"status": "already_running", "scope": "active_trades_only", "message": "Active trade refresh already in progress."}), 409
     try:
         from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
         from app.services.open_options_service import detect_open_options_positions
@@ -399,6 +408,8 @@ def refresh_active_trades():
         ), 200
     except Exception as e:
         return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
+    finally:
+        ACTIVE_TRADE_REFRESH_LOCK.release()
 
 
 @app.route("/health")

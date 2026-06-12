@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable
+import time
 
 from app import config
 from app.utils.log_safety import sanitize_for_log
 
 LogFn = Callable[[str], None]
+_PROVIDER_FAILURE_SUPPRESS_UNTIL: dict[str, float] = {}
 
 
 def get_candle_history(
@@ -27,6 +29,11 @@ def get_candle_history(
     failures: list[dict[str, str]] = []
 
     for provider_name in config.MARKET_DATA_PROVIDER_ORDER:
+        suppression_key = f"{provider_name}:candles"
+        if _PROVIDER_FAILURE_SUPPRESS_UNTIL.get(suppression_key, 0) > time.monotonic():
+            failures.append({"provider": provider_name, "error": "temporarily suppressed after recent candle failure"})
+            logger(f"[CANDLE] {symbol} skipping {provider_name}: recent candle failure suppressed")
+            continue
         attempted.append(provider_name)
         logger(f"[CANDLE] {symbol} trying {provider_name}")
         try:
@@ -53,6 +60,8 @@ def get_candle_history(
         except Exception as exc:
             safe = str(sanitize_for_log(exc, [config.FINNHUB_API_KEY, config.TRADIER_ACCESS_TOKEN, config.ALPHA_VANTAGE_API_KEY, config.RUN_TOKEN]))
             failures.append({"provider": provider_name, "error": safe})
+            if "403" in safe or "forbidden" in safe.lower() or "too many requests" in safe.lower() or "429" in safe:
+                _PROVIDER_FAILURE_SUPPRESS_UNTIL[suppression_key] = time.monotonic() + max(1, int(config.MARKET_DATA_PROVIDER_ERROR_TTL_SECONDS or 900))
             logger(f"[CANDLE] {symbol} {provider_name} failed: {safe}")
 
     logger(f"[CANDLE] {symbol} all providers failed; market metrics unavailable")

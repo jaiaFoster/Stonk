@@ -6,6 +6,7 @@ from typing import Any
 
 from app import config
 from app.models.market_data_models import StrategyDisplayMetadata, StrategyResult
+from app.services.actionability_service import attach_actionability_to_rows
 from app.services.data_requirement_service import earnings_calendar_requirement, skew_vertical_requirement, stock_momentum_requirement
 
 
@@ -72,6 +73,7 @@ class StockMomentumStrategy:
 
 
 def _normalize(plugin: Any, raw: dict[str, Any], rows: list[dict[str, Any]]) -> StrategyResult:
+    rows = attach_actionability_to_rows(rows)
     def verdict(row: dict[str, Any]) -> str:
         return str(row.get("final_verdict") or row.get("verdict") or row.get("action") or "").upper()
     pass_count = sum(1 for row in rows if verdict(row).startswith(("PASS", "CONSIDER ADDING", "ADD ON")))

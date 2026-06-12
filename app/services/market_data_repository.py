@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -20,14 +21,19 @@ class MarketDataRepository:
         if self.enabled:
             self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path, timeout=5)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout=5000")
-        if config.MARKET_DATA_ENABLE_WAL:
-            conn.execute("PRAGMA journal_mode=WAL")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            if config.MARKET_DATA_ENABLE_WAL:
+                conn.execute("PRAGMA journal_mode=WAL")
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
         try:

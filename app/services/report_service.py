@@ -1062,6 +1062,11 @@ def _top_summary_html(
 ) -> str:
     mode = _first_text(pipeline_status.get("mode"), pipeline_status.get("run_mode"), fallback="dev/prod")
     skew = _skew_vertical_summary(skew_vertical)
+    snapshot = pipeline_status.get("report_snapshot", {}) or {}
+    source_text = (
+        f" · report generated {escape(str(snapshot.get('generated_at')))} · {escape(str(snapshot.get('source')))}"
+        if snapshot.get("generated_at") else ""
+    )
     skew_value = "OFF" if not skew["enabled"] else (
         "0" if skew["row_count"] == 0 else f"{skew['pass_count']}P · {skew['watch_count']}W · {skew['fail_count']}F"
     )
@@ -1069,7 +1074,7 @@ def _top_summary_html(
     <header class="top-summary">
         <div class="summary-title">
             <h1>Stock Advisor</h1>
-            <span>{escape(today)} · read-only decision dashboard</span>
+            <span>{escape(today)} · read-only decision dashboard{source_text}</span>
         </div>
         <div class="summary-chips" aria-label="Run summary">
             {_chip("ACTIVE", active_count, "warn" if active_count else "neutral", "#active-calendars")}
@@ -1277,7 +1282,8 @@ def _skew_vertical_section_html(strategy: dict[str, Any], cache: dict[str, Any])
                         <span class="ticker">{_safe_text(row.get('ticker'), 'UNKNOWN')}</span>
                         <span>{_chip(direction, None, 'neutral')}</span>
                         <span>{_chip(verdict, None, _tone_for_text(verdict))}</span>
-                        <span>Score {number(row.get('score'), 1)}</span>
+                        <span>Actionability {number(row.get('actionability_score'), 1)}</span>
+                        <span>Signal {number(row.get('signal_score') if row.get('signal_score') is not None else row.get('score'), 1)}</span>
                         <span>{escape(structure)}</span>
                         <span>{escape(str(row.get('dte') if row.get('dte') is not None else '—'))} DTE</span>
                     </div>
@@ -1537,7 +1543,7 @@ def _build_skew_vertical_report_export(
                 if spread else "No vertical constructed"
             )
             lines += [
-                f"- {row.get('ticker', 'UNKNOWN')} - {_first_text(row.get('direction'), fallback='Review')} - {row.get('verdict', 'UNKNOWN')} - Score {number(row.get('score'), 1)}",
+                f"- {row.get('ticker', 'UNKNOWN')} - {_first_text(row.get('direction'), fallback='Review')} - {row.get('verdict', 'UNKNOWN')} - Actionability {number(row.get('actionability_score'), 1)} - Signal {number(row.get('signal_score') if row.get('signal_score') is not None else row.get('score'), 1)}",
                 f"  Structure: {structure}",
                 f"  Debit: {option_money(row.get('conservative_debit'))}; Max profit: {money(row.get('max_profit'))}; R/R: {number(row.get('reward_risk'), 2)}",
                 f"  Momentum: {_first_text(row.get('momentum_reason'), fallback='unavailable')}",
@@ -2054,6 +2060,7 @@ def _monitor_debug_section_html(
 
 def _data_coverage_report(coverage: dict[str, Any]) -> str:
     records = coverage.get("records", {}) or {}
+    counters = coverage.get("counters", {}) or {}
     lines = [
         "Shared Market Data Hub",
         f"Mode: {coverage.get('mode', 'unknown')}",
@@ -2065,6 +2072,14 @@ def _data_coverage_report(coverage: dict[str, Any]) -> str:
         f"Derived metrics: {records.get('derived_metrics', 0)}",
         f"Sources: {json.dumps(coverage.get('sources', {}), sort_keys=True)}",
         f"States: {json.dumps(coverage.get('states', {}), sort_keys=True)}",
+        f"Run context hits: {counters.get('run_context_hits', 0)}",
+        f"SQLite cache hits: {counters.get('sqlite_cache_hits', 0)}",
+        f"Provider fetches: {counters.get('provider_fetches', 0)}",
+        f"Stale fallbacks: {counters.get('stale_fallbacks', 0)}",
+        f"Provider failures: {counters.get('provider_failures', 0)}",
+        f"Skipped dev cap: {counters.get('skipped_dev_cap', 0)}",
+        f"Skipped provider budget: {counters.get('skipped_provider_budget', 0)}",
+        f"Duplicate fetches prevented: {counters.get('duplicate_fetches_prevented', 0)}",
     ]
     for strategy, states in (coverage.get("per_strategy", {}) or {}).items():
         lines.append(f"{strategy}: {json.dumps(states, sort_keys=True)}")
@@ -2374,7 +2389,8 @@ def format_html(
 def pipeline_status_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
     if not tradier_snapshot:
         return {}
-    raw = tradier_snapshot.get("_pipeline_status", {}) or {}
+    raw = dict(tradier_snapshot.get("_pipeline_status", {}) or {})
+    raw["report_snapshot"] = dict(tradier_snapshot.get("_report_snapshot", {}) or {})
     return raw if isinstance(raw, dict) else {}
 
 

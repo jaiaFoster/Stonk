@@ -125,7 +125,7 @@ def _skew_vertical_actions(strategy: dict[str, Any]) -> list[dict[str, Any]]:
         out.append({
             "type": "skew_vertical",
             "ticker": row.get("ticker"),
-            "priority_score": float(row.get("priority") or row.get("score") or 0),
+            "priority_score": float(row.get("actionability_score") or row.get("priority") or row.get("score") or 0),
             "action": row.get("verdict"),
             "why": row.get("primary_reason") or row.get("momentum_reason"),
             "next_step": row.get("next_action") or "Recheck live bid/ask before entry.",
@@ -171,7 +171,7 @@ def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:
                 {
                     "type": "calendar",
                     "ticker": row.get("ticker"),
-                    "priority_score": float(row.get("score") or 0),
+                    "priority_score": float(row.get("actionability_score") or row.get("score") or 0),
                     "action": row.get("verdict") or "Calendar review",
                     "why": _calendar_why(row),
                     "next_step": row.get("entry_plan") or row.get("next_action") or "Review live spread quotes before acting.",
