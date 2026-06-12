@@ -288,6 +288,12 @@ def _normalize_option(raw: dict[str, Any], underlying: str, expiration: str) -> 
             greeks.get("bid_iv"),
             greeks.get("ask_iv"),
         ),
+        # Preserve explicit source/provider-adjusted IV only when supplied.
+        # FF never derives or substitutes this field from ordinary raw IV.
+        "ex_earnings_iv": _first_float(raw.get("ex_earnings_iv"), greeks.get("ex_earnings_iv")),
+        "earnings_variance_removed": _first_float(raw.get("earnings_variance_removed"), greeks.get("earnings_variance_removed")),
+        "iv_adjustment_method": raw.get("iv_adjustment_method") or greeks.get("iv_adjustment_method"),
+        "iv_adjustment_version": raw.get("iv_adjustment_version") or greeks.get("iv_adjustment_version"),
         "greeks_updated_at": greeks.get("updated_at"),
         "raw": raw,
     }

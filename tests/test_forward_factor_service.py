@@ -1,17 +1,31 @@
 import math
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from app.services.forward_factor_backtest_service import forward_factor_backtest_status
-from app.services.forward_factor_service import build_forward_factor_strategy, calculate_forward_factor, construct_double_calendar
+from app.services.forward_factor_data_eligibility_service import validate_required_data
+from app.services.forward_factor_service import build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar
 from app.services.strategy_opportunity_repository import opportunity_structure_key
 from app.strategies.registry import normalize_strategy_results
 from app.services.run_data_context_service import create_run_data_context
 from app.services.report_service import format_html
+from app.providers.tradier_provider import _normalize_option
 
 
 def leg(strike, option_type, delta, bid=1.0, ask=1.1, oi=100, volume=10):
-    return {"strike": strike, "option_type": option_type, "delta": delta, "bid": bid, "ask": ask, "open_interest": oi, "volume": volume}
+    return {"strike": strike, "option_type": option_type, "delta": delta, "bid": bid, "ask": ask, "open_interest": oi, "volume": volume, "iv": .4}
+
+
+class FakeFFHub:
+    def __init__(self, payload):
+        self.payload = payload
+        now = datetime.now(timezone.utc).isoformat()
+        self.quote = {"payload": {"last": 500}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
+        self.candles = {"payload": {"bars": [{"close": 500, "volume": 10_000_000}] * 240}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
+    def get_quote(self, *args, **kwargs): return self.quote
+    def get_daily_candles(self, *args, **kwargs): return self.candles
+    def get_derived_metrics(self, *args, **kwargs): return {"average_volume_30d": 10_000_000, "realized_volatility_30d": .2}
+    def get_options_chain_set(self, *args, **kwargs): return {"payload": self.payload}
 
 
 class ForwardFactorTests(unittest.TestCase):
@@ -58,7 +72,7 @@ class ForwardFactorTests(unittest.TestCase):
         back_chain = [leg(95, "put", -.25, 1.4, 1.45), leg(105, "call", .25, 1.4, 1.45)]
         back_iv = math.sqrt((.4 ** 2 * 30 + .48 ** 2 * 60) / 90)
         payload = {"expirations": [front, back], "chains": {front: front_chain, back: back_chain}, "expiration_metrics": {front: {"ex_earnings_iv": .48}, back: {"ex_earnings_iv": back_iv}}}
-        hub = type("Hub", (), {"get_options_chain": lambda *args, **kwargs: {"payload": payload}})()
+        hub = FakeFFHub(payload)
         raw = build_forward_factor_strategy(["SPY"], {"SPY": {"required_market_data_complete": True, "current_price": 500, "average_volume_30d": 10000000}}, hub)
         row = raw["items"][0]
         self.assertTrue(row["verdict"].startswith("DRY RUN PASS"))
@@ -72,6 +86,50 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("FF DRY", html)
         self.assertIn("Forward Factor Calendar Candidates", html)
         self.assertIn("Copy Forward Factor Report", html)
+
+    def test_missing_ex_earnings_iv_keeps_raw_iv_diagnostic_separate(self):
+        front = (date.today() + timedelta(days=60)).isoformat()
+        back = (date.today() + timedelta(days=90)).isoformat()
+        payload = {"expirations": [front, back], "chains": {
+            front: [leg(95, "put", -.35, .95, 1.0), leg(105, "call", .35, .95, 1.0)],
+            back: [leg(95, "put", -.25, 1.4, 1.45), leg(105, "call", .25, 1.4, 1.45)],
+        }}
+        row = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))["items"][0]
+        self.assertEqual(row["verdict"], "FAIL / EX-EARNINGS IV UNAVAILABLE")
+        self.assertIsNotNone(row["diagnostic_raw_iv_forward_factor"])
+        self.assertIsNone(row.get("forward_factor"))
+
+    def test_scenario_grid_is_model_estimate(self):
+        rows = build_scenario_grid(100, 95, 105, 2, 30, .3)
+        self.assertEqual(len(rows), 11)
+        self.assertTrue(all("MODEL ESTIMATE" in row["label"] for row in rows))
+
+    def test_tradier_normalization_preserves_explicit_ex_earnings_iv(self):
+        row = _normalize_option({"strike": 100, "option_type": "call", "greeks": {"delta": .35, "mid_iv": .5, "ex_earnings_iv": .42}}, "SPY", "2030-01-18")
+        self.assertEqual(row["iv"], .5)
+        self.assertEqual(row["ex_earnings_iv"], .42)
+
+    def test_fresh_shared_records_pass_ff_eligibility_without_stock_trend_metrics(self):
+        hub = FakeFFHub({})
+        result = validate_required_data(hub.quote, hub.candles, {"average_volume_30d": 10_000_000})
+        self.assertTrue(result["eligible"])
+        self.assertEqual(result["data_state"], "COMPLETE")
+
+    def test_timezone_naive_timestamp_does_not_false_stale(self):
+        hub = FakeFFHub({})
+        hub.quote["fetched_at"] = datetime.now().isoformat()
+        result = validate_required_data(hub.quote, hub.candles, {"average_volume_30d": 10_000_000})
+        self.assertTrue(result["eligible"])
+
+    def test_missing_volume_names_exact_field(self):
+        hub = FakeFFHub({})
+        result = validate_required_data(hub.quote, {"payload": {"bars": [{"close": 500}] * 240}, "fresh": True}, {})
+        self.assertFalse(result["eligible"])
+        self.assertIn("average_volume_30d", result["missing_fields"])
+
+    def test_planned_provider_budget_is_skip_not_stale(self):
+        result = validate_required_data(None, None, {}, planned_state="SKIPPED_PROVIDER_BUDGET")
+        self.assertEqual(result["data_state"], "SKIPPED_PROVIDER_BUDGET")
 
 
 if __name__ == "__main__":

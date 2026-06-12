@@ -40,10 +40,9 @@ def earnings_calendar_requirement(tickers: list[str]) -> StrategyDataRequirement
 def forward_factor_requirement(tickers: list[str]) -> StrategyDataRequirement:
     return StrategyDataRequirement(
         strategy_id="forward_factor_calendar", tickers=tickers, needs_quote=True,
-        needs_daily_candles=True, min_daily_bars=240, needs_options_chain=True,
-        min_dte=config.FF_FRONT_DTE_MIN, max_dte=config.FF_BACK_DTE_MAX,
-        expirations_per_ticker=6, needs_earnings_event=True, earnings_lookahead_days=120,
+        needs_daily_candles=True, min_daily_bars=240, needs_options_chain=False,
+        needs_earnings_event=True, earnings_lookahead_days=120,
         required_derived_metrics=["average_volume_30d", "realized_volatility_30d"],
         priority=85,
-        reason="Forward Factor requires two term expirations, ex-earnings IV, matched ±35-delta calendars, and liquidity data.",
+        reason="Forward Factor cheap stage requires quote, candles, average volume, and earnings context before expensive chain requests.",
     )

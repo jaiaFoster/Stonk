@@ -15,6 +15,7 @@ def build_data_coverage(context: Any) -> dict[str, Any]:
         if strategy:
             per_strategy[strategy][row.get("state", "COMPLETE")] += 1
     counters = {
+        "requested": len(context.fetch_audit),
         "run_context_hits": sources.get("run_cache", 0),
         "sqlite_cache_hits": sources.get("sqlite_cache", 0),
         "provider_fetches": sources.get("provider", 0),
@@ -24,6 +25,7 @@ def build_data_coverage(context: Any) -> dict[str, Any]:
         "skipped_dev_cap": states.get("SKIPPED_DEV_CAP", 0),
         "skipped_provider_budget": states.get("SKIPPED_PROVIDER_BUDGET", 0),
         "duplicate_fetches_prevented": sources.get("run_cache", 0),
+        "optional_deferred": states.get("MISSING_NOT_REQUESTED", 0),
     }
     strategy_summary = {}
     for strategy, values in per_strategy.items():

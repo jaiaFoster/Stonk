@@ -13,6 +13,7 @@ source_reported:
     put: -0.35
     call: 0.35
   volatility_input: ex_earnings_iv
+  ex_earnings_adjustment_method: SOURCE_UNSPECIFIED
   formula: "(front_ex_earnings_iv - implied_forward_iv) / implied_forward_iv"
 entry:
   exact_source_rule: SOURCE_UNSPECIFIED

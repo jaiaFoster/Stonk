@@ -975,6 +975,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             data_hub=hub,
             run_mode=clean_mode,
             log_print=log_print,
+            requirement_plan=requirement_plan,
         ),
         {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": True, "dry_run": True, "items": [], "rows": [], "errors": []},
         lambda result: f"Forward Factor produced {len((result or {}).get('items', []) or [])} dry-run decision row(s).",
@@ -1006,6 +1007,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "forward_factor_calendar": forward_factor_strategy,
             "stock_momentum": stock_momentum_strategy,
         },
+        log_print=log_print,
     )
     run_context.strategy_results = normalized_strategy_results
     coverage = build_data_coverage(run_context)
