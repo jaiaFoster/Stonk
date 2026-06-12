@@ -24,6 +24,7 @@ def build_skew_momentum_vertical_strategy(
     run_mode: str = "prod",
     log_print: LogFn | None = None,
     provider: TradierProvider | None = None,
+    data_hub: Any | None = None,
 ) -> dict[str, Any]:
     logger = log_print or (lambda msg: None)
     result = {
@@ -49,7 +50,7 @@ def build_skew_momentum_vertical_strategy(
         result["errors"].append("SKEW_VERTICAL_STRATEGY_ENABLED=false")
         return _finalize(result)
     provider = provider or TradierProvider()
-    if not provider.is_configured:
+    if not provider.is_configured and data_hub is None:
         result["errors"].append("Tradier token unavailable; Strategy 2 requires live option-chain data.")
         return _finalize(result)
 
@@ -58,12 +59,36 @@ def build_skew_momentum_vertical_strategy(
     logger(f"Strategy 2 Skew Momentum Vertical scanning {len(universe)} capped ticker(s): {universe}")
     for ticker in universe:
         metrics = (market_metrics or {}).get(ticker) or {}
+        if not metrics.get("has_data") and data_hub is not None:
+            shared = data_hub.get_derived_metrics(
+                ticker,
+                metrics=["momentum_3m", "momentum_6m", "momentum_12m", "sma_50", "sma_200", "relative_strength_vs_QQQ"],
+                required=True,
+                strategy_id="skew_momentum_vertical",
+            )
+            quote_record = data_hub.get_quote(ticker, required=True, strategy_id="skew_momentum_vertical")
+            quote_payload = _record_payload(quote_record)
+            last = _first_num(quote_payload.get("last"), quote_payload.get("close"), quote_payload.get("bid"))
+            if any(shared.get(key) is not None for key in ("momentum_3m", "momentum_6m", "sma_50", "sma_200")):
+                metrics = {
+                    "has_data": True,
+                    "return_3m_pct": shared.get("momentum_3m"),
+                    "return_6m_pct": shared.get("momentum_6m"),
+                    "return_12m_pct": shared.get("momentum_12m"),
+                    "relative_strength_6m_pct": shared.get("relative_strength_vs_QQQ"),
+                    "above_sma_50": last > shared["sma_50"] if last is not None and shared.get("sma_50") else None,
+                    "above_sma_200": last > shared["sma_200"] if last is not None and shared.get("sma_200") else None,
+                    "data_source": "market_data_hub",
+                }
         direction = momentum_direction(metrics)
         if not direction["direction"]:
-            result["items"].append(_watch_momentum_row(ticker, direction, metrics))
+            if not metrics.get("has_data"):
+                result["items"].append(_blocked_data_row(ticker, direction, "Required momentum/candle data unavailable; strategy signal was not evaluated."))
+            else:
+                result["items"].append(_watch_momentum_row(ticker, direction, metrics))
             continue
         try:
-            quote = (provider.get_quotes([ticker], greeks=False) or {}).get(ticker, {})
+            quote = _record_payload(data_hub.get_quote(ticker, required=True, strategy_id="skew_momentum_vertical")) if data_hub is not None else (provider.get_quotes([ticker], greeks=False) or {}).get(ticker, {})
             underlying = _first_num(quote.get("last"), quote.get("close"), quote.get("bid"))
             if not underlying or underlying < float(config.SKEW_VERTICAL_MIN_UNDERLYING_PRICE):
                 result["items"].append(_blocked_data_row(ticker, direction, "Underlying quote missing or below configured minimum."))
@@ -72,10 +97,20 @@ def build_skew_momentum_vertical_strategy(
             if average_volume is not None and average_volume < float(config.SKEW_VERTICAL_MIN_AVERAGE_VOLUME):
                 result["items"].append(_blocked_data_row(ticker, direction, f"Average stock volume {average_volume:.0f} is below the configured minimum."))
                 continue
-            expirations = _eligible_expirations(provider.get_expirations(ticker))[: max(1, int(config.SKEW_VERTICAL_EXPIRATIONS_PER_TICKER))]
+            shared_chain = data_hub.get_options_chain(
+                ticker,
+                min_dte=config.SKEW_VERTICAL_MIN_DTE,
+                max_dte=config.SKEW_VERTICAL_MAX_DTE,
+                expirations=config.SKEW_VERTICAL_EXPIRATIONS_PER_TICKER,
+                required=True,
+                strategy_id="skew_momentum_vertical",
+            ) if data_hub is not None else None
+            chain_payload = _record_payload(shared_chain)
+            raw_expirations = chain_payload.get("expirations") if data_hub is not None else provider.get_expirations(ticker)
+            expirations = _eligible_expirations(raw_expirations or [])[: max(1, int(config.SKEW_VERTICAL_EXPIRATIONS_PER_TICKER))]
             candidates: list[dict[str, Any]] = []
             for expiration in expirations:
-                chain = provider.get_option_chain(ticker, expiration, greeks=True)
+                chain = (chain_payload.get("chains") or {}).get(expiration, []) if data_hub is not None else provider.get_option_chain(ticker, expiration, greeks=True)
                 candidates.extend(
                     construct_vertical_candidates(
                         ticker=ticker,
@@ -313,6 +348,13 @@ def _blocked_data_row(ticker, direction, detail):
 
 def _blocked_no_vertical_row(ticker, direction, detail):
     return apply_skew_momentum_vertical_verdict({"strategy_id": "skew_momentum_vertical", "strategy_label": "Skew Momentum Vertical", "source": "skew_momentum_vertical_strategy_v1", "ticker": ticker, "direction": direction.get("direction"), "score": direction.get("score"), "momentum_confirmed": bool(direction.get("confirmed")), "skew_pass": False, "primary_reason": detail, "requirements": [_req("Valid vertical", False, detail, "no_vertical")], "risk_notes": [], "provider_notes": []})
+
+
+def _record_payload(record):
+    if not isinstance(record, dict):
+        return {}
+    payload = record.get("payload")
+    return payload if isinstance(payload, dict) else record
 
 
 def _eligible_expirations(expirations):

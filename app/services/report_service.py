@@ -477,6 +477,8 @@ def format_payload(
     stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
     skew_vertical = skew_momentum_vertical_from_tradier_snapshot(tradier_snapshot)
     skew_vertical_cache = _snapshot_dict(tradier_snapshot, "_skew_momentum_vertical_cache")
+    data_coverage = _snapshot_dict(tradier_snapshot, "_data_coverage")
+    strategy_results = _snapshot_dict(tradier_snapshot, "_strategy_results")
     daily_opportunity = daily_opportunity_from_tradier_snapshot(tradier_snapshot)
     calendar_ranking = calendar_ranking_from_tradier_snapshot(tradier_snapshot)
     earnings_mini_backtest = earnings_mini_backtest_from_tradier_snapshot(tradier_snapshot)
@@ -523,6 +525,17 @@ def format_payload(
 
     lines += ["", "=== SKEW MOMENTUM VERTICAL STRATEGY V1 ==="]
     lines.extend(format_skew_momentum_vertical_text(skew_vertical, skew_vertical_cache))
+
+    lines += ["", "=== SHARED MARKET DATA COVERAGE ==="]
+    lines.extend(_data_coverage_report(data_coverage).splitlines())
+
+    lines += ["", "=== STRATEGY REGISTRY RESULTS ==="]
+    if strategy_results:
+        for result in strategy_results.values():
+            lines.extend(_generic_strategy_report(result).splitlines())
+            lines.append("")
+    else:
+        lines.append("No normalized strategy registry results available.")
 
     lines += ["", "=== WATCHLIST STOCK CANDIDATE REVIEW V2 ==="]
     if not watchlist_review or not watchlist_review.get("items"):
@@ -1664,6 +1677,11 @@ def _provider_status_text(provider_status: dict[str, Any]) -> str:
 
 def _export_toolbar_html(exports: dict[str, str]) -> str:
     exports_json = escape(json.dumps(exports), quote=False)
+    strategy_buttons = "".join(
+        f'<button type="button" class="export-btn" onclick="copyExport(\'{escape(key)}\')">Copy {escape(key.removeprefix("strategy_").replace("_", " ").title())} Report</button>'
+        for key in exports
+        if key.startswith("strategy_")
+    )
     return f"""
     <section class="report-section" id="exports">
         <div class="section-head">
@@ -1680,6 +1698,9 @@ def _export_toolbar_html(exports: dict[str, str]) -> str:
                 <button type="button" class="export-btn" onclick="copyExport('optionsStrategiesReport')">Copy Options Strategies Report</button>
                 <button type="button" class="export-btn" onclick="copyExport('holdingsReport')">Copy Holdings Report</button>
                 <button type="button" class="export-btn" onclick="copyExport('potentialAdds')">Copy Potential Adds</button>
+                <button type="button" class="export-btn" onclick="copyExport('dataCoverage')">Copy Data Coverage Report</button>
+                {strategy_buttons}
+                <button type="button" class="export-btn" onclick="refreshMarketData()">Refresh Market Data</button>
                 <button type="button" class="export-btn" onclick="downloadExport('fullDebugPayload', 'algo-stock-advisor-full-debug-payload.txt')">Download Full Debug Payload</button>
             </div>
             <textarea id="copyFallback" class="fallback-copy" aria-label="Copy fallback text"></textarea>
@@ -1750,6 +1771,18 @@ def _dashboard_script_html() -> str:
             } catch (err) {
                 status.textContent = 'failure: ' + err.message;
                 showToast('Active refresh failed: ' + err.message, true);
+            }
+        }
+        async function refreshMarketData() {
+            const token = new URLSearchParams(window.location.search).get('token') || '';
+            try {
+                const response = await fetch('/refresh-market-data?token=' + encodeURIComponent(token), { cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.message || 'Refresh unavailable.');
+                showToast('Market refresh ready. Opening refresh run.', false);
+                window.location.href = data.redirect_url;
+            } catch (err) {
+                showToast('Market refresh failed: ' + err.message, true);
             }
         }
     </script>"""
@@ -1977,8 +2010,18 @@ def _monitor_debug_section_html(
     payload_debug_html: str,
     log_debug_html: str,
     skew_vertical_summary_html: str,
+    data_coverage_html: str,
+    strategy_registry_html: str,
 ) -> str:
     body = f"""
+        <details class="debug-details">
+            <summary>Strategy Registry</summary>
+            {strategy_registry_html}
+        </details>
+        <details class="debug-details">
+            <summary>Shared Market Data Hub</summary>
+            {data_coverage_html}
+        </details>
         <details class="debug-details">
             <summary>Strategy 2 Summary</summary>
             {skew_vertical_summary_html}
@@ -2007,6 +2050,61 @@ def _monitor_debug_section_html(
         {log_debug_html}
     """
     return _section("monitor-debug", "Monitor / Debug", "Provider details, raw tables, payload, and run log are collapsed by default.", body, None)
+
+
+def _data_coverage_report(coverage: dict[str, Any]) -> str:
+    records = coverage.get("records", {}) or {}
+    lines = [
+        "Shared Market Data Hub",
+        f"Mode: {coverage.get('mode', 'unknown')}",
+        f"Requested tickers: {coverage.get('requested_tickers', 0)}",
+        f"Quotes: {records.get('quotes', 0)}",
+        f"Daily candles: {records.get('candles', 0)}",
+        f"Options chains: {records.get('options_chains', 0)}",
+        f"Earnings events: {records.get('earnings_events', 0)}",
+        f"Derived metrics: {records.get('derived_metrics', 0)}",
+        f"Sources: {json.dumps(coverage.get('sources', {}), sort_keys=True)}",
+        f"States: {json.dumps(coverage.get('states', {}), sort_keys=True)}",
+    ]
+    for strategy, states in (coverage.get("per_strategy", {}) or {}).items():
+        lines.append(f"{strategy}: {json.dumps(states, sort_keys=True)}")
+    return "\n".join(lines)
+
+
+def _data_coverage_html(coverage: dict[str, Any]) -> str:
+    return f"<pre>{escape(_data_coverage_report(coverage))}</pre>"
+
+
+def _generic_strategy_report(result: dict[str, Any]) -> str:
+    lines = [
+        f"{result.get('strategy_label', result.get('strategy_id', 'Strategy'))} Report",
+        f"Version: {result.get('version', 'unknown')}",
+        f"Enabled: {result.get('enabled', False)}",
+        f"Ran: {result.get('ran', False)}",
+        f"Rows: {len(result.get('rows', []) or [])}",
+        f"Pass / Watch / Fail / Skipped: {result.get('pass_count', 0)} / {result.get('watch_count', 0)} / {result.get('fail_count', 0)} / {result.get('skipped_count', 0)}",
+    ]
+    for row in (result.get("rows", []) or [])[:20]:
+        lines.append(
+            f"- {row.get('ticker', row.get('symbol', 'UNKNOWN'))}: "
+            f"{row.get('final_verdict') or row.get('verdict') or row.get('action') or 'UNKNOWN'} | "
+            f"{row.get('primary_blocker') or row.get('primary_reason') or row.get('why') or ''}"
+        )
+    return "\n".join(lines)
+
+
+def _strategy_registry_html(results: dict[str, Any], opportunities: dict[str, Any]) -> str:
+    cells = []
+    for result in results.values():
+        cells.append((
+            result.get("strategy_label", result.get("strategy_id", "Strategy")),
+            f"{result.get('pass_count', 0)}P · {result.get('watch_count', 0)}W · {result.get('fail_count', 0)}F · {result.get('skipped_count', 0)}S",
+        ))
+    cells.append(("Generic opportunities", f"wrote {opportunities.get('write_count', 0)} · recent {len(opportunities.get('recent', []) or [])}"))
+    return '<div class="metric-grid">' + "".join(
+        f'<div class="metric"><span class="label">{escape(str(label))}</span><span class="value">{escape(str(value))}</span></div>'
+        for label, value in cells
+    ) + "</div>"
 
 
 def _skew_vertical_monitor_summary_html(strategy: dict[str, Any], cache: dict[str, Any], daily_opportunity: dict[str, Any]) -> str:
@@ -2110,6 +2208,9 @@ def format_html(
     candle_status = _snapshot_dict(parsed_tradier_snapshot, "_candle_status")
     opportunity_cache = _snapshot_dict(parsed_tradier_snapshot, "_calendar_opportunity_cache")
     skew_vertical_cache = _snapshot_dict(parsed_tradier_snapshot, "_skew_momentum_vertical_cache")
+    data_coverage = _snapshot_dict(parsed_tradier_snapshot, "_data_coverage")
+    strategy_results = _snapshot_dict(parsed_tradier_snapshot, "_strategy_results")
+    strategy_opportunities = _snapshot_dict(parsed_tradier_snapshot, "_strategy_opportunity_registry")
     earnings_quality = _snapshot_dict(parsed_tradier_snapshot, "_earnings_discovery_quality")
     pipeline_status = pipeline_status_from_tradier_snapshot(parsed_tradier_snapshot)
     provider_status = _normalized_provider_status(
@@ -2163,8 +2264,11 @@ def format_html(
         "optionsStrategiesReport": _build_options_strategies_report_export(active_rows, unified_calendar_engine, blocked_rows, skew_vertical, provider_status),
         "holdingsReport": _build_holdings_report_export(display_recommendations),
         "potentialAdds": _build_potential_adds_export(potential_groups),
+        "dataCoverage": _data_coverage_report(data_coverage),
         "fullDebugPayload": payload,
     }
+    for strategy_id, result in strategy_results.items():
+        exports[f"strategy_{strategy_id}"] = _generic_strategy_report(result)
 
     top_summary_html = _top_summary_html(
         today=today,
@@ -2218,6 +2322,8 @@ def format_html(
         payload_debug_html=payload_debug_html,
         log_debug_html=log_debug_html,
         skew_vertical_summary_html=_skew_vertical_monitor_summary_html(skew_vertical, skew_vertical_cache, daily_opportunity),
+        data_coverage_html=_data_coverage_html(data_coverage),
+        strategy_registry_html=_strategy_registry_html(strategy_results, strategy_opportunities),
     )
 
     return f"""<!DOCTYPE html>

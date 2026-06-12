@@ -13,6 +13,7 @@ The pipeline internals are now cleaner and more explicit:
 from __future__ import annotations
 
 import traceback
+from dataclasses import asdict
 from typing import Any, Callable
 
 from app import config
@@ -28,6 +29,8 @@ from app.services.earnings_service import discover_upcoming_earnings_for_calenda
 from app.services.earnings_mini_backtest_service import build_earnings_mini_backtest
 from app.services.candle_service import get_candle_history
 from app.services.market_data_service import get_market_metrics_for_positions
+from app.services.market_data_hub_service import MarketDataHub
+from app.services.market_data_repository import MarketDataRepository
 from app.services.open_options_service import detect_open_options_positions
 from app.services.pipeline_helpers import (
     calendar_max_tickers_for_mode,
@@ -56,6 +59,12 @@ from app.services.pipeline_status_service import (
 from app.services.portfolio_gap_service import build_portfolio_gap_analysis
 from app.services.portfolio_service import get_portfolio_positions_with_status
 from app.services.report_service import format_payload
+from app.services.report_snapshot_service import ReportSnapshotRepository
+from app.services.run_data_context_service import create_run_data_context
+from app.services.data_coverage_service import build_data_coverage
+from app.services.data_requirement_planner import DataRequirementPlanner
+from app.services.strategy_opportunity_repository import StrategyOpportunityRepository
+from app.services.strategy_execution_service import collect_strategy_results
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
 from app.services.skew_momentum_vertical_service import build_skew_momentum_vertical_strategy
 from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
@@ -64,6 +73,7 @@ from app.services.unified_calendar_trade_engine_service import build_unified_cal
 from app.services.watchlist_review_service import review_watchlist_candidates
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
+from app.strategies.registry import collect_requirements
 from app.utils.log_safety import sanitize_for_log
 
 
@@ -396,6 +406,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     clean_mode = normalize_run_mode(run_mode)
     pipeline_status = new_pipeline_status(clean_mode)
+    run_context = create_run_data_context(clean_mode)
+    market_data_repository = MarketDataRepository()
 
     def log_print(msg: str) -> None:
         safe_msg = sanitize_for_log(
@@ -416,6 +428,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     def attach_status() -> None:
         tradier_snapshot["_pipeline_status"] = pipeline_status
         tradier_snapshot["_provider_status"] = provider_status
+        tradier_snapshot["_run_data_context"] = run_context.to_summary()
 
     def run_optional_step(
         key: str,
@@ -525,6 +538,19 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     analysis_positions = merge_watchlist_universe_positions(positions, watchlist_candidates)
     analysis_tickers = list(dict.fromkeys(p.get("ticker") for p in analysis_positions if p.get("ticker")))
+    run_context.analysis_tickers = analysis_tickers
+    strategy_requirements = collect_requirements(run_context)
+    requirement_plan = DataRequirementPlanner(
+        clean_mode,
+        dev_ticker_cap=config.DEV_MAX_TICKERS if clean_mode == "dev" else None,
+    ).merge(strategy_requirements)
+    run_context.requirements = {item.strategy_id: asdict(item) for item in strategy_requirements}
+    tradier_snapshot["_strategy_requirement_plan"] = requirement_plan
+    for ticker in requirement_plan["skipped_tickers"]:
+        for strategy_id in requirement_plan["by_ticker"][ticker]["strategies"]:
+            run_context.audit(ticker, "requirements", "skipped", state="SKIPPED_DEV_CAP", strategy_id=strategy_id)
+    log_print(f"DataRequirementPlanner: received {len(strategy_requirements)} strategy requirement set(s)")
+    log_print(f"DataRequirementPlanner: merged requirements for {requirement_plan['ticker_count']} ticker(s)")
     watchlist_tickers = [item.get("ticker") for item in (watchlist_candidates or {}).get("items", []) if item.get("ticker")]
     if watchlist_tickers:
         log_print(f"Watchlist tickers added to scan universe: {watchlist_tickers}")
@@ -573,6 +599,9 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         {},
         lambda result: f"Market metrics available for {sum(1 for item in (result or {}).values() if item.get('has_data'))}/{len(result or {})} ticker(s).",
     )
+    hub = MarketDataHub(run_context, repository=market_data_repository, log_print=log_print)
+    for ticker, metrics in market_metrics.items():
+        hub.seed("derived_metrics", ticker, metrics, provider=str(metrics.get("candle_provider") or metrics.get("source") or "legacy_pipeline"))
 
     earnings_events = run_optional_step(
         "earnings_timestamp",
@@ -629,6 +658,15 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     }
     tradier_snapshot["_earnings_trade_discovery"] = earnings_trade_discovery
     tradier_snapshot["_earnings_discovery_quality"] = earnings_discovery_quality
+    for ticker, event in earnings_events.items():
+        hub.seed("earnings_event", ticker, event, provider=str(event.get("provider") or "legacy_pipeline"))
+    for ticker, snapshot_row in list(tradier_snapshot.items()):
+        if str(ticker).startswith("_") or not isinstance(snapshot_row, dict):
+            continue
+        if snapshot_row.get("quote"):
+            hub.seed("quote", ticker, snapshot_row["quote"], provider="tradier")
+        if snapshot_row.get("chains") or snapshot_row.get("option_chains"):
+            hub.seed("options_chain", ticker, snapshot_row.get("chains") or snapshot_row.get("option_chains"), provider="tradier")
 
     def run_calendar_scan() -> list[dict[str, Any]]:
         discovery_tickers = [str(t).upper().strip() for t in (earnings_discovery_quality or {}).get("tickers", []) if str(t).strip()]
@@ -672,6 +710,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "universe_source": "earnings_discovery_v1",
     }
     tradier_snapshot["_candle_status"] = candle_status
+    for ticker, status in candle_status.items():
+        if status.get("provider"):
+            history = get_candle_history(ticker, log_print=log_print)
+            if history.get("bars"):
+                hub.seed("candles", ticker, history, provider=str(history.get("provider") or "calendar_rescue"))
 
     earnings_calendar_strategy = run_optional_step(
         "earnings_calendar_strategy",
@@ -893,6 +936,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             account_context=account_context,
             run_mode=clean_mode,
             log_print=log_print,
+            data_hub=hub,
         ),
         {"source": "skew_momentum_vertical_strategy_v1", "enabled": True, "has_data": False, "items": [], "pass_items": [], "watch_items": [], "blocked_items": [], "active_items": [], "errors": [], "summary": {}},
         lambda result: f"Skew momentum vertical strategy produced {len((result or {}).get('items', []) or [])} decision row(s).",
@@ -923,6 +967,30 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_daily_opportunity_engine"] = daily_opportunity_engine
 
+    normalized_strategy_results = collect_strategy_results(
+        run_context,
+        {
+            "earnings_calendar": unified_calendar_engine,
+            "skew_momentum_vertical": skew_momentum_vertical_strategy,
+            "stock_momentum": stock_momentum_strategy,
+        },
+    )
+    run_context.strategy_results = normalized_strategy_results
+    coverage = build_data_coverage(run_context)
+    run_context.coverage = coverage
+    tradier_snapshot["_strategy_results"] = normalized_strategy_results
+    tradier_snapshot["_data_coverage"] = coverage
+    try:
+        market_data_repository.save_coverage(run_context.run_id, coverage)
+        opportunity_repository = StrategyOpportunityRepository()
+        write_count = opportunity_repository.upsert_results(normalized_strategy_results)
+        tradier_snapshot["_strategy_opportunity_registry"] = {
+            "write_count": write_count,
+            "recent": opportunity_repository.recent(20),
+        }
+    except Exception as exc:
+        log_print(f"Shared foundation persistence warning: {exc}")
+
     begin_step(pipeline_status, "format_payload", "Formatting payload")
     log_print("Formatting payload...")
     try:
@@ -934,6 +1002,27 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         complete_step(pipeline_status, "format_payload", f"Payload formatted: {len(payload)} chars.")
         finish_pipeline(pipeline_status, "complete")
         attach_status()
+        try:
+            ReportSnapshotRepository().save_success(
+                run_context.run_id,
+                clean_mode,
+                payload,
+                {
+                    "strategy_results": normalized_strategy_results,
+                    "pipeline_status": pipeline_status,
+                    "report_data": {
+                        "positions": positions,
+                        "news": news,
+                        "recommendations": recommendations,
+                        "tradier_snapshot": tradier_snapshot,
+                        "log": log,
+                    },
+                },
+                coverage,
+                provider_status,
+            )
+        except Exception as exc:
+            log_print(f"Report snapshot persistence warning: {exc}")
     except Exception as exc:
         log_print(f"ERROR in format_payload: {exc}\n{traceback.format_exc()}")
         fail_step(pipeline_status, "format_payload", f"Report payload formatting failed: {exc}")

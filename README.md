@@ -555,6 +555,17 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Monitor payload copy now uses the same toast/fallback behavior as purpose-specific exports.
 - Details: `docs/mega_patch_cleanup_v1_dashboard_hygiene.md`.
 
+### Shared Market Data and Strategy Foundation
+
+- `RunDataContext` reuses facts inside one run.
+- `MarketDataHub` checks run cache, SQLite freshness, then providers under one request budget.
+- SQLite stores reusable facts, provenance, TTLs, provider errors, coverage, completed report snapshots, and generic strategy opportunity history.
+- Shared daily-candle metrics include momentum, SMA, volume, realized volatility, and relative strength.
+- Missing provider data, stale cache, provider-budget skips, and dev-cap skips remain distinct from weak strategy signals.
+- Calendar, Skew Momentum Vertical, and Stock Momentum publish requirements and normalized results through an explicit local strategy registry.
+- Opening `/?token=...` loads the latest successful report snapshot without provider calls.
+- Details: `docs/shared_market_data_foundation_v1.md` and `docs/strategy_registry_foundation_v1.md`.
+
 ### Railway start command
 
 The app uses `start.sh` via `railway.toml` so Railway expands `$PORT` safely at runtime.
