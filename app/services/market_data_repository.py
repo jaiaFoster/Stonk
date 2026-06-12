@@ -122,6 +122,28 @@ class MarketDataRepository:
         except (sqlite3.DatabaseError, ValueError, json.JSONDecodeError):
             return None
 
+    def find_records(self, ticker: str, data_type: str, allow_stale: bool = False) -> list[MarketDataRecord]:
+        if not self.enabled:
+            return []
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM market_data_records WHERE ticker=? AND data_type=? ORDER BY fetched_at DESC",
+                    (ticker.upper(), data_type),
+                ).fetchall()
+            records = []
+            for row in rows:
+                fresh = datetime.fromisoformat(row["expires_at"]) >= datetime.now(timezone.utc)
+                if fresh or allow_stale:
+                    records.append(MarketDataRecord(
+                        ticker=row["ticker"], data_type=row["data_type"], payload=json.loads(row["payload_json"]),
+                        provider=row["provider"], fetched_at=row["fetched_at"], expires_at=row["expires_at"],
+                        confidence=row["confidence"], fresh=fresh, state="COMPLETE" if fresh else "STALE_CACHE_USED",
+                    ))
+            return records
+        except (sqlite3.DatabaseError, ValueError, json.JSONDecodeError):
+            return []
+
     def log_fetch(self, run_id: str, ticker: str, data_type: str, provider: str, status: str, source: str, error: str = "") -> None:
         if not self.enabled:
             return

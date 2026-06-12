@@ -579,6 +579,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     analysis_positions = merge_watchlist_universe_positions(positions, watchlist_candidates)
     analysis_tickers = list(dict.fromkeys(p.get("ticker") for p in analysis_positions if p.get("ticker")))
     run_context.analysis_tickers = analysis_tickers
+    run_context.analysis_positions = analysis_positions
     hub = MarketDataHub(run_context, repository=market_data_repository, log_print=log_print)
     strategy_requirements = collect_requirements(run_context)
     planner = DataRequirementPlanner(
@@ -586,7 +587,12 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         dev_ticker_cap=config.DEV_MAX_TICKERS if clean_mode == "dev" else None,
     )
     log_print(f"StrategyRegistry: collecting requirements for {len(strategy_requirements)} strategy plugins")
-    requirement_plan = planner.merge(strategy_requirements, provider_budget=hub.budget.remaining)
+    ff_chain_reserve = min(
+        hub.budget.remaining,
+        config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if clean_mode == "dev" else config.FF_MAX_CHAIN_TICKERS_PER_RUN,
+    )
+    requirement_plan = planner.merge(strategy_requirements, provider_budget=max(0, hub.budget.remaining - ff_chain_reserve))
+    requirement_plan["forward_factor_chain_reserve"] = ff_chain_reserve
     log_print(f"DataRequirementPlanner: received {len(strategy_requirements)} strategy requirement set(s)")
     log_print(f"DataRequirementPlanner: merged requirements for {requirement_plan['ticker_count']} ticker(s)")
     log_print(f"ProviderBudget: approved {len(requirement_plan['approved'])} ticker(s); skipped {len(requirement_plan['skipped_provider_budget'])}")
@@ -637,6 +643,10 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         {},
         lambda result: f"Market metrics available for {sum(1 for item in (result or {}).values() if item.get('has_data'))}/{len(result or {})} ticker(s).",
     )
+    for position in analysis_positions:
+        ticker = str(position.get("ticker") or "").upper()
+        if ticker in market_metrics and str(position.get("account") or "").lower() == "crypto":
+            market_metrics[ticker]["asset_type"] = "crypto"
     benchmark_metrics = build_ticker_market_metrics(hub, config.MARKET_BENCHMARK_TICKER, None)
 
     earnings_events = run_optional_step(

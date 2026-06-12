@@ -41,10 +41,12 @@ class ReportSnapshotRepository:
     def save_success(self, run_id: str, mode: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
         self._save(run_id, mode, "complete", payload, summary, coverage, provider_status)
         self.log(f"ReportSnapshot: saved successful run={run_id} schema={self.SCHEMA_VERSION}")
+        self.log("ReportSnapshot: canonical snapshot updated")
 
     def save_degraded(self, run_id: str, mode: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
         self._save(run_id, mode, "degraded", payload, summary, coverage, provider_status)
         self.log(f"ReportSnapshot: saved degraded run={run_id}; canonical complete snapshot preserved")
+        self.log("ReportSnapshot: canonical snapshot preserved")
 
     def _save(self, run_id: str, mode: str, status: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()

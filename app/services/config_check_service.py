@@ -143,6 +143,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "forward_factor_dev_max_tickers_per_run": config.FF_DEV_MAX_TICKERS_PER_RUN,
         "forward_factor_dev_max_chain_tickers_per_run": config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN,
         "forward_factor_chain_expirations_per_ticker": config.FF_CHAIN_EXPIRATIONS_PER_TICKER,
+        "forward_factor_max_chain_tickers_per_run": config.FF_MAX_CHAIN_TICKERS_PER_RUN,
+        "forward_factor_earnings_lookahead_days": config.FF_EARNINGS_LOOKAHEAD_DAYS,
         "forward_factor_require_nonzero_short_bid": config.FF_REQUIRE_NONZERO_SHORT_BID,
         "forward_factor_require_valid_long_ask": config.FF_REQUIRE_VALID_LONG_ASK,
     }

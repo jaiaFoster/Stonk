@@ -596,12 +596,16 @@ Patch 26B fixes false FF `DATA STALE` rows by validating FF-specific shared fact
 
 Patch 26C separates observed `average_volume_30d` from its configured threshold, prioritizes FF dev candidates with known price/volume prerequisites, and collapses dev-cap rows in the dashboard. Robinhood position refreshes now preserve per-account latest-known-good snapshots during 502/503/auth outages. Runs using stale broker fallback are saved as degraded diagnostics and do not replace the latest complete canonical report.
 
+Patch 26D reserves bounded provider capacity for FF's expensive stage, fulfills a distinct shared `options_chain_set` fact after cheap eligibility, and calculates numeric source-qualified or raw-IV diagnostic Forward Factor results from valid 50-105 DTE expiration pairs. Every universe ticker now receives exactly one terminal result; crypto is excluded before FF equity-options planning; production runs use strategy-cap terminology.
+
 Important FF defaults:
 
 ```text
 FORWARD_FACTOR_STRATEGY_ENABLED=true
 FORWARD_FACTOR_DRY_RUN=true
 FF_CHAIN_EXPIRATIONS_PER_TICKER=6
+FF_MAX_CHAIN_TICKERS_PER_RUN=4
+FF_EARNINGS_LOOKAHEAD_DAYS=120
 FF_DEV_MAX_TICKERS_PER_RUN=3
 FF_DEV_MAX_CHAIN_TICKERS_PER_RUN=2
 FF_MIN_FORWARD_FACTOR=0.20

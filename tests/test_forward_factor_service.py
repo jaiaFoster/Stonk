@@ -23,12 +23,16 @@ class FakeFFHub:
         self.quote = {"payload": {"last": 500}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
         self.candles = {"payload": {"bars": [{"close": 500, "volume": 10_000_000}] * 240}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
         self.requested_quotes = []
+        self.earnings_lookaheads = []
     def get_quote(self, ticker, *args, **kwargs):
         self.requested_quotes.append(ticker)
         return self.quote
     def get_daily_candles(self, *args, **kwargs): return self.candles
     def get_derived_metrics(self, *args, **kwargs): return {"average_volume_30d": 10_000_000, "realized_volatility_30d": .2}
     def get_options_chain_set(self, *args, **kwargs): return {"payload": self.payload}
+    def get_earnings_event(self, *args, **kwargs):
+        self.earnings_lookaheads.append(kwargs.get("lookahead_days"))
+        return None
 
 
 class ForwardFactorTests(unittest.TestCase):
@@ -97,10 +101,38 @@ class ForwardFactorTests(unittest.TestCase):
             front: [leg(95, "put", -.35, .95, 1.0), leg(105, "call", .35, .95, 1.0)],
             back: [leg(95, "put", -.25, 1.4, 1.45), leg(105, "call", .25, 1.4, 1.45)],
         }}
-        row = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))["items"][0]
-        self.assertEqual(row["verdict"], "FAIL / EX-EARNINGS IV UNAVAILABLE")
+        result = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))
+        row = result["items"][0]
+        self.assertEqual(row["verdict"], "WATCH / EX-EARNINGS IV UNAVAILABLE")
         self.assertIsNotNone(row["diagnostic_raw_iv_forward_factor"])
         self.assertIsNone(row.get("forward_factor"))
+        self.assertEqual(result["stage_counts"]["ff_calculated"], 1)
+        self.assertTrue(result["summary"]["counts_reconcile"])
+
+    def test_source_qualified_below_threshold_reaches_numeric_terminal_result(self):
+        front = (date.today() + timedelta(days=60)).isoformat()
+        back = (date.today() + timedelta(days=90)).isoformat()
+        payload = {
+            "expirations": [front, back],
+            "chains_by_expiration": {
+                front: [leg(95, "put", -.35), leg(105, "call", .35)],
+                back: [leg(95, "put", -.25), leg(105, "call", .25)],
+            },
+            "expiration_metrics": {
+                front: {"ex_earnings_iv": .40},
+                back: {"ex_earnings_iv": .40},
+            },
+        }
+        hub = FakeFFHub(payload)
+        result = build_forward_factor_strategy(["SPY"], {}, hub, run_mode="prod")
+        row = result["items"][0]
+        self.assertEqual(row["verdict"], "FAIL / FORWARD FACTOR BELOW THRESHOLD")
+        self.assertAlmostEqual(row["forward_factor"], 0.0)
+        self.assertEqual(result["stage_counts"]["chain_sets"], 1)
+        self.assertEqual(result["stage_counts"]["expiration_pairs"], 1)
+        self.assertEqual(result["stage_counts"]["ff_calculated"], 1)
+        self.assertEqual(hub.earnings_lookaheads, [120])
+        self.assertTrue(result["summary"]["counts_reconcile"])
 
     def test_scenario_grid_is_model_estimate(self):
         rows = build_scenario_grid(100, 95, 105, 2, 30, .3)
@@ -164,8 +196,19 @@ class ForwardFactorTests(unittest.TestCase):
     def test_crypto_is_reserved_as_unsupported_security(self):
         hub = FakeFFHub({})
         result = build_forward_factor_strategy(["BTC"], {"BTC": {"asset_type": "crypto", "current_price": 100, "average_volume_30d": 10_000_000}}, hub, run_mode="dev")
-        self.assertEqual(result["items"][0]["verdict"], "SKIPPED / UNSUPPORTED SECURITY")
+        self.assertEqual(result["items"][0]["verdict"], "FAIL / UNSUPPORTED SECURITY")
         self.assertEqual(hub.requested_quotes, [])
+
+    def test_production_cap_is_mode_aware_and_terminal_counts_reconcile(self):
+        hub = FakeFFHub({})
+        tickers = [f"T{i:02d}" for i in range(12)] + ["BTC", "SOL"]
+        result = build_forward_factor_strategy(tickers, {"BTC": {"asset_type": "crypto"}, "SOL": {"asset_type": "crypto"}}, hub, run_mode="prod")
+        verdicts = [row["verdict"] for row in result["items"]]
+        self.assertIn("SKIPPED / STRATEGY CAP", verdicts)
+        self.assertNotIn("SKIPPED / DEV CAP", verdicts)
+        self.assertEqual(result["stage_counts"]["unsupported"], 2)
+        self.assertEqual(result["summary"]["terminal_count"], len(tickers))
+        self.assertTrue(result["summary"]["counts_reconcile"])
 
     def test_dev_cap_rows_are_collapsed_in_ff_ui(self):
         rows = [{"ticker": f"T{i}", "verdict": "SKIPPED / DEV CAP", "actionability_score": 0} for i in range(5)]

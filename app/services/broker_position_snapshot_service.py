@@ -47,7 +47,7 @@ class BrokerPositionSnapshotRepository:
                 "INSERT OR REPLACE INTO broker_position_snapshots VALUES (?,?,?,?,?,?,?,?,?)",
                 (broker, account_id, account_name, status, json.dumps(positions, default=str), now, self.SCHEMA_VERSION, 1, None),
             )
-        self.log(f"BrokerSnapshot: saved {broker}/{account_name} status={status} positions={len(positions)}")
+        self.log(f"BrokerSnapshot: saved {broker} {account_name} positions count={len(positions)} status={status}")
 
     def latest_account(self, broker: str, account_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -85,11 +85,14 @@ def apply_broker_position_fallback(fetch_result: dict[str, Any], repository: Bro
             account["snapshot_fetched_at"] = cached["fetched_at"]
             account["positions"] = cached["positions"]
             counts["stale_fallback"] += 1
+            repository.log(f"BrokerSnapshot: using stale fallback for robinhood {account_name} from {cached['fetched_at']}")
         else:
             account["status"] = "FAILED"
             account["positions"] = None
             counts["unavailable"] += 1
     quality = "SUCCESS_DEGRADED" if counts["failed"] else "SUCCESS_COMPLETE"
+    repository.log("BrokerSnapshot: current positions complete" if quality == "SUCCESS_COMPLETE" else "BrokerSnapshot: current positions degraded")
+    repository.log(f"ReportQuality: {quality}")
     provider_status = dict(fetch_result.get("provider_status") or {})
     provider_status["account_summary"] = counts
     provider_status["stale_fallback"] = bool(counts["stale_fallback"])
