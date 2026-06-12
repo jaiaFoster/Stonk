@@ -144,6 +144,34 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             self.assertEqual(payload["ticker"], "SPY")
             self.assertEqual(len(payload["expirations"]), 2)
             self.assertEqual(len(payload["chains"]), 2)
+            self.assertEqual(set(payload["chains_by_expiration"]), set(payload["expirations"]))
+
+    def test_options_chain_set_reuses_broad_run_and_persistent_cache(self):
+        class ManyExpirations(FakeTradier):
+            def get_expirations(self, ticker):
+                return [(date.today() + timedelta(days=dte)).isoformat() for dte in (45, 55, 65, 85, 95, 110)]
+        with tempfile.TemporaryDirectory() as temp:
+            repo = MarketDataRepository(str(Path(temp) / "market.sqlite3"))
+            provider = ManyExpirations()
+            hub = MarketDataHub(create_run_data_context("dev"), repository=repo, provider=provider)
+            hub.get_options_chain_set("SPY", min_dte=40, max_dte=120, max_expirations=6)
+            hub.get_options_chain_set("SPY", min_dte=50, max_dte=105, max_expirations=4)
+            self.assertEqual(provider.chain_calls, 6)
+            second_run = MarketDataHub(create_run_data_context("dev"), repository=repo, provider=provider)
+            second_run.get_options_chain_set("SPY", min_dte=50, max_dte=105, max_expirations=4)
+            self.assertEqual(provider.chain_calls, 6)
+
+    def test_short_dated_ordinary_chain_cannot_satisfy_ff_chain_set(self):
+        class MixedExpirations(FakeTradier):
+            def get_expirations(self, ticker):
+                return [(date.today() + timedelta(days=dte)).isoformat() for dte in (14, 60, 90)]
+        with tempfile.TemporaryDirectory() as temp:
+            provider = MixedExpirations()
+            hub = MarketDataHub(create_run_data_context("dev"), repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")), provider=provider)
+            hub.get_options_chain("SPY", min_dte=7, max_dte=21, expirations=1)
+            payload = hub.get_options_chain_set("SPY", min_dte=50, max_dte=105, max_expirations=6)["payload"]
+            self.assertEqual(provider.chain_calls, 3)
+            self.assertEqual(len(payload["chains_by_expiration"]), 2)
 
     def test_canonical_metrics_map_contains_shared_price_trend_and_liquidity(self):
         bars = [{"date": f"2025-{(i // 28) % 12 + 1:02d}-{i % 28 + 1:02d}", "close": 100 + i, "volume": 1000000 + i} for i in range(260)]

@@ -2154,8 +2154,9 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
         f"Formula version: {config.FF_FORMULA_VERSION}; source spec: {config.FF_SOURCE_SPEC_VERSION}",
         f"Source benchmark context: threshold approximately 0.20; reported CAGR approximately 27%; reported Sharpe approximately 2.4; favorable pair approximately 60/90 DTE; structure approximately ±35-delta double calendar.",
         "Historical source claims are not expected returns or proof of implementation correctness.",
-        f"Stages: universe {stage.get('universe', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain fetch {stage.get('chain_fetch', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)}; structures {stage.get('structures', 0)}.",
+        f"Stages: universe {stage.get('universe', 0)}; supported {stage.get('prefilter_supported_equities', 0)}; unsupported {stage.get('unsupported', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain sets {stage.get('chain_sets', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)} ({stage.get('source_ff_calculated', 0)} source-qualified / {stage.get('diagnostic_formula_calculated', 0)} diagnostic); structures {stage.get('structures', 0)}.",
         f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
+        f"Terminal count reconciliation: {summary.get('terminal_count', 0)} / {summary.get('universe_count', 0)}; reconciled={summary.get('counts_reconcile', False)}.",
         "",
     ]
     for row in result.get("rows", []) or []:
@@ -2172,6 +2173,8 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
         ]
     lines += ["", "FF Readiness"]
     lines += [f"- {key.replace('_', ' ').title()}: {value}" for key, value in readiness.items()]
+    lines += ["", "Expiration pair audit"]
+    lines += [f"- {row}" for row in (summary.get("pair_audit", []) or [])]
     return "\n".join(lines)
 
 
@@ -2193,8 +2196,10 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
     rows = result.get("rows", []) or []
     if not result:
         return _section(section_id, "Forward Factor Calendar Candidates", kicker, '<div class="empty-state">Strategy result unavailable.</div>', "0")
-    skipped_dev = [row for row in rows if str(row.get("verdict") or "").upper().startswith("SKIPPED / DEV CAP")]
-    visible_rows = [row for row in rows if row not in skipped_dev]
+    skipped_cap = [row for row in rows if str(row.get("verdict") or "").upper().startswith(("SKIPPED / DEV CAP", "SKIPPED / STRATEGY CAP"))]
+    unsupported = [row for row in rows if str(row.get("verdict") or "").upper() == "FAIL / UNSUPPORTED SECURITY"]
+    collapsed_rows = skipped_cap + unsupported
+    visible_rows = [row for row in rows if row not in collapsed_rows]
     cards = []
     for row in visible_rows[:20]:
         verdict = _first_text(row.get("verdict"), row.get("final_verdict"), fallback="UNKNOWN")
@@ -2219,15 +2224,21 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
             <details><summary>Formula, pair, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
         </article>""")
     skipped_html = ""
-    if skipped_dev:
-        names = ", ".join(str(row.get("ticker") or "UNKNOWN") for row in skipped_dev)
-        skipped_html = f'<details><summary>Skipped by dev cap: {len(skipped_dev)}</summary><p class="muted">{escape(names)}</p></details>'
+    if skipped_cap:
+        names = ", ".join(str(row.get("ticker") or "UNKNOWN") for row in skipped_cap)
+        label = "Skipped by dev cap" if any(str(row.get("verdict") or "").upper().startswith("SKIPPED / DEV CAP") for row in skipped_cap) else "Skipped by strategy cap"
+        skipped_html += f'<details><summary>{label}: {len(skipped_cap)}</summary><p class="muted">{escape(names)}</p></details>'
+    if unsupported:
+        names = ", ".join(str(row.get("ticker") or "UNKNOWN") for row in unsupported)
+        skipped_html += f'<details><summary>Unsupported assets: {len(unsupported)}</summary><p class="muted">{escape(names)}</p></details>'
     stage = (result.get("summary") or {}).get("stage_counts", {}) or {}
     stage_html = '<div class="metric-grid">' + "".join(
         f'<div class="metric"><span class="label">{escape(label)}</span><span class="value">{escape(str(value))}</span></div>'
         for label, value in (
             ("Evaluated", stage.get("cheap_evaluated", 0)),
-            ("Calculated", max(stage.get("ff_calculated", 0), stage.get("diagnostic_formula_calculated", 0))),
+            ("Universe / Supported", f"{stage.get('universe', 0)} / {stage.get('prefilter_supported_equities', 0)}"),
+            ("Chain sets", stage.get("chain_sets", 0)),
+            ("Calculated", stage.get("ff_calculated", 0)),
             ("Expiration pairs", stage.get("expiration_pairs", 0)),
             ("Structures", stage.get("structures", 0)),
         )

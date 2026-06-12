@@ -82,7 +82,12 @@ class ForwardFactorCalendarStrategy:
         return bool(config.FORWARD_FACTOR_STRATEGY_ENABLED)
 
     def build_universe(self, context: Any) -> list[str]:
-        tickers = _tickers(context)
+        crypto = {
+            str(position.get("ticker") or "").upper()
+            for position in getattr(context, "analysis_positions", [])
+            if str(position.get("account") or "").lower() == "crypto"
+        }
+        tickers = [ticker for ticker in _tickers(context) if ticker not in crypto and ticker not in {"BTC", "SOL", "ETH", "DOGE", "LTC", "BCH", "AVAX", "LINK", "SHIB"}]
         cap = config.FF_DEV_MAX_TICKERS_PER_RUN if getattr(context, "mode", "prod") == "dev" else config.FF_MAX_TICKERS_PER_RUN
         return tickers[:cap]
 

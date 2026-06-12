@@ -17,4 +17,7 @@ def get_portfolio_positions() -> list[dict]:
 
 def get_portfolio_positions_with_status() -> dict:
     """Fetch positions plus Robinhood provider status."""
-    return apply_broker_position_fallback(get_positions_with_status(), BrokerPositionSnapshotRepository())
+    return apply_broker_position_fallback(
+        get_positions_with_status(),
+        BrokerPositionSnapshotRepository(log_print=lambda message: print(message, flush=True)),
+    )

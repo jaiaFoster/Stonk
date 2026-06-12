@@ -61,33 +61,47 @@ class MarketDataHub:
         return self._get(ticker, "options_chain", self.context.options_chains, config.MARKET_DATA_OPTIONS_CHAIN_TTL_SECONDS, fetch, "tradier", required, strategy_id, signature, force_refresh)
 
     def get_options_chain_set(self, ticker: str, *, min_dte: int, max_dte: int, max_expirations: int, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
-        """Return normalized multi-expiration chains through shared cache."""
-        record = self.get_options_chain(
-            ticker, min_dte=min_dte, max_dte=max_dte, expirations=max_expirations,
-            required=required, strategy_id=strategy_id, force_refresh=force_refresh,
+        """Return a distinct, reusable multi-expiration shared fact."""
+        symbol = ticker.upper()
+        normalized_min, normalized_max, normalized_count = self._normalize_chain_params(min_dte, max_dte, max_expirations)
+        signature = self._signature("options_chain_set", min_dte=normalized_min, max_dte=normalized_max, expirations=normalized_count)
+        if not force_refresh:
+            reusable = self._find_reusable_chain_set(symbol, normalized_min, normalized_max, normalized_count)
+            if reusable is not None:
+                self._audit(symbol, "options_chain_set", "run_cache", COMPLETE, strategy_id)
+                self.log(f"MarketDataHub: options_chain_set {symbol} run_context_hit")
+                return reusable
+            cached = self._find_reusable_persistent_chain_set(symbol, normalized_min, normalized_max, normalized_count)
+            if cached is not None:
+                self.context.options_chains[self._key(symbol, signature)] = cached
+                self._audit(symbol, "options_chain_set", "sqlite_cache", COMPLETE, strategy_id, provider=cached.get("provider"))
+                self.log(f"MarketDataHub: options_chain_set {symbol} sqlite_cache_hit")
+                return cached
+
+        def fetch() -> dict[str, Any]:
+            listed = sorted(self.provider.get_expirations(symbol), key=lambda value: str(value)[:10])
+            eligible = [value for value in listed if self._expiration_in_range(value, normalized_min, normalized_max)]
+            retained = self._sample_expirations(eligible, normalized_count)
+            chains = {str(expiration)[:10]: self.provider.get_option_chain(symbol, expiration, greeks=True) for expiration in retained}
+            return {
+                "ticker": symbol, "data_state": COMPLETE, "requested_min_dte": normalized_min,
+                "requested_max_dte": normalized_max, "requested_max_expirations": normalized_count,
+                "listed_expirations": [str(value)[:10] for value in listed],
+                "expirations": [str(value)[:10] for value in retained],
+                "chains": chains, "chains_by_expiration": chains, "errors": [],
+                "request_scope": {"min_dte": normalized_min, "max_dte": normalized_max, "expirations": normalized_count},
+            }
+        return self._get(
+            symbol, "options_chain_set", self.context.options_chains,
+            config.MARKET_DATA_OPTIONS_CHAIN_TTL_SECONDS, fetch, "tradier", required, strategy_id, signature, force_refresh,
         )
-        if not isinstance(record, dict):
-            return record
-        payload = record.get("payload", record)
-        if isinstance(payload, dict):
-            normalized = dict(payload)
-            normalized["ticker"] = ticker.upper()
-            if not isinstance(normalized.get("chains"), dict):
-                normalized["chains"] = normalized.get("expirations") if isinstance(normalized.get("expirations"), dict) else {}
-            if not isinstance(normalized.get("expirations"), list):
-                normalized["expirations"] = list((normalized.get("chains") or {}).keys())
-            normalized["provider"] = record.get("provider") or normalized.get("provider")
-            normalized["fetched_at"] = record.get("fetched_at") or normalized.get("fetched_at")
-            normalized["confidence"] = record.get("confidence") or normalized.get("confidence")
-            return {**record, "payload": normalized}
-        return record
 
     def get_earnings_event(self, ticker: str, *, lookahead_days: int = 45, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
         key = self._key(ticker, self._signature("earnings_event", lookahead_days=int(lookahead_days or 45)))
         if key in self.context.earnings_events:
             self._audit(ticker, "earnings_event", "run_cache", COMPLETE, strategy_id)
             return self.context.earnings_events[key]
-        legacy = self.context.earnings_events.get(ticker.upper())
+        legacy = self.context.earnings_events.get(ticker.upper()) if int(lookahead_days or 45) <= 45 else None
         if legacy is not None:
             self.context.earnings_events[key] = legacy
             self._audit(ticker, "earnings_event", "run_cache", COMPLETE, strategy_id)
@@ -212,6 +226,36 @@ class MarketDataHub:
             except (TypeError, ValueError):
                 continue
         return None
+
+    def _find_reusable_chain_set(self, ticker: str, min_dte: int, max_dte: int, expirations: int) -> Any:
+        prefix = f"{ticker.upper()}|options_chain_set:"
+        for key, record in self.context.options_chains.items():
+            if key.startswith(prefix) and self._chain_set_satisfies(record, min_dte, max_dte, expirations):
+                return record
+        return None
+
+    def _find_reusable_persistent_chain_set(self, ticker: str, min_dte: int, max_dte: int, expirations: int) -> Any:
+        for record in self.repository.find_records(ticker, "options_chain_set"):
+            value = record.to_dict()
+            if self._chain_set_satisfies(value, min_dte, max_dte, expirations):
+                return value
+        return None
+
+    @staticmethod
+    def _chain_set_satisfies(record: Any, min_dte: int, max_dte: int, expirations: int) -> bool:
+        payload = record.get("payload", record) if isinstance(record, dict) else {}
+        scope = payload.get("request_scope", {}) if isinstance(payload, dict) else {}
+        chains = payload.get("chains_by_expiration") or payload.get("chains") or {}
+        try:
+            return (
+                int(scope.get("min_dte")) <= min_dte
+                and int(scope.get("max_dte")) >= max_dte
+                and int(scope.get("expirations")) >= expirations
+                and isinstance(chains, dict)
+                and len(chains) >= 2
+            )
+        except (TypeError, ValueError):
+            return False
 
     @staticmethod
     def _normalize_chain_params(min_dte: int | None, max_dte: int | None, expirations: int | None) -> tuple[int, int, int]:

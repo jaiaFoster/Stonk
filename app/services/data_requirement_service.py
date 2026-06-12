@@ -41,7 +41,7 @@ def forward_factor_requirement(tickers: list[str]) -> StrategyDataRequirement:
     return StrategyDataRequirement(
         strategy_id="forward_factor_calendar", tickers=tickers, needs_quote=True,
         needs_daily_candles=True, min_daily_bars=240, needs_options_chain=False,
-        needs_earnings_event=True, earnings_lookahead_days=120,
+        needs_earnings_event=True, earnings_lookahead_days=config.FF_EARNINGS_LOOKAHEAD_DAYS,
         required_derived_metrics=["average_volume_30d", "realized_volatility_30d"],
         priority=85,
         reason="Forward Factor cheap stage requires quote, candles, average volume, and earnings context before expensive chain requests.",

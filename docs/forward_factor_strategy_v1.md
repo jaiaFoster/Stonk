@@ -53,3 +53,13 @@ Scenario rows use a zero-rate Black-Scholes estimate for the remaining back-expi
 FF declares requirements through Strategy Registry and uses MarketDataHub for quote, candles, earnings, derived liquidity facts, and a multi-expiration chain snapshot. It writes normalized rows to the generic strategy opportunity repository.
 
 Patch 26C explicitly records observed price and `average_volume_30d`, their configured minimums, and pass/fail booleans. Threshold failures are distinct from missing data and unsupported securities. Dev selection prioritizes candidates whose cached/shared facts already clear known price and volume gates, while raw-IV diagnostic formula results remain separate from source-qualified FF.
+
+## Patch 26D execution completion
+
+- Cheap-stage approval reserves a bounded provider budget for the later FF chain-set request.
+- `options_chain_set` is a distinct shared fact and cache identity. It preserves contracts by expiration; a short-dated single-expiration chain cannot satisfy FF.
+- A broader fresh chain set may satisfy a narrower same-run or SQLite-backed request.
+- Approved candidates request 50-105 DTE coverage, build valid 50-70 / 80-105 DTE pairs, and retain every formula input and intermediate result.
+- Explicit source/provider ex-earnings IV remains required for a source-qualified result. Raw-IV Forward Factor is diagnostic only and produces no PASS.
+- FF requests independent 120-day earnings context so a shorter general lookup cannot imply no event exists.
+- Every raw-universe ticker receives exactly one PASS, WATCH, FAIL, or SKIPPED terminal row. Production caps use `SKIPPED / STRATEGY CAP`; crypto and unsupported assets are excluded before equity-options planning.
