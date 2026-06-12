@@ -140,6 +140,10 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "forward_factor_dte_ranges": f"{config.FF_FRONT_DTE_MIN}-{config.FF_FRONT_DTE_MAX}/{config.FF_BACK_DTE_MIN}-{config.FF_BACK_DTE_MAX}",
         "forward_factor_max_tickers_per_run": config.FF_MAX_TICKERS_PER_RUN,
         "forward_factor_dev_max_tickers_per_run": config.FF_DEV_MAX_TICKERS_PER_RUN,
+        "forward_factor_dev_max_chain_tickers_per_run": config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN,
+        "forward_factor_chain_expirations_per_ticker": config.FF_CHAIN_EXPIRATIONS_PER_TICKER,
+        "forward_factor_require_nonzero_short_bid": config.FF_REQUIRE_NONZERO_SHORT_BID,
+        "forward_factor_require_valid_long_ask": config.FF_REQUIRE_VALID_LONG_ASK,
     }
 
     enabled_modules = {

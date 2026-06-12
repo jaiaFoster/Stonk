@@ -592,6 +592,21 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Exact source entry/exit/backtest rules remain `SOURCE_UNSPECIFIED` until the complete transcript and screener package are supplied.
 - Details: `docs/forward_factor_strategy_v1.md`.
 
+Patch 26B fixes false FF `DATA STALE` rows by validating FF-specific shared facts instead of stock-momentum trend completeness. It stages cheap eligibility before bounded multi-expiration chains, exposes raw-IV diagnostics separately from source-qualified ex-earnings FF, and keeps all FF rows dry-run/non-actionable.
+
+Important FF defaults:
+
+```text
+FORWARD_FACTOR_STRATEGY_ENABLED=true
+FORWARD_FACTOR_DRY_RUN=true
+FF_CHAIN_EXPIRATIONS_PER_TICKER=6
+FF_DEV_MAX_TICKERS_PER_RUN=3
+FF_DEV_MAX_CHAIN_TICKERS_PER_RUN=2
+FF_MIN_FORWARD_FACTOR=0.20
+FF_REQUIRE_NONZERO_SHORT_BID=true
+FF_REQUIRE_VALID_LONG_ASK=true
+```
+
 ### Railway start command
 
 The app uses `start.sh` via `railway.toml` so Railway expands `$PORT` safely at runtime.

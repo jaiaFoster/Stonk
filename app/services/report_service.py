@@ -349,7 +349,11 @@ UI_OVERHAUL_CSS = """
             .quick-nav { margin-left: -0.65rem; margin-right: -0.65rem; padding-left: 0.65rem; }
             .section-head { flex-direction: column; }
             .macro-strip, .metric-grid, .risk-grid { grid-template-columns: 1fr; }
-            .chip { white-space: normal; }
+            .summary-chips .chip { white-space: nowrap; flex: 0 0 auto; }
+        }
+        @media print {
+            .summary-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+            .summary-chips .chip { white-space: nowrap; break-inside: avoid; }
         }
 """
 
@@ -2117,6 +2121,8 @@ def _data_coverage_html(coverage: dict[str, Any]) -> str:
 
 
 def _generic_strategy_report(result: dict[str, Any]) -> str:
+    if result.get("strategy_id") == "forward_factor_calendar":
+        return _forward_factor_report(result)
     lines = [
         f"{result.get('strategy_label', result.get('strategy_id', 'Strategy'))} Report",
         f"Version: {result.get('version', 'unknown')}",
@@ -2131,6 +2137,37 @@ def _generic_strategy_report(result: dict[str, Any]) -> str:
             f"{row.get('final_verdict') or row.get('verdict') or row.get('action') or 'UNKNOWN'} | "
             f"{row.get('primary_blocker') or row.get('primary_reason') or row.get('why') or ''}"
         )
+    return "\n".join(lines)
+
+
+def _forward_factor_report(result: dict[str, Any]) -> str:
+    summary = result.get("summary", {}) or {}
+    stage = result.get("stage_counts", {}) or summary.get("stage_counts", {}) or {}
+    readiness = result.get("readiness", {}) or summary.get("readiness", {}) or {}
+    lines = [
+        "Forward Factor Calendar Report",
+        "Mode: DRY RUN — never actionable",
+        f"Formula version: {config.FF_FORMULA_VERSION}; source spec: {config.FF_SOURCE_SPEC_VERSION}",
+        f"Source benchmark context: threshold approximately 0.20; reported CAGR approximately 27%; reported Sharpe approximately 2.4; favorable pair approximately 60/90 DTE; structure approximately ±35-delta double calendar.",
+        "Historical source claims are not expected returns or proof of implementation correctness.",
+        f"Stages: universe {stage.get('universe', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain fetch {stage.get('chain_fetch', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)}; structures {stage.get('structures', 0)}.",
+        f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
+        "",
+    ]
+    for row in result.get("rows", []) or []:
+        lines += [
+            f"{row.get('ticker', 'UNKNOWN')} — {row.get('verdict', 'UNKNOWN')}",
+            f"  Pair: {row.get('front_expiration') or 'unavailable'} ({row.get('front_dte', 'unavailable')} DTE) / {row.get('back_expiration') or 'unavailable'} ({row.get('back_dte', 'unavailable')} DTE)",
+            f"  Source FF: {number(row.get('forward_factor'), 4)}; diagnostic raw-IV FF: {number(row.get('diagnostic_raw_iv_forward_factor'), 4)}",
+            f"  Front/back ex-earnings IV: {number(row.get('front_ex_earnings_iv'), 4)} / {number(row.get('back_ex_earnings_iv'), 4)}; raw IV: {number(row.get('front_raw_iv'), 4)} / {number(row.get('back_raw_iv'), 4)}",
+            f"  T1/T2: {number(row.get('T1'), 6)} / {number(row.get('T2'), 6)}; forward variance: {number(row.get('forward_variance'), 6)}; forward IV: {number(row.get('forward_iv'), 4)}",
+            f"  Adjustment: {row.get('adjustment_method') or 'unavailable'} / {row.get('adjustment_version') or 'unavailable'} / confidence {row.get('adjustment_confidence') or 'unavailable'}",
+            f"  Structure: put {number(row.get('put_strike'), 2)} / call {number(row.get('call_strike'), 2)}; deltas {number(row.get('front_put_delta'), 3)} / {number(row.get('front_call_delta'), 3)}",
+            f"  Debit: {money(row.get('debit_at_risk'))}; package slippage {pct(row.get('package_slippage_pct'))}; signal/actionability {number(row.get('signal_score'), 1)} / {number(row.get('actionability_score'), 1)}",
+            f"  Blocker: {row.get('primary_blocker') or 'none'}",
+        ]
+    lines += ["", "FF Readiness"]
+    lines += [f"- {key.replace('_', ' ').title()}: {value}" for key, value in readiness.items()]
     return "\n".join(lines)
 
 
@@ -2161,6 +2198,7 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
             <div class="card-action">{escape(verdict)}</div>
             <div class="metric-grid">
                 <div class="metric"><span class="label">Forward Factor</span><span class="value">{number(row.get("forward_factor"), 3)}</span></div>
+                <div class="metric"><span class="label">Raw-IV Diagnostic</span><span class="value">{number(row.get("diagnostic_raw_iv_forward_factor"), 3)}</span></div>
                 <div class="metric"><span class="label">Front / Forward IV</span><span class="value">{number(row.get("front_ex_earnings_iv"), 3)} / {number(row.get("forward_iv"), 3)}</span></div>
                 <div class="metric"><span class="label">Expirations</span><span class="value">{escape(str(row.get("front_expiration") or "unavailable"))}<br>{escape(str(row.get("back_expiration") or "unavailable"))}</span></div>
                 <div class="metric"><span class="label">Put / Call Strikes</span><span class="value">{number(row.get("put_strike"), 2)} / {number(row.get("call_strike"), 2)}</span></div>
@@ -2168,6 +2206,7 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
                 <div class="metric"><span class="label">Scores</span><span class="value">{number(row.get("signal_score"), 1)} signal / {number(row.get("actionability_score"), 1)} action</span></div>
             </div>
             <p>{escape(_first_text(row.get("primary_blocker"), row.get("next_action"), fallback="No blocker recorded."))}</p>
+            <details><summary>Formula, pair, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
         </article>""")
     body = "".join(cards) if cards else '<div class="empty-state">No Forward Factor rows this run. Dry-run requirements may be capped or source-correct ex-earnings IV may be unavailable.</div>'
     count = f"{result.get('pass_count', 0)}P · {result.get('watch_count', 0)}W · {result.get('fail_count', 0)}F · {result.get('skipped_count', 0)}S"

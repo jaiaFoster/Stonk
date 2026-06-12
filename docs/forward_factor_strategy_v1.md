@@ -14,7 +14,7 @@
 
 ## Engineering defaults
 
-All `FF_*` DTE windows, delta tolerance, liquidity thresholds, package-slippage limit, ticker caps, and debit limits are engineering defaults. They are configurable and are not source performance claims.
+All `FF_*` DTE windows, delta tolerance, liquidity thresholds, required nonzero short bids, required valid long asks, package-slippage limit, ticker caps, and debit limits are engineering defaults. They are configurable and are not source performance claims.
 
 ## Assumptions
 
@@ -31,9 +31,22 @@ All `FF_*` DTE windows, delta tolerance, liquidity thresholds, package-slippage 
 
 Because these are unresolved, lifecycle says `MANUAL REVIEW REQUIRED — SOURCE DOES NOT SPECIFY AUTOMATIC EXIT`, live actionability is zero, and backtest status is `BLOCKED / HISTORICAL OPTIONS DATA UNAVAILABLE`.
 
+## Patch 26B completion behavior
+
+- FF-specific eligibility validates normalized quote, 240 daily candles, average volume, freshness, and exact missing fields. It no longer depends on Stock Momentum's 3M/200D confirmation gate.
+- Cheap facts are evaluated before expensive multi-expiration chain requests.
+- Dev mode evaluates at most three cheap candidates and requests chains for at most two survivors.
+- `MarketDataHub.get_options_chain_set()` returns a shared normalized multi-expiration record and reuses broader cached chain coverage.
+- Every eligible pair records source FF inputs when explicit ex-earnings IV exists. When it does not, raw-IV forward factor is retained under `diagnostic_raw_iv_forward_factor` only and verdict remains `FAIL / EX-EARNINGS IV UNAVAILABLE`.
+- Pair audit, liquidity checks, leg identifiers, model-estimate scenario grid, stage counts, readiness, and provider/freshness facts remain auditable.
+
+The current selected ex-earnings method is **explicit source/provider field only**. No event-variance removal formula can be source-aligned until the missing authoritative screener/transcript defines it.
+
 ## Formula audit
 
 Every evaluated row retains front/back ex-earnings IV, DTE, time in years, forward variance, forward IV, FF, selected strikes/deltas, debit, liquidity, formula version, and source-spec version.
+
+Scenario rows use a zero-rate Black-Scholes estimate for the remaining back-expiration options after front intrinsic value is removed. They are labeled `MODEL ESTIMATE — NOT GUARANTEED`; the app does not claim exact maximum profit.
 
 ## Shared-data behavior
 

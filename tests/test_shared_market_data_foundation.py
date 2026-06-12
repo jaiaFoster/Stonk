@@ -134,6 +134,17 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             self.assertLessEqual(min(dtes), 14)
             self.assertGreaterEqual(max(dtes), 98)
 
+    def test_options_chain_set_returns_normalized_multi_expiration_shape(self):
+        class PairExpirations(FakeTradier):
+            def get_expirations(self, ticker):
+                return [(date.today() + timedelta(days=dte)).isoformat() for dte in (60, 90)]
+        with tempfile.TemporaryDirectory() as temp:
+            hub = MarketDataHub(create_run_data_context("dev"), repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")), provider=PairExpirations())
+            payload = hub.get_options_chain_set("SPY", min_dte=50, max_dte=105, max_expirations=6)["payload"]
+            self.assertEqual(payload["ticker"], "SPY")
+            self.assertEqual(len(payload["expirations"]), 2)
+            self.assertEqual(len(payload["chains"]), 2)
+
     def test_canonical_metrics_map_contains_shared_price_trend_and_liquidity(self):
         bars = [{"date": f"2025-{(i // 28) % 12 + 1:02d}-{i % 28 + 1:02d}", "close": 100 + i, "volume": 1000000 + i} for i in range(260)]
         with tempfile.TemporaryDirectory() as temp:

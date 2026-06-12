@@ -60,6 +60,28 @@ class MarketDataHub:
             }
         return self._get(ticker, "options_chain", self.context.options_chains, config.MARKET_DATA_OPTIONS_CHAIN_TTL_SECONDS, fetch, "tradier", required, strategy_id, signature, force_refresh)
 
+    def get_options_chain_set(self, ticker: str, *, min_dte: int, max_dte: int, max_expirations: int, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
+        """Return normalized multi-expiration chains through shared cache."""
+        record = self.get_options_chain(
+            ticker, min_dte=min_dte, max_dte=max_dte, expirations=max_expirations,
+            required=required, strategy_id=strategy_id, force_refresh=force_refresh,
+        )
+        if not isinstance(record, dict):
+            return record
+        payload = record.get("payload", record)
+        if isinstance(payload, dict):
+            normalized = dict(payload)
+            normalized["ticker"] = ticker.upper()
+            if not isinstance(normalized.get("chains"), dict):
+                normalized["chains"] = normalized.get("expirations") if isinstance(normalized.get("expirations"), dict) else {}
+            if not isinstance(normalized.get("expirations"), list):
+                normalized["expirations"] = list((normalized.get("chains") or {}).keys())
+            normalized["provider"] = record.get("provider") or normalized.get("provider")
+            normalized["fetched_at"] = record.get("fetched_at") or normalized.get("fetched_at")
+            normalized["confidence"] = record.get("confidence") or normalized.get("confidence")
+            return {**record, "payload": normalized}
+        return record
+
     def get_earnings_event(self, ticker: str, *, lookahead_days: int = 45, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
         key = self._key(ticker, self._signature("earnings_event", lookahead_days=int(lookahead_days or 45)))
         if key in self.context.earnings_events:

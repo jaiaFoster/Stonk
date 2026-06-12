@@ -8,7 +8,7 @@ from app.services.skew_momentum_vertical_service import build_skew_momentum_vert
 from app.services.strategy_opportunity_repository import StrategyOpportunityRepository
 from app.services.generic_option_lifecycle_service import build_lifecycle_envelope, classify_broker_option_structure
 from app.services.actionability_service import attach_actionability
-from app.services.strategy_execution_service import execute_strategy_registry
+from app.services.strategy_execution_service import collect_strategy_results, execute_strategy_registry
 from app.services.staged_scan_service import StagedScan
 from app.strategies.registry import collect_requirements, normalize_strategy_results
 from app.services.strategy_opportunity_repository import opportunity_structure_key
@@ -124,6 +124,13 @@ class StrategyRegistryFoundationTests(unittest.TestCase):
         self.assertEqual(results["earnings_calendar"]["pass_count"], 1)
         self.assertTrue(results["skew_momentum_vertical"]["errors"])
         self.assertEqual(results["stock_momentum"]["pass_count"], 1)
+
+    def test_registry_collection_logs_every_strategy_completion(self):
+        context = create_run_data_context("dev")
+        logs = []
+        collect_strategy_results(context, {"forward_factor_calendar": {"items": []}}, log_print=logs.append)
+        self.assertTrue(any("executing forward_factor_calendar" in line for line in logs))
+        self.assertTrue(any("forward_factor_calendar complete" in line for line in logs))
 
     def test_staged_scan_exposes_counts_and_reasons(self):
         scan = StagedScan("skew_momentum_vertical")
