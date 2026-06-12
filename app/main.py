@@ -95,7 +95,7 @@ def home():
             from app.services.report_snapshot_service import ReportSnapshotRepository
             from app.services.report_service import format_html
 
-            snapshot = ReportSnapshotRepository().latest_success()
+            snapshot = ReportSnapshotRepository(log_print=lambda message: print(message, flush=True)).latest_success()
             if snapshot:
                 summary = json.loads(snapshot.get("summary_json") or "{}")
                 report = summary.get("report_data") or {}
@@ -104,8 +104,11 @@ def home():
                 report_snapshot["_report_snapshot"] = {
                     "run_id": snapshot.get("run_id"),
                     "generated_at": snapshot.get("completed_at"),
-                    "source": "persistent snapshot",
+                    "market_data_refreshed_at": snapshot.get("completed_at"),
+                    "active_trades_refreshed_at": (summary.get("active_trades_refreshed_at") or "not separately refreshed"),
+                    "source": "cached server snapshot",
                 }
+                print("Dashboard: rendered persistent snapshot without provider calls", flush=True)
                 return format_html(
                     payload,
                     report.get("positions", []),

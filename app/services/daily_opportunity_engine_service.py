@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app import config
+from app.services.data_state_message_service import required_market_metrics_complete
 
 LogFn = Callable[[str], None]
 
@@ -210,6 +211,8 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         if group == "risk":
             risk_rows.append(_risk_action_from_item(item, "Stock Momentum Add Strategy v1"))
             continue
+        if not required_market_metrics_complete(item.get("market_metrics")):
+            action = "WATCH / DATA INCOMPLETE"
         if action not in {"CONSIDER ADDING", "ADD ON PULLBACK", "WATCH / CONFIRM TREND", "WATCH / RESEARCH"}:
             continue
         row = ensure(item.get("ticker"), action or "WATCH / RESEARCH")
@@ -219,6 +222,7 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         row["priority_score"] = max(float(row.get("priority_score") or 0), score)
         row["action"] = _merge_stock_action(str(row.get("action") or ""), action)
         row["source_tags"].append("momentum")
+        row["market_metrics"] = item.get("market_metrics", {}) or {}
         for reason in (item.get("reasons") or [])[:3]:
             _append_unique(row["why_parts"], str(reason))
         if item.get("next_check"):
@@ -230,6 +234,8 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         if group == "risk":
             risk_rows.append(_risk_action_from_item(item, "Portfolio Gap / Sector Suggestions v1", action=action))
             continue
+        if not required_market_metrics_complete(item.get("market_metrics")):
+            action = "WATCH / DATA INCOMPLETE"
         row = ensure(item.get("ticker"), action)
         if not row:
             continue
@@ -237,6 +243,8 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         row["priority_score"] = max(float(row.get("priority_score") or 0), score)
         row["action"] = _merge_stock_action(str(row.get("action") or ""), action)
         row["source_tags"].append("sector_gap")
+        if not row.get("market_metrics"):
+            row["market_metrics"] = item.get("market_metrics", {}) or {}
         _append_unique(row["why_parts"], item.get("reason") or item.get("rationale") or "Candidate helps fill an aggressive-growth portfolio gap.")
         for bucket in item.get("buckets", []) or []:
             _append_unique(row["why_parts"], f"Bucket: {bucket}")

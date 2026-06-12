@@ -55,7 +55,10 @@ class DailyOpportunityEngineTests(unittest.TestCase):
                 }
             ],
         }
-        stock = {"items": [{"ticker": "NVDA", "score": 100, "action": "CONSIDER ADDING", "reasons": ["Strong trend."]}]}
+        stock = {"items": [{"ticker": "NVDA", "score": 100, "action": "CONSIDER ADDING", "reasons": ["Strong trend."], "market_metrics": {
+            "has_data": True, "data_state": "COMPLETE", "current_price": 100, "bar_count": 240,
+            "return_3m_pct": 10, "above_sma_200": True, "avg_volume_30d": 1000000, "fresh": True,
+        }}]}
 
         result = build_daily_opportunity_engine(engine, stock, {}, [], log_print=lambda msg: None)
 
@@ -117,6 +120,11 @@ class DailyOpportunityEngineTests(unittest.TestCase):
         self.assertEqual(result["actions"], [])
         self.assertTrue(any("0 skew_vertical" in line for line in logs))
         self.assertTrue(any("Strategy 2 summary: 0 pass, 1 watch, 0 fail; 0 included" in line for line in logs))
+
+    def test_incomplete_market_data_cannot_be_actionable_add(self):
+        stock = {"items": [{"ticker": "MU", "score": 95, "action": "CONSIDER ADDING", "market_metrics": {"has_data": False, "data_state": "SKIPPED_DEV_CAP"}}]}
+        result = build_daily_opportunity_engine({}, stock, {}, [], log_print=lambda msg: None)
+        self.assertEqual(result["actions"], [])
 
 
 if __name__ == "__main__":

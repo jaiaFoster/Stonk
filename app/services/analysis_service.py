@@ -63,6 +63,7 @@ from app.services.data_requirement_planner import DataRequirementPlanner
 from app.services.strategy_opportunity_repository import StrategyOpportunityRepository
 from app.services.strategy_execution_service import collect_strategy_results
 from app.services.actionability_service import attach_actionability_to_rows
+from app.services.shared_market_metrics_service import build_canonical_market_metrics, build_ticker_market_metrics
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
 from app.services.skew_momentum_vertical_service import build_skew_momentum_vertical_strategy
 from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
@@ -379,52 +380,6 @@ def _record_payload(record: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else record
 
 
-def _market_metrics_from_hub(hub: MarketDataHub, tickers: list[str], plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    output: dict[str, dict[str, Any]] = {}
-    for ticker in tickers:
-        symbol = str(ticker).upper()
-        state = (plan.get("by_ticker", {}).get(symbol, {}) or {}).get("state")
-        if state in {"SKIPPED_DEV_CAP", "SKIPPED_PROVIDER_BUDGET"}:
-            output[symbol] = {"has_data": False, "data_state": state, "error": _missing_data_message(state)}
-            continue
-        shared = hub.get_derived_metrics(
-            symbol,
-            metrics=["momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m", "sma_50", "sma_200", "relative_strength_vs_QQQ", "average_volume_30d", "realized_volatility_30d"],
-            required=True,
-            strategy_id="shared_market_metrics",
-        )
-        quote = _record_payload(hub.get_quote(symbol, required=False, strategy_id="shared_market_metrics"))
-        last = _safe_float(quote.get("last") or quote.get("close") or quote.get("bid"))
-        has_data = any(shared.get(key) is not None for key in ("momentum_3m", "momentum_6m", "sma_50", "sma_200"))
-        output[symbol] = {
-            "has_data": has_data,
-            "data_state": "COMPLETE" if has_data else "MISSING_PROVIDER_FAILED",
-            "source": "market_data_hub",
-            "return_1m_pct": shared.get("momentum_1m"),
-            "return_3m_pct": shared.get("momentum_3m"),
-            "return_6m_pct": shared.get("momentum_6m"),
-            "return_12m_pct": shared.get("momentum_12m"),
-            "sma_50": shared.get("sma_50"),
-            "sma_200": shared.get("sma_200"),
-            "above_sma_50": last > shared["sma_50"] if last is not None and shared.get("sma_50") else None,
-            "above_sma_200": last > shared["sma_200"] if last is not None and shared.get("sma_200") else None,
-            "relative_strength_6m_pct": shared.get("relative_strength_vs_QQQ"),
-            "average_volume_30d": shared.get("average_volume_30d"),
-            "volatility_30d_pct": shared.get("realized_volatility_30d"),
-            "error": "" if has_data else shared.get("reason") or _missing_data_message("MISSING_PROVIDER_FAILED"),
-        }
-    return output
-
-
-def _missing_data_message(state: str) -> str:
-    return {
-        "SKIPPED_DEV_CAP": "Market metrics not evaluated in this dev run. Reason: skipped by dev data cap.",
-        "SKIPPED_PROVIDER_BUDGET": "Market metrics not evaluated. Reason: shared provider budget was exhausted.",
-        "MISSING_UNSUPPORTED": "Market metrics unavailable for this asset type.",
-        "STALE_CACHE_USED": "Using cached market metrics because live refresh failed.",
-    }.get(state, "Market metrics unavailable after configured provider attempts.")
-
-
 def _attach_strategy_actionability(result: dict[str, Any], *keys: str) -> dict[str, Any]:
     for key in keys:
         if isinstance(result.get(key), list):
@@ -601,17 +556,19 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     run_context.analysis_tickers = analysis_tickers
     hub = MarketDataHub(run_context, repository=market_data_repository, log_print=log_print)
     strategy_requirements = collect_requirements(run_context)
-    requirement_plan = DataRequirementPlanner(
+    planner = DataRequirementPlanner(
         clean_mode,
         dev_ticker_cap=config.DEV_MAX_TICKERS if clean_mode == "dev" else None,
-    ).fulfill(hub, strategy_requirements)
-    run_context.requirements = {item.strategy_id: asdict(item) for item in strategy_requirements}
-    tradier_snapshot["_strategy_requirement_plan"] = requirement_plan
-    for ticker in requirement_plan["skipped_tickers"]:
-        for strategy_id in requirement_plan["by_ticker"][ticker]["strategies"]:
-            run_context.audit(ticker, "requirements", "skipped", state="SKIPPED_DEV_CAP", strategy_id=strategy_id)
+    )
+    log_print(f"StrategyRegistry: collecting requirements for {len(strategy_requirements)} strategy plugins")
+    requirement_plan = planner.merge(strategy_requirements, provider_budget=hub.budget.remaining)
     log_print(f"DataRequirementPlanner: received {len(strategy_requirements)} strategy requirement set(s)")
     log_print(f"DataRequirementPlanner: merged requirements for {requirement_plan['ticker_count']} ticker(s)")
+    log_print(f"ProviderBudget: approved {len(requirement_plan['approved'])} ticker(s); skipped {len(requirement_plan['skipped_provider_budget'])}")
+    log_print("MarketDataHub: fulfilling approved requirements")
+    planner.fulfill_plan(hub, strategy_requirements, requirement_plan)
+    run_context.requirements = {item.strategy_id: asdict(item) for item in strategy_requirements}
+    tradier_snapshot["_strategy_requirement_plan"] = requirement_plan
     watchlist_tickers = [item.get("ticker") for item in (watchlist_candidates or {}).get("items", []) if item.get("ticker")]
     if watchlist_tickers:
         log_print(f"Watchlist tickers added to scan universe: {watchlist_tickers}")
@@ -651,10 +608,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     market_metrics = run_optional_step(
         "market_data",
         "Building shared MarketDataHub metrics...",
-        lambda: _market_metrics_from_hub(hub, analysis_tickers, requirement_plan),
+        lambda: build_canonical_market_metrics(hub, analysis_tickers, requirement_plan),
         {},
         lambda result: f"Market metrics available for {sum(1 for item in (result or {}).values() if item.get('has_data'))}/{len(result or {})} ticker(s).",
     )
+    benchmark_metrics = build_ticker_market_metrics(hub, config.MARKET_BENCHMARK_TICKER, None)
 
     earnings_events = run_optional_step(
         "earnings_timestamp",
@@ -697,6 +655,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             log_print=log_print,
             max_tickers=tradier_max_tickers_for_mode(clean_mode),
             allowed_tickers=external_tickers if clean_mode == "dev" else None,
+            data_hub=hub,
         ),
         {},
         lambda result: f"Tradier snapshots available for {sum(1 for item in (result or {}).values() if isinstance(item, dict) and item.get('has_data'))}/{len(result or {})} entries.",
@@ -704,6 +663,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     # Re-attach metadata after the Tradier provider replaces the snapshot dict.
     tradier_snapshot["_watchlist_candidates"] = watchlist_candidates
+    tradier_snapshot["_benchmark_metrics"] = benchmark_metrics
     tradier_snapshot["_earnings_events"] = {
         "items": earnings_events,
         "has_data": any(item.get("has_data") for item in earnings_events.values()),

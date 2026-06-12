@@ -122,6 +122,8 @@ Patch 25D routes shared candle/quote/chain facts through `MarketDataHub`, fulfil
 
 Reports load from the latest successful persistent snapshot without triggering providers. Hard-failed strategy rows preserve signal quality but expose zero actionability. Forward Factor remains deferred until production validation completes. See `docs/shared_data_integration_completion_v1.md`.
 
+Patch 25E restores one canonical shared-metrics shape across Holdings, Macro, Stock Momentum, Portfolio Gap, Potential Adds, and Risk Review. Actionable adds require complete trend/liquidity/freshness facts; incomplete rows remain informational. Requirement planning now consolidates overlapping requests before provider fulfillment, and same-run broad option chains satisfy narrower requests. See `docs/shared_metrics_requirement_correctness_v1.md`.
+
 ---
 
 ## Key report sections
@@ -289,13 +291,14 @@ Leave `ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS` blank unless you intentionally want to
 WATCHLIST_ENABLED=true
 WATCHLIST_SOURCE=robinhood,manual
 WATCHLIST_NAMES=
+WATCHLIST_NAME_ALIASES=My First List:List 01
 WATCHLIST_TICKERS=
 WATCHLIST_MAX_TICKERS_PER_RUN=20
 WATCHLIST_PRIORITIZE_FOR_SCANS=true
 WATCHLIST_INCLUDE_ALREADY_HELD=true
 ```
 
-Leave `WATCHLIST_NAMES` blank to discover and scan all Robinhood watchlists. Use `WATCHLIST_TICKERS` only as an optional fallback scan list.
+Leave `WATCHLIST_NAMES` blank to discover and scan all Robinhood watchlists. Current production list name is `List 01`; `WATCHLIST_NAME_ALIASES` can map an older configured name to it. Use `WATCHLIST_TICKERS` only as an optional fallback scan list.
 
 ### Portfolio gap controls
 
@@ -571,6 +574,14 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Calendar, Skew Momentum Vertical, and Stock Momentum publish requirements and normalized results through an explicit local strategy registry.
 - Opening `/?token=...` loads the latest successful report snapshot without provider calls.
 - Details: `docs/shared_market_data_foundation_v1.md` and `docs/strategy_registry_foundation_v1.md`.
+
+### Shared Metrics Correctness v1
+
+- Canonical shared metrics restore current price, momentum, SMA trend, liquidity, volatility, QQQ relative strength, provenance, freshness, and explicit data state to all decision surfaces.
+- Missing or incomplete facts cannot become actionable stock-add rows.
+- Strategy requirements are collected and merged before shared provider fulfillment.
+- Normal dashboard GET loads latest successful snapshot with zero provider calls.
+- Details: `docs/shared_metrics_requirement_correctness_v1.md`.
 
 ### Railway start command
 

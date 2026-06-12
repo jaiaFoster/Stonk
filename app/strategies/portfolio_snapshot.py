@@ -30,6 +30,7 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from app.models.recommendation import Recommendation
+from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
 
 
 class PortfolioSnapshotStrategy:
@@ -140,7 +141,7 @@ class PortfolioSnapshotStrategy:
         duplicate_count = ticker_counts.get(ticker, 0)
         articles = news_map.get(ticker, []) or []
         metrics = dict(market_metrics.get(ticker, {}) or {})
-        has_market_data = bool(metrics.get("has_data"))
+        has_market_data = required_market_metrics_complete(metrics)
 
         score = 50.0
         breakdown: dict[str, float] = {"base": 50.0}
@@ -231,9 +232,8 @@ class PortfolioSnapshotStrategy:
         risks: list[str] = []
         breakdown: dict[str, float] = {}
 
-        if not metrics or not metrics.get("has_data"):
-            error = metrics.get("error") if metrics else "No market metrics were returned."
-            risks.append(f"Market trend/momentum data unavailable: {error}")
+        if not required_market_metrics_complete(metrics):
+            risks.append(data_state_message(metrics.get("data_state") if metrics else None, fetched_at=(metrics or {}).get("fetched_at"), reason=(metrics or {}).get("error")))
             breakdown["market_data"] = 0.0
             return 0.0, breakdown, reasons, risks
 
@@ -586,7 +586,7 @@ class PortfolioSnapshotStrategy:
     @staticmethod
     def _next_check_for_action(action: str, has_market_data: bool) -> str:
         if not has_market_data:
-            return "Market metrics unavailable; recheck after Finnhub data is available."
+            return "Market metrics unavailable; recheck after shared provider data is available."
         if action in {"STRONG ADD / HOLD", "ADD / HOLD", "HOLD / WATCH ADD"}:
             return "Before adding, confirm price still holds trend/relative-strength leadership."
         if action == "HOLD":

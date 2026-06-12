@@ -16,6 +16,8 @@ from app.services.market_data_hub_service import MarketDataHub
 from app.services.market_data_repository import MarketDataRepository
 from app.services.report_snapshot_service import ReportSnapshotRepository
 from app.services.run_data_context_service import create_run_data_context
+from app.services.shared_market_metrics_service import build_canonical_market_metrics
+from app.services.data_state_message_service import data_state_message
 
 
 class FakeTradier:
@@ -23,6 +25,7 @@ class FakeTradier:
 
     def __init__(self):
         self.quote_calls = 0
+        self.chain_calls = 0
 
     def get_quotes(self, tickers):
         self.quote_calls += 1
@@ -32,6 +35,7 @@ class FakeTradier:
         return ["2030-01-18"]
 
     def get_option_chain(self, ticker, expiration, greeks=True):
+        self.chain_calls += 1
         return [{"symbol": ticker + "C", "strike": 100}]
 
 
@@ -98,6 +102,35 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             hub.get_daily_candles("CCL", min_bars=240, interval="daily")
             self.assertEqual(calls, ["CCL"])
 
+    def test_option_chain_equivalent_and_narrower_requests_reuse_broad_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            provider = FakeTradier()
+            hub = MarketDataHub(create_run_data_context("dev"), repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")), provider=provider)
+            hub.get_options_chain("ALGN", min_dte=7, max_dte=45, expirations=3)
+            hub.get_options_chain("ALGN", min_dte=14, max_dte=30, expirations=2)
+            self.assertEqual(provider.chain_calls, 1)
+
+    def test_canonical_metrics_map_contains_shared_price_trend_and_liquidity(self):
+        bars = [{"date": f"2025-{(i // 28) % 12 + 1:02d}-{i % 28 + 1:02d}", "close": 100 + i, "volume": 1000000 + i} for i in range(260)]
+        with tempfile.TemporaryDirectory() as temp:
+            hub = MarketDataHub(
+                create_run_data_context("dev"),
+                repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")),
+                provider=FakeTradier(),
+                candle_fetcher=lambda ticker, log_print=None: {"provider": "tradier", "bars": bars, "quality": {"confidence": "high"}},
+            )
+            metrics = build_canonical_market_metrics(hub, ["NVDA"], {"by_ticker": {"NVDA": {"state": "APPROVED"}}})["NVDA"]
+            self.assertTrue(metrics["required_market_data_complete"])
+            self.assertEqual(metrics["current_price"], 100)
+            self.assertIsNotNone(metrics["return_3m_pct"])
+            self.assertIsNotNone(metrics["sma_200"])
+            self.assertIsNotNone(metrics["avg_volume_30d"])
+
+    def test_data_state_messages_are_provider_neutral(self):
+        self.assertIn("dev data cap", data_state_message("SKIPPED_DEV_CAP"))
+        self.assertIn("provider budget", data_state_message("SKIPPED_PROVIDER_BUDGET"))
+        self.assertNotIn("Finnhub", data_state_message("MISSING_PROVIDER_FAILED"))
+
     def test_hub_suppresses_repeated_provider_failure(self):
         class Broken(FakeTradier):
             def get_quotes(self, tickers):
@@ -120,6 +153,16 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
         self.assertEqual(plan["allowed_tickers"], ["NVDA"])
         self.assertEqual(plan["by_ticker"]["ORCL"]["state"], SKIPPED_DEV_CAP)
         self.assertIn("options_chain", plan["by_ticker"]["NVDA"]["data_types"])
+
+    def test_planner_consolidates_overlapping_strategy_requirements_per_ticker(self):
+        plan = DataRequirementPlanner("prod").merge([
+            stock_momentum_requirement(["NVDA"]),
+            skew_vertical_requirement(["NVDA"]),
+        ])
+        self.assertEqual(len(plan["approved_requirements"]), 1)
+        merged = plan["approved_requirements"][0]
+        self.assertTrue(merged["needs_options_chain"])
+        self.assertIn("momentum_3m", merged["required_derived_metrics"])
 
     def test_shared_metrics_compute_momentum_sma_volume_volatility(self):
         bars = [{"close": 100 + i, "volume": 1000 + i} for i in range(260)]
@@ -146,6 +189,7 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
         self.assertEqual(coverage["per_strategy"]["skew_momentum_vertical"]["COMPLETE"], 1)
         self.assertEqual(coverage["counters"]["provider_fetches"], 1)
         self.assertEqual(coverage["counters"]["skipped_dev_cap"], 1)
+        self.assertEqual(coverage["per_strategy_summary"]["skew_momentum_vertical"]["skipped"], 1)
 
     def test_completed_report_snapshot_survives_and_loads(self):
         with tempfile.TemporaryDirectory() as temp:
