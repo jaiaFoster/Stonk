@@ -358,6 +358,13 @@ WATCHLIST_NAMES = [
     for name in os.environ.get("WATCHLIST_NAMES", "").split(",")
     if name.strip()
 ]
+WATCHLIST_NAME_ALIASES = {
+    source.strip(): target.strip()
+    for pair in os.environ.get("WATCHLIST_NAME_ALIASES", "My First List:List 01").split(",")
+    if ":" in pair
+    for source, target in [pair.split(":", 1)]
+    if source.strip() and target.strip()
+}
 WATCHLIST_TICKERS = [
     ticker.strip().upper()
     for ticker in os.environ.get("WATCHLIST_TICKERS", "").split(",")

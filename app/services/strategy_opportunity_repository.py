@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,9 +46,9 @@ class StrategyOpportunityRepository:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             for strategy_id, result in results.items():
-                for index, row in enumerate(result.get("rows", []) or []):
+                for row in result.get("rows", []) or []:
                     ticker = str(row.get("ticker") or row.get("symbol") or "UNKNOWN")
-                    key = str(row.get("structure_key") or row.get("possible_spread") or row.get("structure") or f"{ticker}:{index}")
+                    key = opportunity_structure_key(strategy_id, row)
                     verdict = str(row.get("final_verdict") or row.get("verdict") or row.get("action") or "UNKNOWN")
                     conn.execute("""INSERT INTO strategy_opportunities
                         (strategy_id,structure_key,strategy_version,ticker,direction,expiration,verdict,display_state,score,
@@ -84,3 +85,34 @@ def _display_state(verdict: str) -> str:
     if "SKIPPED" in upper or "DATA CAP" in upper:
         return "SKIPPED"
     return "FAIL"
+
+
+def opportunity_structure_key(strategy_id: str, row: dict[str, Any]) -> str:
+    spread = row.get("possible_spread") if isinstance(row.get("possible_spread"), dict) else {}
+    identity = {
+        "strategy_id": str(strategy_id).lower().strip(),
+        "ticker": str(row.get("ticker") or row.get("symbol") or "UNKNOWN").upper().strip(),
+        "direction": str(row.get("direction") or spread.get("direction") or "").lower().strip(),
+        "structure_type": str(row.get("structure_type") or row.get("trade_type") or spread.get("option_type") or "").lower().strip(),
+        "front_expiration": _date(row.get("front_expiration") or spread.get("front_expiration") or row.get("expiration")),
+        "back_expiration": _date(row.get("back_expiration") or spread.get("back_expiration")),
+        "long_strike": _number(row.get("long_strike") or spread.get("long_strike")),
+        "short_strike": _number(row.get("short_strike") or spread.get("short_strike") or row.get("strike")),
+        "event_date": _date(row.get("event_date") or row.get("earnings_date")),
+    }
+    explicit = row.get("structure_key")
+    if explicit:
+        identity["explicit"] = str(explicit).strip()
+    raw = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    return f"{identity['ticker']}:{hashlib.sha256(raw.encode()).hexdigest()[:20]}"
+
+
+def _date(value: Any) -> str:
+    return str(value or "")[:10]
+
+
+def _number(value: Any) -> str:
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return ""

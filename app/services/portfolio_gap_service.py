@@ -12,6 +12,7 @@ from collections import defaultdict
 from typing import Any
 
 from app import config
+from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
 
 
 CORE_BUCKETS = [
@@ -437,7 +438,8 @@ def _score_watchlist_suggestion(
         score -= 4
         risks.append("Watchlist stock review score is weak or uncertain.")
 
-    if metrics.get("has_data"):
+    market_complete = required_market_metrics_complete(metrics)
+    if market_complete:
         if _to_float(metrics.get("return_6m_pct")) > 10 and metrics.get("above_sma_200") is True:
             score += 8
             reasons.append("Trend confirmation: positive 6-month return and above 200-day trend.")
@@ -448,7 +450,7 @@ def _score_watchlist_suggestion(
             score += 4
             reasons.append("Relative strength versus benchmark is positive.")
     else:
-        risks.append("No market trend data available yet; lower confidence.")
+        risks.append(data_state_message(metrics.get("data_state"), fetched_at=metrics.get("fetched_at"), reason=metrics.get("error")))
 
     if news_items:
         score += min(4, len(news_items) * 2)
@@ -469,6 +471,10 @@ def _score_watchlist_suggestion(
     else:
         category = "LOW PRIORITY / WAIT"
 
+    if not market_complete and "AVOID" not in category:
+        category = "WATCH / DATA INCOMPLETE"
+        next_check = "Wait for complete shared trend, liquidity, and freshness data before treating this as actionable."
+
     return {
         "ticker": ticker,
         "score": max(0.0, min(100.0, score)),
@@ -481,6 +487,8 @@ def _score_watchlist_suggestion(
         "reasons": reasons[:5],
         "risks": risks[:5],
         "next_check": next_check,
+        "market_metrics": metrics,
+        "required_market_data_complete": market_complete,
     }
 
 

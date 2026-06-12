@@ -56,7 +56,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
     warnings: list[str] = []
     if config.WATCHLIST_NAMES:
         warnings.append(
-            "WATCHLIST_NAMES is set. Leave it blank to scan all discovered Robinhood watchlists unless you intentionally want a specific list."
+            f"WATCHLIST_NAMES is set to {config.WATCHLIST_NAMES}. Configured aliases: {config.WATCHLIST_NAME_ALIASES}. Confirm requested names exist; preferred current list is List 01."
         )
     if clean_mode == "dev" and int(config.DEV_MAX_TICKERS or 0) <= 2:
         warnings.append("DEV_MAX_TICKERS is very low; stock/earnings discovery will be API-safe but narrow.")
@@ -109,6 +109,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_opportunity_cache_enabled": config.CALENDAR_OPPORTUNITY_CACHE_ENABLED,
         "calendar_opportunity_db_path": config.CALENDAR_OPPORTUNITY_DB_PATH,
         "stock_momentum_watchlist_market_data_max": config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX,
+        "watchlist_name_aliases": dict(config.WATCHLIST_NAME_ALIASES),
         "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
         "robinhood_options_scan_default_account": getattr(config, "ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT", True),
         "robinhood_options_default_account_label": getattr(config, "ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL", "Investing"),

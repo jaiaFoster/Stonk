@@ -10,6 +10,7 @@ from html import escape
 from typing import Any
 
 from app import config
+from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
 from app.services.report_assets import REPORT_CSS, collapsible_pre
 
 
@@ -949,8 +950,12 @@ def _potential_add_groups(
             "next_step": _first_text(raw.get("next_step"), raw.get("next_check"), fallback="Next check pending"),
             "source": raw.get("source") or raw.get("category_source") or source,
             "risks": raw.get("risks", []) or [],
+            "market_metrics": raw.get("market_metrics", {}) or {},
         }
         group = "risk" if _source_or_text_indicates_risk(raw, source) else _action_group(action)
+        if group == "actionable" and not required_market_metrics_complete(normalized["market_metrics"]):
+            normalized["action"] = "WATCH / DATA INCOMPLETE"
+            group = "watch"
         groups[group].append(normalized)
         seen.add(ticker)
 
@@ -1064,7 +1069,7 @@ def _top_summary_html(
     skew = _skew_vertical_summary(skew_vertical)
     snapshot = pipeline_status.get("report_snapshot", {}) or {}
     source_text = (
-        f" · report generated {escape(str(snapshot.get('generated_at')))} · {escape(str(snapshot.get('source')))}"
+        f" · report generated {escape(str(snapshot.get('generated_at')))} · market data refreshed {escape(str(snapshot.get('market_data_refreshed_at')))} · active trades refreshed {escape(str(snapshot.get('active_trades_refreshed_at')))} · {escape(str(snapshot.get('source')))}"
         if snapshot.get("generated_at") else ""
     )
     skew_value = "OFF" if not skew["enabled"] else (
@@ -1127,12 +1132,19 @@ def _provider_chips(provider_status: dict[str, Any]) -> str:
     return "".join(chips)
 
 
-def _macro_context_html(recommendations: Recommendations, provider_status: dict[str, Any]) -> str:
+def _macro_context_html(recommendations: Recommendations, provider_status: dict[str, Any], benchmark_metrics: dict[str, Any] | None = None) -> str:
     metrics = [rec.get("market_metrics", {}) or {} for rec in recommendations if isinstance(rec.get("market_metrics"), dict)]
     with_data = [m for m in metrics if m.get("has_data")]
     above_200 = [m.get("above_sma_200") for m in with_data if m.get("above_sma_200") is not None]
     positive_6m = [m.get("return_6m_pct") for m in with_data if m.get("return_6m_pct") is not None]
-    if not with_data:
+    benchmark = benchmark_metrics or {}
+    if benchmark.get("required_market_data_complete"):
+        benchmark_above = benchmark.get("above_sma_200")
+        benchmark_6m = safe_float(benchmark.get("return_6m_pct"))
+        regime = "risk-on" if benchmark_above is True and benchmark_6m is not None and benchmark_6m > 0 else "risk-off" if benchmark_above is False else "neutral"
+        trend = f"QQQ {'above' if benchmark_above else 'below'} 200D · 6M {signed_pct(benchmark_6m)}"
+        bias = "adds allowed" if regime == "risk-on" else "defensive / avoid chasing" if regime == "risk-off" else "selective adds"
+    elif not with_data:
         regime = "partial data"
         trend = "trend unavailable"
         bias = "use position signals"
@@ -2075,8 +2087,9 @@ def _data_coverage_report(coverage: dict[str, Any]) -> str:
         f"Run context hits: {counters.get('run_context_hits', 0)}",
         f"SQLite cache hits: {counters.get('sqlite_cache_hits', 0)}",
         f"Provider fetches: {counters.get('provider_fetches', 0)}",
-        f"Stale fallbacks: {counters.get('stale_fallbacks', 0)}",
+        f"Stale fallbacks: {counters.get('stale_cache_fallbacks', 0)}",
         f"Provider failures: {counters.get('provider_failures', 0)}",
+        f"Provider failures suppressed: {counters.get('provider_failures_suppressed', 0)}",
         f"Skipped dev cap: {counters.get('skipped_dev_cap', 0)}",
         f"Skipped provider budget: {counters.get('skipped_provider_budget', 0)}",
         f"Duplicate fetches prevented: {counters.get('duplicate_fetches_prevented', 0)}",
@@ -2300,7 +2313,7 @@ def format_html(
         "macro-context",
         "Macro Context Strip",
         "Compact market context; missing macro inputs show as placeholders.",
-        _macro_context_html(display_recommendations, provider_status),
+        _macro_context_html(display_recommendations, provider_status, _snapshot_dict(parsed_tradier_snapshot, "_benchmark_metrics")),
         None,
     )
     active_calendar_html = _active_calendar_section_html(active_rows, provider_status)
@@ -3046,7 +3059,8 @@ def format_news_rows(news_map: NewsMap) -> str:
 
 def format_trend_summary(metrics: dict[str, Any]) -> str:
     if not metrics or not metrics.get("has_data"):
-        return '<span class="empty">Market trend data unavailable in this dev-limited/fallback-limited run.</span>'
+        message = data_state_message(metrics.get("data_state") if metrics else None, fetched_at=(metrics or {}).get("fetched_at"), reason=(metrics or {}).get("error"))
+        return f'<span class="empty">{escape(message)}</span>'
 
     parts = [
         f"6M {signed_pct(metrics.get('return_6m_pct'))}",

@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from app import config
+from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
 
 LogFn = Callable[[str], None]
 
@@ -127,7 +128,7 @@ def _score_ticker(
     risks: list[str] = []
     next_check = "Re-run with fresh trend and quote data before adding."
     metrics = metrics or {}
-    has_market = bool(metrics.get("has_data"))
+    has_market = required_market_metrics_complete(metrics)
 
     if has_market:
         r3 = _num(metrics.get("return_3m_pct"))
@@ -164,7 +165,7 @@ def _score_ticker(
             elif high_dist > -float(getattr(config, "STOCK_MOMENTUM_OVEREXTENDED_FROM_HIGH_PCT", 2) or 2):
                 risks.append("Very close to 52-week highs; avoid chasing without a setup.")
     else:
-        risks.append("No market trend data available; lower confidence stock setup.")
+        risks.append(data_state_message(metrics.get("data_state"), fetched_at=metrics.get("fetched_at"), reason=metrics.get("error")))
 
     allocation = _num((holding or {}).get("allocation_pct"))
     if allocation is None and recommendation:
@@ -205,6 +206,7 @@ def _score_ticker(
         "portfolio_status": "Already held" if holding else "Not currently held",
         "allocation_pct": allocation,
         "has_market_data": has_market,
+        "required_market_data_complete": has_market,
         "market_metrics": metrics,
         "gap_suggestion": gap_suggestion or {},
         "reasons": _dedupe(reasons)[:6],
@@ -218,6 +220,8 @@ def _action_for(score: float, has_market: bool, metrics: dict[str, Any], allocat
     max_alloc = float(getattr(config, "STOCK_MOMENTUM_MAX_SINGLE_NAME_ALLOCATION_PCT", 15) or 15)
     if allocation is not None and allocation >= max_alloc:
         return "HOLD / DO NOT ADD"
+    if not has_market:
+        return "WATCH / DATA INCOMPLETE"
     if score >= 78 and has_market:
         if high_dist is not None and high_dist > -float(getattr(config, "STOCK_MOMENTUM_OVEREXTENDED_FROM_HIGH_PCT", 2) or 2):
             return "ADD ON PULLBACK"

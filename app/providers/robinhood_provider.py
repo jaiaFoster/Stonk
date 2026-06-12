@@ -468,8 +468,7 @@ def get_watchlist_tickers(watchlist_names=None, max_tickers=None):
         else:
             print("Robinhood watchlist names found: none", flush=True)
 
-        target_names = {name.lower() for name in requested_names}
-        selected_names = [name for name in discovered_names if not target_names or name.lower() in target_names]
+        selected_names = _resolve_watchlist_names(requested_names, discovered_names)
 
         if requested_names and not selected_names:
             result["errors"].append(
@@ -589,6 +588,28 @@ def _append_watchlist_item(result, ticker, watchlist_name, raw_item):
                 "raw": raw_item if isinstance(raw_item, dict) else {"raw": str(raw_item)},
             }
         )
+
+
+def _resolve_watchlist_names(requested_names, discovered_names):
+    if not requested_names:
+        return list(discovered_names)
+    aliases = getattr(config, "WATCHLIST_NAME_ALIASES", {}) or {}
+    normalized_discovered = {_normalize_watchlist_name(name): name for name in discovered_names}
+    selected = []
+    for requested in requested_names:
+        candidates = [requested, aliases.get(requested)]
+        for candidate in candidates:
+            normalized = _normalize_watchlist_name(candidate)
+            if normalized and normalized in normalized_discovered:
+                actual = normalized_discovered[normalized]
+                if actual not in selected:
+                    selected.append(actual)
+                break
+    return selected
+
+
+def _normalize_watchlist_name(value):
+    return " ".join(str(value or "").strip().lower().split())
 
 
 def _discover_watchlist_names(full_payload, names_payload):

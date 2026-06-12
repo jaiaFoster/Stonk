@@ -11,6 +11,8 @@ from app.services.actionability_service import attach_actionability
 from app.services.strategy_execution_service import execute_strategy_registry
 from app.services.staged_scan_service import StagedScan
 from app.strategies.registry import collect_requirements, normalize_strategy_results
+from app.services.strategy_opportunity_repository import opportunity_structure_key
+from app.providers.robinhood_provider import _resolve_watchlist_names
 
 
 class StrategyRegistryFoundationTests(unittest.TestCase):
@@ -50,6 +52,20 @@ class StrategyRegistryFoundationTests(unittest.TestCase):
             rows = repo.recent(strategy_id="earnings_calendar")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["strategy_id"], "earnings_calendar")
+
+    def test_generic_opportunity_identity_dedupes_same_structure_not_different_strikes(self):
+        base = {
+            "ticker": "CCL", "direction": "bullish", "front_expiration": "2030-01-18",
+            "back_expiration": "2030-02-18", "long_strike": 100, "short_strike": 100,
+            "earnings_date": "2030-01-25", "verdict": "WATCH",
+        }
+        same = dict(base, ticker="ccl", long_strike=100.0)
+        different = dict(base, long_strike=105)
+        self.assertEqual(opportunity_structure_key("earnings_calendar", base), opportunity_structure_key("earnings_calendar", same))
+        self.assertNotEqual(opportunity_structure_key("earnings_calendar", base), opportunity_structure_key("earnings_calendar", different))
+
+    def test_watchlist_alias_resolves_without_fallback(self):
+        self.assertEqual(_resolve_watchlist_names(["My First List"], ["List 01", "Options Watchlist"]), ["List 01"])
 
     def test_strategy_two_missing_momentum_is_data_unavailable_not_weak_signal(self):
         result = build_skew_momentum_vertical_strategy(

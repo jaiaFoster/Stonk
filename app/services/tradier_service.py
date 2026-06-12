@@ -29,6 +29,7 @@ def get_tradier_snapshot_for_positions(
     log_print: LogFn | None = None,
     max_tickers: int | None = None,
     allowed_tickers: list[str] | None = None,
+    data_hub: Any | None = None,
 ) -> TradierSnapshot:
     """Fetch Tradier quote/expiration/chain samples for selected equity tickers."""
     logger = log_print or (lambda msg: print(msg, flush=True))
@@ -57,7 +58,10 @@ def get_tradier_snapshot_for_positions(
     snapshot: TradierSnapshot = {}
 
     try:
-        quotes = provider.get_quotes(selected, greeks=False)
+        quotes = {
+            ticker: _record_payload(data_hub.get_quote(ticker, required=False, strategy_id="tradier_snapshot"))
+            for ticker in selected
+        } if data_hub is not None else provider.get_quotes(selected, greeks=False)
         logger(f"Tradier quotes fetched for {len(quotes)}/{len(selected)} ticker(s)")
     except Exception as e:
         safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
@@ -67,15 +71,12 @@ def get_tradier_snapshot_for_positions(
     for ticker in selected:
         quote = quotes.get(ticker, {})
         try:
-            expirations = provider.get_expirations(ticker)
+            shared_chain = _record_payload(data_hub.get_preloaded_options_chain(ticker, strategy_id="tradier_snapshot")) if data_hub is not None else {}
+            expirations = list(shared_chain.get("expirations", []) or []) if shared_chain else provider.get_expirations(ticker)
             selected_expiration = _select_expiration(expirations, min_days=config.TRADIER_MIN_DAYS_TO_EXPIRATION)
-            chain: list[dict[str, Any]] = []
-            if selected_expiration:
-                chain = provider.get_option_chain(
-                    ticker,
-                    selected_expiration,
-                    greeks=bool(config.TRADIER_INCLUDE_GREEKS),
-                )
+            chain: list[dict[str, Any]] = list((shared_chain.get("chains", {}) or {}).get(selected_expiration, []) or []) if shared_chain else []
+            if selected_expiration and not chain and data_hub is None:
+                chain = provider.get_option_chain(ticker, selected_expiration, greeks=bool(config.TRADIER_INCLUDE_GREEKS))
 
             snapshot[ticker] = _summarize_ticker(
                 ticker=ticker,
@@ -111,6 +112,12 @@ def get_tradier_snapshot_for_positions(
             }
 
     return snapshot
+
+
+def _record_payload(record: Any) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {}
+    return record.get("payload") if isinstance(record.get("payload"), dict) else record
 
 
 def _equity_tickers_from_positions(positions: list[dict[str, Any]]) -> list[str]:

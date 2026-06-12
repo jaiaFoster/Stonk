@@ -38,10 +38,21 @@ class MarketDataHub:
         return self._get(ticker, "candles", self.context.candles, config.MARKET_DATA_CANDLES_TTL_SECONDS, lambda: self.candle_fetcher(ticker, log_print=self.log), "multi_provider", required, strategy_id, signature, force_refresh)
 
     def get_options_chain(self, ticker: str, *, min_dte: int | None = None, max_dte: int | None = None, expirations: int | None = None, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
-        signature = self._signature("options_chain", min_dte=min_dte, max_dte=max_dte, expirations=int(expirations or 1))
+        normalized_min, normalized_max, normalized_expirations = self._normalize_chain_params(min_dte, max_dte, expirations)
+        signature = self._signature("options_chain", min_dte=normalized_min, max_dte=normalized_max, expirations=normalized_expirations)
+        if not force_refresh:
+            reusable = self._find_reusable_option_chain(ticker, normalized_min, normalized_max, normalized_expirations)
+            if reusable is not None:
+                self._audit(ticker, "options_chain", "run_cache", COMPLETE, strategy_id)
+                self.log(f"MarketDataHub: options_chain {ticker.upper()} run_context_hit")
+                return reusable
         def fetch() -> dict[str, Any]:
-            dates = self.provider.get_expirations(ticker)[: max(1, int(expirations or 1))]
-            return {"expirations": dates, "chains": {date: self.provider.get_option_chain(ticker, date, greeks=True) for date in dates}}
+            dates = self.provider.get_expirations(ticker)[:normalized_expirations]
+            return {
+                "expirations": dates,
+                "chains": {date: self.provider.get_option_chain(ticker, date, greeks=True) for date in dates},
+                "request_scope": {"min_dte": normalized_min, "max_dte": normalized_max, "expirations": normalized_expirations},
+            }
         return self._get(ticker, "options_chain", self.context.options_chains, config.MARKET_DATA_OPTIONS_CHAIN_TTL_SECONDS, fetch, "tradier", required, strategy_id, signature, force_refresh)
 
     def get_earnings_event(self, ticker: str, *, lookahead_days: int = 45, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
@@ -101,6 +112,15 @@ class MarketDataHub:
     def mark_skipped(self, ticker: str, strategy_id: str, state: str) -> None:
         self._audit(ticker, "requirements", "skipped", state, strategy_id)
 
+    def get_preloaded_options_chain(self, ticker: str, *, strategy_id: str = "") -> dict[str, Any] | None:
+        prefix = f"{ticker.upper()}|options_chain:"
+        for key, record in self.context.options_chains.items():
+            if key.startswith(prefix):
+                self._audit(ticker, "options_chain", "run_cache", COMPLETE, strategy_id)
+                self.log(f"MarketDataHub: options_chain {ticker.upper()} run_context_hit")
+                return record
+        return None
+
     def _get(self, ticker: str, data_type: str, target: dict[str, Any], ttl: int, fetcher: Callable[[], Any], provider: str, required: bool, strategy_id: str, signature: str = "default", force_refresh: bool = False) -> Any:
         symbol = ticker.upper()
         key = self._key(symbol, signature)
@@ -115,7 +135,7 @@ class MarketDataHub:
             self.log(f"MarketDataHub: {data_type} {symbol} sqlite_cache_hit")
             return target[key]
         if self.repository.provider_error_suppressed(symbol, data_type, provider):
-            self._audit(symbol, data_type, "skipped", "MISSING_PROVIDER_FAILED", strategy_id, provider=provider, reason="Recent provider failure temporarily suppressed.")
+            self._audit(symbol, data_type, "provider_failure_suppressed", "MISSING_PROVIDER_FAILED", strategy_id, provider=provider, reason="Recent provider failure temporarily suppressed.")
             stale = self.repository.get(symbol, data_type, cache_key=signature, allow_stale=True)
             if stale:
                 target[key] = stale.to_dict()
@@ -151,6 +171,28 @@ class MarketDataHub:
 
     def _audit(self, ticker: str, data_type: str, source: str, state: str, strategy_id: str, **details: Any) -> None:
         self.context.audit(ticker.upper(), data_type, source, state=state, strategy_id=strategy_id, **details)
+
+    def _find_reusable_option_chain(self, ticker: str, min_dte: int, max_dte: int, expirations: int) -> Any:
+        prefix = f"{ticker.upper()}|options_chain:"
+        for key, record in self.context.options_chains.items():
+            if not key.startswith(prefix):
+                continue
+            payload = record.get("payload", record) if isinstance(record, dict) else {}
+            scope = payload.get("request_scope", {}) if isinstance(payload, dict) else {}
+            try:
+                if int(scope.get("min_dte", min_dte)) <= min_dte and int(scope.get("max_dte", max_dte)) >= max_dte and int(scope.get("expirations", 0)) >= expirations:
+                    return record
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _normalize_chain_params(min_dte: int | None, max_dte: int | None, expirations: int | None) -> tuple[int, int, int]:
+        return (
+            max(0, int(min_dte if min_dte is not None else 0)),
+            max(0, int(max_dte if max_dte is not None else 365)),
+            max(1, int(expirations if expirations is not None else 1)),
+        )
 
     @staticmethod
     def _signature(data_type: str, **params: Any) -> str:
