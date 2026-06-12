@@ -7,7 +7,7 @@ from typing import Any
 from app import config
 from app.models.market_data_models import StrategyDisplayMetadata, StrategyResult
 from app.services.actionability_service import attach_actionability_to_rows
-from app.services.data_requirement_service import earnings_calendar_requirement, skew_vertical_requirement, stock_momentum_requirement
+from app.services.data_requirement_service import earnings_calendar_requirement, forward_factor_requirement, skew_vertical_requirement, stock_momentum_requirement
 
 
 def _tickers(context: Any) -> list[str]:
@@ -72,11 +72,32 @@ class StockMomentumStrategy:
         return _normalize(self, raw, raw.get("items", []) or [])
 
 
+class ForwardFactorCalendarStrategy:
+    strategy_id = "forward_factor_calendar"
+    strategy_label = "Forward Factor Calendar"
+    version = "v1"
+    display_metadata = StrategyDisplayMetadata("FF", "Forward Factor Calendar", "Forward Factor", 25)
+
+    def is_enabled(self) -> bool:
+        return bool(config.FORWARD_FACTOR_STRATEGY_ENABLED)
+
+    def build_universe(self, context: Any) -> list[str]:
+        tickers = _tickers(context)
+        cap = config.FF_DEV_MAX_TICKERS_PER_RUN if getattr(context, "mode", "prod") == "dev" else config.FF_MAX_TICKERS_PER_RUN
+        return tickers[:cap]
+
+    def data_requirements(self, context: Any, universe: list[str]):
+        return forward_factor_requirement(universe)
+
+    def normalize_result(self, raw: dict[str, Any], context: Any) -> StrategyResult:
+        return _normalize(self, raw, raw.get("items", []) or raw.get("rows", []) or [])
+
+
 def _normalize(plugin: Any, raw: dict[str, Any], rows: list[dict[str, Any]]) -> StrategyResult:
     rows = attach_actionability_to_rows(rows)
     def verdict(row: dict[str, Any]) -> str:
         return str(row.get("final_verdict") or row.get("verdict") or row.get("action") or "").upper()
-    pass_count = sum(1 for row in rows if verdict(row).startswith(("PASS", "CONSIDER ADDING", "ADD ON")))
+    pass_count = sum(1 for row in rows if verdict(row).startswith(("PASS", "DRY RUN PASS", "CONSIDER ADDING", "ADD ON")))
     watch_count = sum(1 for row in rows if "WATCH" in verdict(row) or "RESEARCH" in verdict(row))
     skipped_count = sum(1 for row in rows if "SKIPPED" in verdict(row) or "DATA CAP" in verdict(row))
     fail_count = max(0, len(rows) - pass_count - watch_count - skipped_count)

@@ -1064,6 +1064,7 @@ def _top_summary_html(
     pipeline_status: dict[str, Any],
     provider_status: dict[str, Any],
     skew_vertical: dict[str, Any],
+    strategy_results: dict[str, Any],
 ) -> str:
     mode = _first_text(pipeline_status.get("mode"), pipeline_status.get("run_mode"), fallback="dev/prod")
     skew = _skew_vertical_summary(skew_vertical)
@@ -1075,6 +1076,8 @@ def _top_summary_html(
     skew_value = "OFF" if not skew["enabled"] else (
         "0" if skew["row_count"] == 0 else f"{skew['pass_count']}P · {skew['watch_count']}W · {skew['fail_count']}F"
     )
+    ff = strategy_results.get("forward_factor_calendar", {}) or {}
+    ff_value = "OFF" if not ff.get("enabled", True) else f"{ff.get('pass_count', 0)}P · {ff.get('watch_count', 0)}W · {ff.get('fail_count', 0)}F"
     return f"""
     <header class="top-summary">
         <div class="summary-title">
@@ -1088,6 +1091,7 @@ def _top_summary_html(
             {_chip("ADDS", adds_count, "good" if adds_count else "neutral", "#actionable-adds")}
             {_chip("BLOCKED", blocked_count, "bad" if blocked_count else "neutral", "#blocked-calendars")}
             {_chip("SKEW", skew_value, "good" if skew["pass_count"] else "warn" if skew["watch_count"] or skew["fail_count"] else "neutral", "#skew-verticals")}
+            {_chip("FF DRY", ff_value, "warn" if ff.get("rows") else "neutral", "#forward-factor")}
             {_chip("MODE", mode, "neutral")}
             {_provider_chips(provider_status)}
         </div>
@@ -1482,6 +1486,7 @@ def _build_daily_brief_export(
     blocked_rows: list[dict[str, Any]],
     portfolio_gap: dict[str, Any],
     skew_vertical: dict[str, Any],
+    forward_factor: dict[str, Any],
 ) -> str:
     skew = _skew_vertical_summary(skew_vertical)
     lines = [
@@ -1515,6 +1520,12 @@ def _build_daily_brief_export(
             f"Best watch: {row.get('ticker', 'UNKNOWN')} {_first_text(row.get('direction'), fallback='review')} vertical, "
             f"blocked because {_first_text(row.get('primary_blocker'), row.get('skew_reason'), row.get('momentum_reason'), fallback='requirements did not pass')}."
         )
+    lines += [
+        "",
+        "Forward Factor:",
+        f"{forward_factor.get('pass_count', 0)} dry-run pass, {forward_factor.get('watch_count', 0)} watch, {forward_factor.get('fail_count', 0)} fail.",
+        "No FF row entered Daily Opportunity because the strategy is in dry-run validation.",
+    ]
     lines += ["", f"Risk review rows: {len(groups.get('risk', []))}", f"Blocked calendar candidates: {len(blocked_rows)}"]
     exposures = portfolio_gap.get("exposure_rows", []) or []
     if exposures:
@@ -1578,6 +1589,7 @@ def _build_options_strategies_report_export(
     blocked_rows: list[dict[str, Any]],
     skew_vertical: dict[str, Any],
     provider_status: dict[str, Any],
+    forward_factor: dict[str, Any],
 ) -> str:
     calendar_summary = (unified_calendar_engine or {}).get("summary", {}) or {}
     skew = _skew_vertical_summary(skew_vertical)
@@ -1587,6 +1599,7 @@ def _build_options_strategies_report_export(
         f"Active options lifecycle: {len(active_rows)} broker-detected calendar(s); {skew['active_count']} active skew vertical(s).",
         f"Calendar strategy: {calendar_summary.get('pass_count', 0)} pass / {calendar_summary.get('watch_count', 0)} watch / {calendar_summary.get('fail_count', len(blocked_rows))} fail.",
         f"Skew vertical strategy: {skew['pass_count']} pass / {skew['watch_count']} watch / {skew['fail_count']} fail.",
+        f"Forward Factor dry run: {forward_factor.get('pass_count', 0)} pass / {forward_factor.get('watch_count', 0)} watch / {forward_factor.get('fail_count', 0)} fail.",
         "",
         "Calendar blocked/watch rows:",
         *[f"- {row.get('ticker', 'UNKNOWN')}: {_first_text(row.get('verdict'), row.get('action'))} - {_first_text(row.get('main_blocker'), fallback='review requirements')}" for row in blocked_rows[:15]],
@@ -1696,7 +1709,7 @@ def _provider_status_text(provider_status: dict[str, Any]) -> str:
 def _export_toolbar_html(exports: dict[str, str]) -> str:
     exports_json = escape(json.dumps(exports), quote=False)
     strategy_buttons = "".join(
-        f'<button type="button" class="export-btn" onclick="copyExport(\'{escape(key)}\')">Copy {escape(key.removeprefix("strategy_").replace("_", " ").title())} Report</button>'
+        f'<button type="button" class="export-btn" onclick="copyExport(\'{escape(key)}\')">Copy {escape("Forward Factor" if key == "strategy_forward_factor_calendar" else key.removeprefix("strategy_").replace("_", " ").title())} Report</button>'
         for key in exports
         if key.startswith("strategy_")
     )
@@ -2135,6 +2148,32 @@ def _strategy_registry_html(results: dict[str, Any], opportunities: dict[str, An
     ) + "</div>"
 
 
+def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kicker: str) -> str:
+    rows = result.get("rows", []) or []
+    if not result:
+        return _section(section_id, "Forward Factor Calendar Candidates", kicker, '<div class="empty-state">Strategy result unavailable.</div>', "0")
+    cards = []
+    for row in rows[:20]:
+        verdict = _first_text(row.get("verdict"), row.get("final_verdict"), fallback="UNKNOWN")
+        cards.append(f"""
+        <article class="decision-card">
+            <div class="card-title"><strong>{escape(str(row.get("ticker") or "UNKNOWN"))}</strong><span class="badge warn">DRY RUN</span></div>
+            <div class="card-action">{escape(verdict)}</div>
+            <div class="metric-grid">
+                <div class="metric"><span class="label">Forward Factor</span><span class="value">{number(row.get("forward_factor"), 3)}</span></div>
+                <div class="metric"><span class="label">Front / Forward IV</span><span class="value">{number(row.get("front_ex_earnings_iv"), 3)} / {number(row.get("forward_iv"), 3)}</span></div>
+                <div class="metric"><span class="label">Expirations</span><span class="value">{escape(str(row.get("front_expiration") or "unavailable"))}<br>{escape(str(row.get("back_expiration") or "unavailable"))}</span></div>
+                <div class="metric"><span class="label">Put / Call Strikes</span><span class="value">{number(row.get("put_strike"), 2)} / {number(row.get("call_strike"), 2)}</span></div>
+                <div class="metric"><span class="label">Debit at Risk</span><span class="value">{money(row.get("debit_at_risk"))}</span></div>
+                <div class="metric"><span class="label">Scores</span><span class="value">{number(row.get("signal_score"), 1)} signal / {number(row.get("actionability_score"), 1)} action</span></div>
+            </div>
+            <p>{escape(_first_text(row.get("primary_blocker"), row.get("next_action"), fallback="No blocker recorded."))}</p>
+        </article>""")
+    body = "".join(cards) if cards else '<div class="empty-state">No Forward Factor rows this run. Dry-run requirements may be capped or source-correct ex-earnings IV may be unavailable.</div>'
+    count = f"{result.get('pass_count', 0)}P · {result.get('watch_count', 0)}W · {result.get('fail_count', 0)}F · {result.get('skipped_count', 0)}S"
+    return _section(section_id, "Forward Factor Calendar Candidates", kicker, body, count)
+
+
 def _skew_vertical_monitor_summary_html(strategy: dict[str, Any], cache: dict[str, Any], daily_opportunity: dict[str, Any]) -> str:
     skew = _skew_vertical_summary(strategy)
     cache_summary = (cache or {}).get("summary", {}) or {}
@@ -2286,10 +2325,10 @@ def format_html(
     )
     risk_count = len({ticker for ticker in risk_tickers if ticker}) + len((portfolio_gap or {}).get("risk_rows", []) or [])
     exports = {
-        "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap, skew_vertical),
+        "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap, skew_vertical, strategy_results.get("forward_factor_calendar", {})),
         "calendarReport": _build_calendar_report_export(active_rows, unified_calendar_engine, blocked_rows),
         "skewVerticalReport": _build_skew_vertical_report_export(today, provider_status, skew_vertical, skew_vertical_cache),
-        "optionsStrategiesReport": _build_options_strategies_report_export(active_rows, unified_calendar_engine, blocked_rows, skew_vertical, provider_status),
+        "optionsStrategiesReport": _build_options_strategies_report_export(active_rows, unified_calendar_engine, blocked_rows, skew_vertical, provider_status, strategy_results.get("forward_factor_calendar", {})),
         "holdingsReport": _build_holdings_report_export(display_recommendations),
         "potentialAdds": _build_potential_adds_export(potential_groups),
         "dataCoverage": _data_coverage_report(data_coverage),
@@ -2308,6 +2347,7 @@ def format_html(
         pipeline_status=pipeline_status,
         provider_status=provider_status,
         skew_vertical=skew_vertical,
+        strategy_results=strategy_results,
     )
     macro_html = _section(
         "macro-context",
@@ -2318,6 +2358,7 @@ def format_html(
     )
     active_calendar_html = _active_calendar_section_html(active_rows, provider_status)
     skew_vertical_html = _skew_vertical_section_html(skew_vertical, skew_vertical_cache)
+    forward_factor_html = _generic_strategy_section_html("forward-factor", strategy_results.get("forward_factor_calendar", {}), "Dry-run validation only; no row enters Daily Opportunity.")
     holdings_html = _holdings_section_html(display_recommendations, provider_status)
     potential_adds_html = _potential_adds_section_html(potential_groups)
     risk_review_html = _risk_review_section_html(potential_groups, display_recommendations)
@@ -2372,6 +2413,7 @@ def format_html(
             <a href="#macro-context">Macro</a>
             <a href="#active-calendars">Active Calendars</a>
             <a href="#skew-verticals">Skew Verticals</a>
+            <a href="#forward-factor">Forward Factor</a>
             <a href="#holdings">Holdings</a>
             <a href="#potential-adds">Potential Adds</a>
             <a href="#risk-review">Risk Review</a>
@@ -2385,6 +2427,7 @@ def format_html(
         {macro_html}
         {active_calendar_html}
         {skew_vertical_html}
+        {forward_factor_html}
         {holdings_html}
         {potential_adds_html}
         {risk_review_html}

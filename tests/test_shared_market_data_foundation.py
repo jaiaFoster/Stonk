@@ -2,7 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,7 +32,7 @@ class FakeTradier:
         return {tickers[0]: {"last": 100}}
 
     def get_expirations(self, ticker):
-        return ["2030-01-18"]
+        return [(date.today() + timedelta(days=21)).isoformat()]
 
     def get_option_chain(self, ticker, expiration, greeks=True):
         self.chain_calls += 1
@@ -109,6 +109,30 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             hub.get_options_chain("ALGN", min_dte=7, max_dte=45, expirations=3)
             hub.get_options_chain("ALGN", min_dte=14, max_dte=30, expirations=2)
             self.assertEqual(provider.chain_calls, 1)
+
+    def test_option_chain_fetches_expirations_inside_requested_dte_range(self):
+        class MultiExpiration(FakeTradier):
+            def get_expirations(self, ticker):
+                return [(date.today() + timedelta(days=dte)).isoformat() for dte in (7, 55, 90, 120)]
+        with tempfile.TemporaryDirectory() as temp:
+            provider = MultiExpiration()
+            hub = MarketDataHub(create_run_data_context("dev"), repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")), provider=provider)
+            record = hub.get_options_chain("SPY", min_dte=50, max_dte=105, expirations=6)
+            payload = record["payload"]
+            self.assertEqual(len(payload["expirations"]), 2)
+            self.assertEqual(provider.chain_calls, 2)
+
+    def test_broad_merged_chain_request_samples_full_dte_range(self):
+        class ManyExpirations(FakeTradier):
+            def get_expirations(self, ticker):
+                return [(date.today() + timedelta(days=dte)).isoformat() for dte in range(7, 106, 7)]
+        with tempfile.TemporaryDirectory() as temp:
+            provider = ManyExpirations()
+            hub = MarketDataHub(create_run_data_context("dev"), repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")), provider=provider)
+            payload = hub.get_options_chain("SPY", min_dte=7, max_dte=105, expirations=6)["payload"]
+            dtes = [(date.fromisoformat(value) - date.today()).days for value in payload["expirations"]]
+            self.assertLessEqual(min(dtes), 14)
+            self.assertGreaterEqual(max(dtes), 98)
 
     def test_canonical_metrics_map_contains_shared_price_trend_and_liquidity(self):
         bars = [{"date": f"2025-{(i // 28) % 12 + 1:02d}-{i % 28 + 1:02d}", "close": 100 + i, "volume": 1000000 + i} for i in range(260)]

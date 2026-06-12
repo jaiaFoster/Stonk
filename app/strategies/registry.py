@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.strategies.adapters import EarningsCalendarStrategy, SkewMomentumVerticalStrategy, StockMomentumStrategy
+from app.strategies.adapters import EarningsCalendarStrategy, ForwardFactorCalendarStrategy, SkewMomentumVerticalStrategy, StockMomentumStrategy
 
-STRATEGY_REGISTRY = [EarningsCalendarStrategy(), SkewMomentumVerticalStrategy(), StockMomentumStrategy()]
+STRATEGY_REGISTRY = [EarningsCalendarStrategy(), SkewMomentumVerticalStrategy(), ForwardFactorCalendarStrategy(), StockMomentumStrategy()]
 
 
 def enabled_strategies() -> list[Any]:
