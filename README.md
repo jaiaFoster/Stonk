@@ -116,6 +116,12 @@ https://your-railway-app/run?token=YOUR_RUN_TOKEN&mode=dev
 
 Dev mode still fetches the full Robinhood portfolio, but limits external provider calls.
 
+### Shared Data Integration Completion
+
+Patch 25D routes shared candle/quote/chain facts through `MarketDataHub`, fulfills approved strategy requirements before evaluation, and reuses normalized run/SQLite cache keys. Data Coverage shows cache hits, provider fetches, stale fallbacks, cap skips, failures, and duplicate fetches prevented.
+
+Reports load from the latest successful persistent snapshot without triggering providers. Hard-failed strategy rows preserve signal quality but expose zero actionability. Forward Factor remains deferred until production validation completes. See `docs/shared_data_integration_completion_v1.md`.
+
 ---
 
 ## Key report sections

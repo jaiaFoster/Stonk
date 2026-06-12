@@ -233,7 +233,7 @@ class PortfolioSnapshotStrategy:
 
         if not metrics or not metrics.get("has_data"):
             error = metrics.get("error") if metrics else "No market metrics were returned."
-            risks.append(f"No Finnhub trend/momentum data available: {error}")
+            risks.append(f"Market trend/momentum data unavailable: {error}")
             breakdown["market_data"] = 0.0
             return 0.0, breakdown, reasons, risks
 

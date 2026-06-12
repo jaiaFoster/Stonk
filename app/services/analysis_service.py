@@ -27,8 +27,6 @@ from app.services.earnings_calendar_strategy_service import evaluate_earnings_ca
 from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
 from app.services.earnings_service import discover_upcoming_earnings_for_calendar_trades, get_earnings_for_positions
 from app.services.earnings_mini_backtest_service import build_earnings_mini_backtest
-from app.services.candle_service import get_candle_history
-from app.services.market_data_service import get_market_metrics_for_positions
 from app.services.market_data_hub_service import MarketDataHub
 from app.services.market_data_repository import MarketDataRepository
 from app.services.open_options_service import detect_open_options_positions
@@ -39,7 +37,6 @@ from app.services.pipeline_helpers import (
     earnings_max_tickers_for_mode,
     external_provider_tickers,
     fill_missing_news_keys,
-    market_max_tickers_for_mode,
     merge_earnings_events,
     merge_provider_ticker_sets,
     news_max_tickers_for_mode,
@@ -65,6 +62,7 @@ from app.services.data_coverage_service import build_data_coverage
 from app.services.data_requirement_planner import DataRequirementPlanner
 from app.services.strategy_opportunity_repository import StrategyOpportunityRepository
 from app.services.strategy_execution_service import collect_strategy_results
+from app.services.actionability_service import attach_actionability_to_rows
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
 from app.services.skew_momentum_vertical_service import build_skew_momentum_vertical_strategy
 from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
@@ -351,6 +349,7 @@ def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
 def _attach_candidate_candle_quality(
     calendar_candidates: list[dict[str, Any]],
     log_print: Callable[[str], None],
+    data_hub: MarketDataHub,
 ) -> dict[str, Any]:
     status: dict[str, Any] = {}
     for candidate in calendar_candidates or []:
@@ -360,7 +359,8 @@ def _attach_candidate_candle_quality(
         if not ticker:
             continue
         if ticker not in status:
-            history = get_candle_history(ticker, log_print=log_print)
+            record = data_hub.get_daily_candles(ticker, min_bars=240, required=True, strategy_id="earnings_calendar")
+            history = _record_payload(record)
             status[ticker] = {
                 "provider": history.get("provider"),
                 "status": history.get("status"),
@@ -370,6 +370,66 @@ def _attach_candidate_candle_quality(
         candidate["candle_quality"] = status[ticker].get("quality") or {}
         candidate["candle_provider"] = status[ticker].get("provider")
     return status
+
+
+def _record_payload(record: Any) -> dict[str, Any]:
+    if not isinstance(record, dict):
+        return {}
+    payload = record.get("payload")
+    return payload if isinstance(payload, dict) else record
+
+
+def _market_metrics_from_hub(hub: MarketDataHub, tickers: list[str], plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    output: dict[str, dict[str, Any]] = {}
+    for ticker in tickers:
+        symbol = str(ticker).upper()
+        state = (plan.get("by_ticker", {}).get(symbol, {}) or {}).get("state")
+        if state in {"SKIPPED_DEV_CAP", "SKIPPED_PROVIDER_BUDGET"}:
+            output[symbol] = {"has_data": False, "data_state": state, "error": _missing_data_message(state)}
+            continue
+        shared = hub.get_derived_metrics(
+            symbol,
+            metrics=["momentum_1m", "momentum_3m", "momentum_6m", "momentum_12m", "sma_50", "sma_200", "relative_strength_vs_QQQ", "average_volume_30d", "realized_volatility_30d"],
+            required=True,
+            strategy_id="shared_market_metrics",
+        )
+        quote = _record_payload(hub.get_quote(symbol, required=False, strategy_id="shared_market_metrics"))
+        last = _safe_float(quote.get("last") or quote.get("close") or quote.get("bid"))
+        has_data = any(shared.get(key) is not None for key in ("momentum_3m", "momentum_6m", "sma_50", "sma_200"))
+        output[symbol] = {
+            "has_data": has_data,
+            "data_state": "COMPLETE" if has_data else "MISSING_PROVIDER_FAILED",
+            "source": "market_data_hub",
+            "return_1m_pct": shared.get("momentum_1m"),
+            "return_3m_pct": shared.get("momentum_3m"),
+            "return_6m_pct": shared.get("momentum_6m"),
+            "return_12m_pct": shared.get("momentum_12m"),
+            "sma_50": shared.get("sma_50"),
+            "sma_200": shared.get("sma_200"),
+            "above_sma_50": last > shared["sma_50"] if last is not None and shared.get("sma_50") else None,
+            "above_sma_200": last > shared["sma_200"] if last is not None and shared.get("sma_200") else None,
+            "relative_strength_6m_pct": shared.get("relative_strength_vs_QQQ"),
+            "average_volume_30d": shared.get("average_volume_30d"),
+            "volatility_30d_pct": shared.get("realized_volatility_30d"),
+            "error": "" if has_data else shared.get("reason") or _missing_data_message("MISSING_PROVIDER_FAILED"),
+        }
+    return output
+
+
+def _missing_data_message(state: str) -> str:
+    return {
+        "SKIPPED_DEV_CAP": "Market metrics not evaluated in this dev run. Reason: skipped by dev data cap.",
+        "SKIPPED_PROVIDER_BUDGET": "Market metrics not evaluated. Reason: shared provider budget was exhausted.",
+        "MISSING_UNSUPPORTED": "Market metrics unavailable for this asset type.",
+        "STALE_CACHE_USED": "Using cached market metrics because live refresh failed.",
+    }.get(state, "Market metrics unavailable after configured provider attempts.")
+
+
+def _attach_strategy_actionability(result: dict[str, Any], *keys: str) -> dict[str, Any]:
+    for key in keys:
+        if isinstance(result.get(key), list):
+            result[key] = attach_actionability_to_rows(result[key])
+    return result
 
 
 def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
@@ -539,11 +599,12 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     analysis_positions = merge_watchlist_universe_positions(positions, watchlist_candidates)
     analysis_tickers = list(dict.fromkeys(p.get("ticker") for p in analysis_positions if p.get("ticker")))
     run_context.analysis_tickers = analysis_tickers
+    hub = MarketDataHub(run_context, repository=market_data_repository, log_print=log_print)
     strategy_requirements = collect_requirements(run_context)
     requirement_plan = DataRequirementPlanner(
         clean_mode,
         dev_ticker_cap=config.DEV_MAX_TICKERS if clean_mode == "dev" else None,
-    ).merge(strategy_requirements)
+    ).fulfill(hub, strategy_requirements)
     run_context.requirements = {item.strategy_id: asdict(item) for item in strategy_requirements}
     tradier_snapshot["_strategy_requirement_plan"] = requirement_plan
     for ticker in requirement_plan["skipped_tickers"]:
@@ -589,19 +650,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     market_metrics = run_optional_step(
         "market_data",
-        "Fetching market data / Tradier fallback...",
-        lambda: get_market_metrics_for_positions(
-            analysis_positions,
-            log_print=log_print,
-            max_tickers=market_max_tickers_for_mode(clean_mode),
-            allowed_tickers=external_tickers if clean_mode == "dev" else None,
-        ),
+        "Building shared MarketDataHub metrics...",
+        lambda: _market_metrics_from_hub(hub, analysis_tickers, requirement_plan),
         {},
         lambda result: f"Market metrics available for {sum(1 for item in (result or {}).values() if item.get('has_data'))}/{len(result or {})} ticker(s).",
     )
-    hub = MarketDataHub(run_context, repository=market_data_repository, log_print=log_print)
-    for ticker, metrics in market_metrics.items():
-        hub.seed("derived_metrics", ticker, metrics, provider=str(metrics.get("candle_provider") or metrics.get("source") or "legacy_pipeline"))
 
     earnings_events = run_optional_step(
         "earnings_timestamp",
@@ -692,7 +745,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     candle_status = run_optional_step(
         "calendar_candle_rescue",
         "Running Calendar Candidate Candle Rescue...",
-        lambda: _attach_candidate_candle_quality(calendar_candidates, log_print),
+        lambda: _attach_candidate_candle_quality(calendar_candidates, log_print, hub),
         {},
         lambda result: f"Candle rescue selected usable data for {sum(1 for item in (result or {}).values() if item.get('provider'))}/{len(result or {})} candidate ticker(s).",
     )
@@ -710,11 +763,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "universe_source": "earnings_discovery_v1",
     }
     tradier_snapshot["_candle_status"] = candle_status
-    for ticker, status in candle_status.items():
-        if status.get("provider"):
-            history = get_candle_history(ticker, log_print=log_print)
-            if history.get("bars"):
-                hub.seed("candles", ticker, history, provider=str(history.get("provider") or "calendar_rescue"))
 
     earnings_calendar_strategy = run_optional_step(
         "earnings_calendar_strategy",
@@ -942,6 +990,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Skew momentum vertical strategy produced {len((result or {}).get('items', []) or [])} decision row(s).",
     )
     tradier_snapshot["_skew_momentum_vertical_strategy"] = skew_momentum_vertical_strategy
+    _attach_strategy_actionability(
+        skew_momentum_vertical_strategy,
+        "items", "pass_items", "watch_items", "blocked_items", "active_items",
+    )
+    _attach_strategy_actionability(unified_calendar_engine, "new_trade_rows", "open_trade_rows", "blocked_rows")
     skew_vertical_cache = run_optional_step(
         "skew_vertical_opportunity_cache",
         "Updating Strategy 2 Opportunity Cache v1...",
@@ -1003,7 +1056,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         finish_pipeline(pipeline_status, "complete")
         attach_status()
         try:
-            ReportSnapshotRepository().save_success(
+            ReportSnapshotRepository(log_print=log_print).save_success(
                 run_context.run_id,
                 clean_mode,
                 payload,

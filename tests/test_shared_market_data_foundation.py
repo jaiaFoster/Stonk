@@ -69,6 +69,35 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             self.assertEqual(hub2.get_quote("NVDA")["payload"]["last"], 100)
             self.assertEqual(provider.quote_calls, 1)
 
+    def test_force_refresh_bypasses_run_and_sqlite_cache(self):
+        with tempfile.TemporaryDirectory() as temp:
+            provider = FakeTradier()
+            hub = MarketDataHub(
+                create_run_data_context("dev"),
+                repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")),
+                provider=provider,
+            )
+            hub.get_quote("NVDA")
+            hub.get_quote("NVDA", force_refresh=True)
+            self.assertEqual(provider.quote_calls, 2)
+
+    def test_equivalent_default_candle_requests_share_run_key(self):
+        calls = []
+
+        def candles(ticker, log_print=None):
+            calls.append(ticker)
+            return {"bars": [{"date": "2030-01-01", "close": 100}] * 240}
+
+        with tempfile.TemporaryDirectory() as temp:
+            hub = MarketDataHub(
+                create_run_data_context("dev"),
+                repository=MarketDataRepository(str(Path(temp) / "market.sqlite3")),
+                candle_fetcher=candles,
+            )
+            hub.get_daily_candles("CCL")
+            hub.get_daily_candles("CCL", min_bars=240, interval="daily")
+            self.assertEqual(calls, ["CCL"])
+
     def test_hub_suppresses_repeated_provider_failure(self):
         class Broken(FakeTradier):
             def get_quotes(self, tickers):
@@ -115,6 +144,8 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
         coverage = build_data_coverage(context)
         self.assertEqual(coverage["states"]["SKIPPED_DEV_CAP"], 1)
         self.assertEqual(coverage["per_strategy"]["skew_momentum_vertical"]["COMPLETE"], 1)
+        self.assertEqual(coverage["counters"]["provider_fetches"], 1)
+        self.assertEqual(coverage["counters"]["skipped_dev_cap"], 1)
 
     def test_completed_report_snapshot_survives_and_loads(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -123,6 +154,21 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             latest = repo.latest_success()
             self.assertEqual(json.loads(latest["payload_json"]), "payload")
             self.assertEqual(latest["status"], "complete")
+
+    def test_failed_snapshot_does_not_replace_latest_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = ReportSnapshotRepository(str(Path(temp) / "reports.sqlite3"))
+            repo.save_success("run-1", "dev", "payload", {}, {}, {})
+            repo.record_failure("run-2", "dev", {"error": "provider failed"})
+            self.assertEqual(repo.latest_success()["run_id"], "run-1")
+
+    def test_snapshot_schema_mismatch_is_not_loaded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = ReportSnapshotRepository(str(Path(temp) / "reports.sqlite3"))
+            repo.save_success("run-1", "dev", "payload", {}, {}, {})
+            with sqlite3.connect(repo.db_path) as conn:
+                conn.execute("UPDATE report_snapshots SET schema_version=999")
+            self.assertIsNone(repo.latest_success())
 
     def test_corrupt_repository_is_nonfatal(self):
         with tempfile.TemporaryDirectory() as temp:
