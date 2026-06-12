@@ -22,7 +22,10 @@ class FakeFFHub:
         now = datetime.now(timezone.utc).isoformat()
         self.quote = {"payload": {"last": 500}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
         self.candles = {"payload": {"bars": [{"close": 500, "volume": 10_000_000}] * 240}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
-    def get_quote(self, *args, **kwargs): return self.quote
+        self.requested_quotes = []
+    def get_quote(self, ticker, *args, **kwargs):
+        self.requested_quotes.append(ticker)
+        return self.quote
     def get_daily_candles(self, *args, **kwargs): return self.candles
     def get_derived_metrics(self, *args, **kwargs): return {"average_volume_30d": 10_000_000, "realized_volatility_30d": .2}
     def get_options_chain_set(self, *args, **kwargs): return {"payload": self.payload}
@@ -130,6 +133,46 @@ class ForwardFactorTests(unittest.TestCase):
     def test_planned_provider_budget_is_skip_not_stale(self):
         result = validate_required_data(None, None, {}, planned_state="SKIPPED_PROVIDER_BUDGET")
         self.assertEqual(result["data_state"], "SKIPPED_PROVIDER_BUDGET")
+
+    def test_average_volume_is_calculated_from_candles_before_eligibility(self):
+        hub = FakeFFHub({})
+        result = validate_required_data(hub.quote, hub.candles, {})
+        self.assertEqual(result["average_volume_30d"], 10_000_000)
+        self.assertTrue(result["average_volume_pass"])
+        self.assertEqual(result["minimum_average_volume"], 1_000_000)
+
+    def test_low_price_and_volume_are_threshold_failures_not_unsupported(self):
+        hub = FakeFFHub({})
+        low_price = validate_required_data({"payload": {"last": 5}, "fresh": True}, hub.candles, {"average_volume_30d": 10_000_000})
+        low_volume = validate_required_data(hub.quote, hub.candles, {"average_volume_30d": 10})
+        self.assertEqual(low_price["data_state"], "PRICE_BELOW_MINIMUM")
+        self.assertEqual(low_volume["data_state"], "AVERAGE_VOLUME_BELOW_MINIMUM")
+        self.assertEqual(low_volume["missing_fields"], [])
+
+    def test_known_low_price_ticker_does_not_consume_dev_slot(self):
+        hub = FakeFFHub({})
+        metrics = {
+            "AAA": {"has_data": True, "current_price": 5, "average_volume_30d": 10_000_000},
+            "BBB": {"has_data": True, "current_price": 50, "average_volume_30d": 10_000_000},
+            "CCC": {"has_data": True, "current_price": 60, "average_volume_30d": 10_000_000},
+            "DDD": {"has_data": True, "current_price": 70, "average_volume_30d": 10_000_000},
+        }
+        result = build_forward_factor_strategy(["AAA", "BBB", "CCC", "DDD"], metrics, hub, run_mode="dev")
+        self.assertNotIn("AAA", hub.requested_quotes)
+        self.assertEqual(result["stage_counts"]["cheap_evaluated"], 3)
+
+    def test_crypto_is_reserved_as_unsupported_security(self):
+        hub = FakeFFHub({})
+        result = build_forward_factor_strategy(["BTC"], {"BTC": {"asset_type": "crypto", "current_price": 100, "average_volume_30d": 10_000_000}}, hub, run_mode="dev")
+        self.assertEqual(result["items"][0]["verdict"], "SKIPPED / UNSUPPORTED SECURITY")
+        self.assertEqual(hub.requested_quotes, [])
+
+    def test_dev_cap_rows_are_collapsed_in_ff_ui(self):
+        rows = [{"ticker": f"T{i}", "verdict": "SKIPPED / DEV CAP", "actionability_score": 0} for i in range(5)]
+        result = {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "enabled": True, "rows": rows, "pass_count": 0, "watch_count": 0, "fail_count": 0, "skipped_count": 5, "summary": {"stage_counts": {}}}
+        html = format_html("payload", [], {}, [], {"_strategy_results": {"forward_factor_calendar": result}, "_pipeline_status": {"mode": "dev", "steps": []}}, [])
+        self.assertIn("Skipped by dev cap: 5", html)
+        self.assertNotIn("<strong>T0</strong>", html)
 
 
 if __name__ == "__main__":

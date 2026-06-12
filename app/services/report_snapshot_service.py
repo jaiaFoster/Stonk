@@ -39,16 +39,23 @@ class ReportSnapshotRepository:
             conn.close()
 
     def save_success(self, run_id: str, mode: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
+        self._save(run_id, mode, "complete", payload, summary, coverage, provider_status)
+        self.log(f"ReportSnapshot: saved successful run={run_id} schema={self.SCHEMA_VERSION}")
+
+    def save_degraded(self, run_id: str, mode: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
+        self._save(run_id, mode, "degraded", payload, summary, coverage, provider_status)
+        self.log(f"ReportSnapshot: saved degraded run={run_id}; canonical complete snapshot preserved")
+
+    def _save(self, run_id: str, mode: str, status: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO report_snapshots VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                         (run_id, mode, "complete", now, now, json.dumps(payload), json.dumps(summary, default=str),
+                         (run_id, mode, status, now, now, json.dumps(payload), json.dumps(summary, default=str),
                           json.dumps(coverage, default=str), json.dumps(provider_status, default=str), self.SCHEMA_VERSION, now))
             conn.execute(
                 "DELETE FROM report_snapshots WHERE run_id IN (SELECT run_id FROM report_snapshots ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
                 (self.RETENTION_LIMIT,),
             )
-        self.log(f"ReportSnapshot: saved successful run={run_id} schema={self.SCHEMA_VERSION}")
 
     def record_failure(self, run_id: str, mode: str, summary: dict[str, Any] | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -70,3 +77,11 @@ class ReportSnapshotRepository:
         if result:
             self.log(f"ReportSnapshot: loaded latest successful run={result['run_id']}")
         return result
+
+    def latest_degraded(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM report_snapshots WHERE status='degraded' AND schema_version=? ORDER BY completed_at DESC LIMIT 1",
+                (self.SCHEMA_VERSION,),
+            ).fetchone()
+        return dict(row) if row else None

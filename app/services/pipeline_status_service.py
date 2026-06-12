@@ -25,6 +25,7 @@ def new_pipeline_status(run_mode: str) -> dict[str, Any]:
         "started_at": utc_now_iso(),
         "finished_at": None,
         "overall_status": "running",
+        "report_quality": "SUCCESS_COMPLETE",
         "steps": [],
         "step_map": {},
         "warnings": [],

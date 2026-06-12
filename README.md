@@ -594,6 +594,8 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 
 Patch 26B fixes false FF `DATA STALE` rows by validating FF-specific shared facts instead of stock-momentum trend completeness. It stages cheap eligibility before bounded multi-expiration chains, exposes raw-IV diagnostics separately from source-qualified ex-earnings FF, and keeps all FF rows dry-run/non-actionable.
 
+Patch 26C separates observed `average_volume_30d` from its configured threshold, prioritizes FF dev candidates with known price/volume prerequisites, and collapses dev-cap rows in the dashboard. Robinhood position refreshes now preserve per-account latest-known-good snapshots during 502/503/auth outages. Runs using stale broker fallback are saved as degraded diagnostics and do not replace the latest complete canonical report.
+
 Important FF defaults:
 
 ```text

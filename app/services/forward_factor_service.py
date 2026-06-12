@@ -98,16 +98,28 @@ def build_forward_factor_strategy(
         return _finalize([], [], {}, [], False)
     ordered = sorted(set(str(ticker).upper() for ticker in universe if ticker))
     cap = config.FF_DEV_MAX_TICKERS_PER_RUN if run_mode == "dev" else config.FF_MAX_TICKERS_PER_RUN
-    selected = sorted(ordered, key=lambda ticker: (not bool((market_metrics.get(ticker) or {}).get("has_data")), ticker))[:cap]
+    supported = [ticker for ticker in ordered if _supported_equity(market_metrics.get(ticker) or {})]
+    ranked = sorted(supported, key=lambda ticker: _candidate_rank(ticker, market_metrics.get(ticker) or {}))
+    known_eligible = [ticker for ticker in ranked if _known_cheap_eligible(market_metrics.get(ticker) or {})]
+    unknown = [ticker for ticker in ranked if ticker not in known_eligible and not _known_cheap_failure(market_metrics.get(ticker) or {})]
+    known_failures = [ticker for ticker in ranked if _known_cheap_failure(market_metrics.get(ticker) or {})]
+    selected = (known_eligible + unknown + known_failures)[:cap]
     rows, cheap_pass, pair_audit = [], [], []
     stage = {
         "universe": len(ordered), "cheap_approved": len(selected), "cheap_evaluated": 0, "cheap_pass": 0,
-        "skipped_dev_cap": max(0, len(ordered) - len(selected)), "skipped_provider_budget": 0,
+        "skipped_dev_cap": max(0, len(supported) - len(selected)), "skipped_provider_budget": 0,
+        "unsupported": max(0, len(ordered) - len(supported)),
         "chain_approved": 0, "chain_fetch": 0, "expiration_pairs": 0, "valid_forward_variance": 0,
-        "ff_calculated": 0, "structures": 0,
+        "ff_calculated": 0, "diagnostic_formula_calculated": 0, "structures": 0,
+        "prefilter_supported_equities": len(supported),
+        "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
+        "prefilter_volume_pass": sum(_known_volume_pass(market_metrics.get(ticker) or {}) for ticker in supported),
     }
     plan_by_ticker = (requirement_plan or {}).get("by_ticker", {}) or {}
     for ticker in ordered:
+        if ticker not in supported:
+            rows.append(_blocked(ticker, "SKIPPED / UNSUPPORTED SECURITY", "Asset type is unsupported for Forward Factor.", data_state="UNSUPPORTED"))
+            continue
         if ticker not in selected:
             rows.append(_blocked(ticker, "SKIPPED / DEV CAP", "Ticker was outside the deterministic FF run cap.", data_state="SKIPPED_DEV_CAP"))
             continue
@@ -131,6 +143,8 @@ def build_forward_factor_strategy(
         stage["cheap_pass"] += 1
     chain_cap = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if run_mode == "dev" else config.FF_MAX_TICKERS_PER_RUN
     stage["chain_approved"] = min(chain_cap, len(cheap_pass))
+    log_print(f"FF candidate prefilter: universe={len(ordered)} supported equities={stage['prefilter_supported_equities']} price-pass={stage['prefilter_price_pass']} volume-pass={stage['prefilter_volume_pass']} selected-for-dev={len(selected)}")
+    log_print(f"FF selected for dev: {', '.join(selected) or 'none'}; priority=known complete facts, liquidity, stable ticker")
     log_print(f"FF planner: universe={len(ordered)} dev candidate cap={cap} cheap-data approved={len(selected)} skipped dev cap={stage['skipped_dev_cap']}")
     log_print(f"FF cheap filter: evaluated={stage['cheap_evaluated']} passed={stage['cheap_pass']} failed={stage['cheap_evaluated'] - stage['cheap_pass']}")
     log_print(f"FF expensive-data plan: chain-approved={stage['chain_approved']} chain-skipped-budget={max(0, len(cheap_pass) - chain_cap)}")
@@ -177,6 +191,7 @@ def build_forward_factor_strategy(
             if raw_formula:
                 base["diagnostic_raw_iv_forward_factor"] = raw_formula["forward_factor"]
                 base["diagnostic_raw_iv_formula"] = raw_formula
+                stage["diagnostic_formula_calculated"] += 1
             front_ex, back_ex = iv.get("front_ex_earnings_iv"), iv.get("back_ex_earnings_iv")
             if front_ex is None or back_ex is None:
                 row = _blocked(ticker, "FAIL / EX-EARNINGS IV UNAVAILABLE", "Source-correct ex-earnings IV is unavailable; raw-IV FF is diagnostic only.", **base)
@@ -255,12 +270,61 @@ def _eligibility_row(ticker: str, eligibility: dict[str, Any]) -> dict[str, Any]
         verdict = "SKIPPED / PROVIDER BUDGET"
     elif state == "STALE":
         verdict = "FAIL / DATA STALE"
+    elif state == "PRICE_BELOW_MINIMUM":
+        verdict = "FAIL / PRICE BELOW MINIMUM"
+    elif state == "AVERAGE_VOLUME_BELOW_MINIMUM":
+        verdict = "FAIL / AVERAGE VOLUME BELOW MINIMUM"
     elif state == "UNSUPPORTED":
         verdict = "SKIPPED / UNSUPPORTED SECURITY"
     else:
         verdict = "FAIL / DATA UNAVAILABLE"
     detail = "Missing: " + ", ".join(eligibility["missing_fields"]) if eligibility["missing_fields"] else "Stale: " + ", ".join(eligibility["stale_fields"])
     return _blocked(ticker, verdict, detail or "Required FF cheap-stage data unavailable.", data_state=state, data_eligibility=eligibility)
+
+
+def _market_number(metrics: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        try:
+            value = metrics.get(key)
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _supported_equity(metrics: dict[str, Any]) -> bool:
+    asset_type = str(metrics.get("asset_type") or metrics.get("security_type") or "equity").lower()
+    return asset_type not in {"crypto", "cryptocurrency", "otc", "forex"}
+
+
+def _known_price_pass(metrics: dict[str, Any]) -> bool:
+    price = _market_number(metrics, "current_price", "price", "last")
+    return price is not None and price >= config.FF_MIN_UNDERLYING_PRICE
+
+
+def _known_volume_pass(metrics: dict[str, Any]) -> bool:
+    volume = _market_number(metrics, "average_volume_30d", "avg_volume_30d")
+    return volume is not None and volume >= config.FF_MIN_AVERAGE_VOLUME
+
+
+def _known_cheap_eligible(metrics: dict[str, Any]) -> bool:
+    return _known_price_pass(metrics) and _known_volume_pass(metrics)
+
+
+def _known_cheap_failure(metrics: dict[str, Any]) -> bool:
+    price = _market_number(metrics, "current_price", "price", "last")
+    volume = _market_number(metrics, "average_volume_30d", "avg_volume_30d")
+    return (price is not None and price < config.FF_MIN_UNDERLYING_PRICE) or (volume is not None and volume < config.FF_MIN_AVERAGE_VOLUME)
+
+
+def _candidate_rank(ticker: str, metrics: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        not _known_cheap_eligible(metrics),
+        not bool(metrics.get("has_data")),
+        not bool(metrics.get("options_available", True)),
+        ticker,
+    )
 
 
 def _finalize(rows, scanned, stage, pair_audit, enabled):

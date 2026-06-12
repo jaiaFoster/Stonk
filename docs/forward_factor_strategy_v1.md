@@ -51,3 +51,5 @@ Scenario rows use a zero-rate Black-Scholes estimate for the remaining back-expi
 ## Shared-data behavior
 
 FF declares requirements through Strategy Registry and uses MarketDataHub for quote, candles, earnings, derived liquidity facts, and a multi-expiration chain snapshot. It writes normalized rows to the generic strategy opportunity repository.
+
+Patch 26C explicitly records observed price and `average_volume_30d`, their configured minimums, and pass/fail booleans. Threshold failures are distinct from missing data and unsupported securities. Dev selection prioritizes candidates whose cached/shared facts already clear known price and volume gates, while raw-IV diagnostic formula results remain separate from source-qualified FF.
