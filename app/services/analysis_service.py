@@ -12,6 +12,7 @@ The pipeline internals are now cleaner and more explicit:
 
 from __future__ import annotations
 
+import json
 import traceback
 from dataclasses import asdict
 from typing import Any, Callable
@@ -284,7 +285,7 @@ def _safe_float(value: Any) -> float | None:
 
 def _robinhood_unavailable(provider_status: dict[str, Any] | None) -> bool:
     status = str((provider_status or {}).get("status") or "").lower()
-    return status in {"rate_limited", "auth_required", "auth_failed"}
+    return status in {"rate_limited", "auth_required", "auth_failed", "positions_failed", "positions_partial"}
 
 
 def _robinhood_skip_log(log_print: Callable[[str], None], provider_status: dict[str, Any]) -> None:
@@ -294,17 +295,17 @@ def _robinhood_skip_log(log_print: Callable[[str], None], provider_status: dict[
         reason = "429 rate limit encountered during verification."
     elif provider_status.get("auth_required"):
         reason = f"Robinhood authentication/verification required. {reason}"
+    heading = "Position refresh failed." if status in {"positions_failed", "positions_partial"} else "Login failed."
     log_print(
         "[ROBINHOOD]\n"
-        "Login failed.\n\n"
+        f"{heading}\n\n"
         "Reason:\n"
         f"{reason}\n\n"
-        "Skipping:\n"
-        "- holdings\n"
+        "Skipping live Robinhood-dependent refreshes:\n"
         "- watchlists\n"
         "- option detection\n"
         "- calendar inference\n\n"
-        "Continuing with non-Robinhood modules."
+        "Continuing with cached holdings when available and non-Robinhood modules."
     )
 
 
@@ -331,6 +332,20 @@ def _robinhood_unavailable_lifecycle(provider_status: dict[str, Any]) -> dict[st
     payload["summary"]["robinhood_unavailable"] = True
     payload["summary"]["provider_status"] = provider_status.get("status")
     return payload
+
+
+def _latest_complete_broker_state(log_print: Callable[[str], None]) -> dict[str, Any]:
+    try:
+        snapshot = ReportSnapshotRepository(log_print=log_print).latest_success()
+        summary = json.loads((snapshot or {}).get("summary_json") or "{}")
+        tradier = ((summary.get("report_data") or {}).get("tradier_snapshot") or {})
+        return {
+            "open_options": tradier.get("_open_options_positions"),
+            "calendar_lifecycle": tradier.get("_calendar_lifecycle_checks"),
+        }
+    except Exception as exc:
+        log_print(f"Broker active-state fallback unavailable: {exc}")
+        return {}
 
 
 def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
@@ -493,6 +508,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         positions = list((portfolio_result or {}).get("positions") or [])
         rh_status = ((portfolio_result or {}).get("provider_status") or {})
         provider_status["robinhood"] = rh_status
+        pipeline_status["broker_summary"] = {
+            "accounts": (portfolio_result or {}).get("account_summary", {}),
+            "account_results": (portfolio_result or {}).get("account_results", []),
+        }
+        pipeline_status["report_quality"] = (portfolio_result or {}).get("report_quality", "SUCCESS_COMPLETE")
         log_print(f"get_positions returned {len(positions)} positions")
         if _robinhood_unavailable(rh_status):
             _robinhood_skip_log(log_print, rh_status)
@@ -502,7 +522,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 f"Robinhood unavailable: {rh_status.get('status') or 'auth_failed'}.",
                 {"provider_status": rh_status},
             )
-            positions = []
+            if not any(position.get("broker_data_state") == "STALE_FALLBACK" for position in positions):
+                positions = []
         elif not positions:
             warn_step(
                 pipeline_status,
@@ -525,12 +546,14 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "auth_required": False,
         }
         positions = []
+        pipeline_status["report_quality"] = "SUCCESS_DEGRADED"
         _robinhood_skip_log(log_print, provider_status["robinhood"])
 
     portfolio_tickers = list(dict.fromkeys(p.get("ticker") for p in positions if p.get("ticker")))
     log_print(f"Tickers: {portfolio_tickers}")
 
     robinhood_failed = _robinhood_unavailable(provider_status.get("robinhood"))
+    cached_broker_state = _latest_complete_broker_state(log_print) if robinhood_failed else {}
 
     if robinhood_failed:
         skip_step(
@@ -776,7 +799,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "Detecting Open Options Positions v1...",
             "Skipped because Robinhood login failed; active broker option/calendar detection was not refreshed.",
         )
-        open_options = _robinhood_unavailable_open_options(provider_status.get("robinhood") or {})
+        open_options = cached_broker_state.get("open_options") or _robinhood_unavailable_open_options(provider_status.get("robinhood") or {})
+        if cached_broker_state.get("open_options"):
+            open_options = dict(open_options)
+            open_options["stale_fallback"] = True
+            open_options.setdefault("errors", []).append("Robinhood unavailable; retained active option structures from latest complete report.")
     else:
         open_options = run_optional_step(
             "open_options",
@@ -801,7 +828,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "Running Calendar Lifecycle Check v1...",
             "Skipped because Robinhood login failed; existing active calendar state must not be replaced by empty data.",
         )
-        lifecycle_checks = _robinhood_unavailable_lifecycle(provider_status.get("robinhood") or {})
+        lifecycle_checks = cached_broker_state.get("calendar_lifecycle") or _robinhood_unavailable_lifecycle(provider_status.get("robinhood") or {})
+        if cached_broker_state.get("calendar_lifecycle"):
+            lifecycle_checks = dict(lifecycle_checks)
+            lifecycle_checks["stale_fallback"] = True
+            lifecycle_checks.setdefault("errors", []).append("Robinhood unavailable; retained lifecycle state from latest complete report.")
     else:
         lifecycle_checks = run_optional_step(
             "calendar_lifecycle",
@@ -1034,16 +1065,20 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             payload = "MODE: DEV — external provider calls limited for API-budget-safe testing.\n\n" + payload
         log_print(f"Payload length: {len(payload)} chars")
         complete_step(pipeline_status, "format_payload", f"Payload formatted: {len(payload)} chars.")
-        finish_pipeline(pipeline_status, "complete")
+        report_quality = pipeline_status.get("report_quality", "SUCCESS_COMPLETE")
+        finish_pipeline(pipeline_status, "complete" if report_quality == "SUCCESS_COMPLETE" else "degraded")
         attach_status()
         try:
-            ReportSnapshotRepository(log_print=log_print).save_success(
+            report_repository = ReportSnapshotRepository(log_print=log_print)
+            snapshot_method = report_repository.save_success if report_quality == "SUCCESS_COMPLETE" else report_repository.save_degraded
+            snapshot_method(
                 run_context.run_id,
                 clean_mode,
                 payload,
                 {
                     "strategy_results": normalized_strategy_results,
                     "pipeline_status": pipeline_status,
+                    "report_quality": report_quality,
                     "report_data": {
                         "positions": positions,
                         "news": news,

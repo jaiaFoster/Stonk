@@ -1037,7 +1037,7 @@ def _normalized_provider_status(
     rh_meta = ((provider_meta or {}).get("robinhood") or {}) if isinstance(provider_meta, dict) else {}
     candle_meta = ((provider_meta or {}).get("candles") or {}) if isinstance(provider_meta, dict) else {}
     rh_status = str(rh_meta.get("status") or "").lower().strip()
-    rh_failed = rh_status in {"rate_limited", "auth_required", "auth_failed"}
+    rh_failed = rh_status in {"rate_limited", "auth_required", "auth_failed", "positions_failed", "positions_partial"}
     rh = {
         "positions": bool(rh_meta.get("success")) or (rh_seen and not rh_failed),
         "status": rh_status or ("ok" if rh_seen else "unknown"),
@@ -1115,6 +1115,8 @@ def _provider_chips(provider_status: dict[str, Any]) -> str:
         rh_label, rh_tone = "AUTH REQUIRED", "warn"
     elif rh.get("auth_failed") or rh_status == "auth_failed":
         rh_label, rh_tone = "AUTH FAILED", "bad"
+    elif rh_status in {"positions_failed", "positions_partial"}:
+        rh_label, rh_tone = "POSITIONS STALE", "warn"
     elif rh.get("positions") or rh_status == "ok":
         rh_label, rh_tone = "OK", "good"
     else:
@@ -1185,7 +1187,7 @@ def _macro_context_html(recommendations: Recommendations, provider_status: dict[
 def _robinhood_unavailable(provider_status: dict[str, Any] | None) -> bool:
     rh = (provider_status or {}).get("robinhood", {}) or {}
     status = str(rh.get("status") or "").lower()
-    return bool(rh.get("rate_limited") or rh.get("auth_required") or rh.get("auth_failed") or status in {"rate_limited", "auth_required", "auth_failed"})
+    return bool(rh.get("rate_limited") or rh.get("auth_required") or rh.get("auth_failed") or status in {"rate_limited", "auth_required", "auth_failed", "positions_failed", "positions_partial"})
 
 
 def _active_calendar_section_html(rows: list[dict[str, Any]], provider_status: dict[str, Any] | None = None) -> str:
@@ -1693,6 +1695,8 @@ def _provider_status_text(provider_status: dict[str, Any]) -> str:
         parts.append("RH auth required")
     elif rh.get("auth_failed") or rh_status == "auth_failed":
         parts.append("RH auth failed")
+    elif rh_status in {"positions_failed", "positions_partial"}:
+        parts.append("RH positions stale fallback" if rh.get("stale_fallback") else "RH positions unavailable")
     else:
         parts.append("RH OK" if rh.get("positions") or rh_status == "ok" else "RH unknown")
     parts.append("TRADIER OK" if tradier.get("usable") else "TRADIER key missing")
@@ -2189,9 +2193,12 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
     rows = result.get("rows", []) or []
     if not result:
         return _section(section_id, "Forward Factor Calendar Candidates", kicker, '<div class="empty-state">Strategy result unavailable.</div>', "0")
+    skipped_dev = [row for row in rows if str(row.get("verdict") or "").upper().startswith("SKIPPED / DEV CAP")]
+    visible_rows = [row for row in rows if row not in skipped_dev]
     cards = []
-    for row in rows[:20]:
+    for row in visible_rows[:20]:
         verdict = _first_text(row.get("verdict"), row.get("final_verdict"), fallback="UNKNOWN")
+        eligibility = row.get("data_eligibility", {}) or {}
         cards.append(f"""
         <article class="decision-card">
             <div class="card-title"><strong>{escape(str(row.get("ticker") or "UNKNOWN"))}</strong><span class="badge warn">DRY RUN</span></div>
@@ -2204,11 +2211,28 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
                 <div class="metric"><span class="label">Put / Call Strikes</span><span class="value">{number(row.get("put_strike"), 2)} / {number(row.get("call_strike"), 2)}</span></div>
                 <div class="metric"><span class="label">Debit at Risk</span><span class="value">{money(row.get("debit_at_risk"))}</span></div>
                 <div class="metric"><span class="label">Scores</span><span class="value">{number(row.get("signal_score"), 1)} signal / {number(row.get("actionability_score"), 1)} action</span></div>
+                <div class="metric"><span class="label">Price / Minimum</span><span class="value">{money(eligibility.get("price"))} / {money(eligibility.get("minimum_price"))}</span></div>
+                <div class="metric"><span class="label">Avg Volume / Minimum</span><span class="value">{number(eligibility.get("average_volume_30d"), 0)} / {number(eligibility.get("minimum_average_volume"), 0)}</span></div>
+                <div class="metric"><span class="label">Data State</span><span class="value">{escape(str(eligibility.get("data_state") or row.get("data_state") or "unavailable"))}</span></div>
             </div>
             <p>{escape(_first_text(row.get("primary_blocker"), row.get("next_action"), fallback="No blocker recorded."))}</p>
             <details><summary>Formula, pair, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
         </article>""")
-    body = "".join(cards) if cards else '<div class="empty-state">No Forward Factor rows this run. Dry-run requirements may be capped or source-correct ex-earnings IV may be unavailable.</div>'
+    skipped_html = ""
+    if skipped_dev:
+        names = ", ".join(str(row.get("ticker") or "UNKNOWN") for row in skipped_dev)
+        skipped_html = f'<details><summary>Skipped by dev cap: {len(skipped_dev)}</summary><p class="muted">{escape(names)}</p></details>'
+    stage = (result.get("summary") or {}).get("stage_counts", {}) or {}
+    stage_html = '<div class="metric-grid">' + "".join(
+        f'<div class="metric"><span class="label">{escape(label)}</span><span class="value">{escape(str(value))}</span></div>'
+        for label, value in (
+            ("Evaluated", stage.get("cheap_evaluated", 0)),
+            ("Calculated", max(stage.get("ff_calculated", 0), stage.get("diagnostic_formula_calculated", 0))),
+            ("Expiration pairs", stage.get("expiration_pairs", 0)),
+            ("Structures", stage.get("structures", 0)),
+        )
+    ) + "</div>"
+    body = stage_html + ("".join(cards) if cards else '<div class="empty-state">No detailed Forward Factor rows this run.</div>') + skipped_html
     count = f"{result.get('pass_count', 0)}P · {result.get('watch_count', 0)}W · {result.get('fail_count', 0)}F · {result.get('skipped_count', 0)}S"
     return _section(section_id, "Forward Factor Calendar Candidates", kicker, body, count)
 
@@ -2326,6 +2350,13 @@ def format_html(
         parsed_tradier_snapshot.get("_provider_status") if isinstance(parsed_tradier_snapshot, dict) else None,
     )
     potential_groups = _potential_add_groups(daily_opportunity, stock_momentum, portfolio_gap, zero_tickers)
+    report_quality = str(pipeline_status.get("report_quality") or "SUCCESS_COMPLETE")
+    quality_banner = (
+        '<div class="empty-state"><strong>Refresh completed with warnings.</strong> '
+        'Broker positions could not be fully refreshed; cached positions may be stale. '
+        'The latest complete canonical report was preserved.</div>'
+        if report_quality == "SUCCESS_DEGRADED" else ""
+    )
 
     position_rows = format_position_rows(display_positions)
     recommendation_rows = format_recommendation_rows(display_recommendations)
@@ -2448,6 +2479,7 @@ def format_html(
 <body>
     <main class="report-shell">
         {top_summary_html}
+        {quality_banner}
         <nav class="quick-nav" aria-label="Report sections">
             <a href="#macro-context">Macro</a>
             <a href="#active-calendars">Active Calendars</a>
@@ -2525,12 +2557,16 @@ def format_pipeline_summary(status: dict[str, Any]) -> str:
     summary = status.get("summary", {}) or {}
     mode = escape(str(status.get("run_mode") or "prod").upper())
     overall = escape(str(status.get("overall_status") or "unknown").upper())
+    quality = escape(str(status.get("report_quality") or "SUCCESS_COMPLETE"))
+    broker = (status.get("broker_summary") or {}).get("accounts", {}) or {}
     return (
-        f'<p class="muted">Mode <strong>{mode}</strong> | Overall <strong>{overall}</strong> | '
+        f'<p class="muted">Mode <strong>{mode}</strong> | Overall <strong>{overall}</strong> | Quality <strong>{quality}</strong> | '
         f"Steps {summary.get('step_count', 0)} | "
         f"Complete {summary.get('completed_count', 0)} | "
         f"Warnings {summary.get('warning_count', 0)} | "
-        f"Errors {summary.get('error_count', 0)}</p>"
+        f"Errors {summary.get('error_count', 0)} | "
+        f"Broker current {broker.get('success', 0)} | empty {broker.get('success_empty', 0)} | "
+        f"failed {broker.get('failed', 0)} | stale fallback {broker.get('stale_fallback', 0)}</p>"
     )
 
 def format_position_rows(positions: list[dict[str, Any]]) -> str:

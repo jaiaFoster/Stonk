@@ -50,15 +50,18 @@ def validate_required_data(
     if stale:
         return _result(False, "STALE", price, average_volume, quote_age, candle_age, missing, stale, quote_record, candle_record)
     if price < config.FF_MIN_UNDERLYING_PRICE:
-        return _result(False, "UNSUPPORTED", price, average_volume, quote_age, candle_age, ["minimum_underlying_price"], [], quote_record, candle_record)
+        return _result(False, "PRICE_BELOW_MINIMUM", price, average_volume, quote_age, candle_age, [], [], quote_record, candle_record)
     if average_volume < config.FF_MIN_AVERAGE_VOLUME:
-        return _result(False, "UNSUPPORTED", price, average_volume, quote_age, candle_age, ["minimum_average_volume"], [], quote_record, candle_record)
+        return _result(False, "AVERAGE_VOLUME_BELOW_MINIMUM", price, average_volume, quote_age, candle_age, [], [], quote_record, candle_record)
     return _result(True, "COMPLETE", price, average_volume, quote_age, candle_age, [], [], quote_record, candle_record)
 
 
 def _result(eligible: bool, state: str, price=None, average_volume=None, quote_age=None, candle_age=None, missing_fields=None, stale_fields=None, quote_record=None, candle_record=None) -> dict[str, Any]:
     return {
-        "eligible": eligible, "data_state": state, "price": price, "average_volume_30d": average_volume,
+        "eligible": eligible, "data_state": state, "price": price,
+        "minimum_price": config.FF_MIN_UNDERLYING_PRICE, "price_pass": price is not None and price >= config.FF_MIN_UNDERLYING_PRICE,
+        "average_volume_30d": average_volume, "minimum_average_volume": config.FF_MIN_AVERAGE_VOLUME,
+        "average_volume_pass": average_volume is not None and average_volume >= config.FF_MIN_AVERAGE_VOLUME,
         "quote_age_seconds": quote_age, "candle_age_seconds": candle_age,
         "confidence": _confidence(quote_record, candle_record), "missing_fields": missing_fields or [],
         "stale_fields": stale_fields or [], "source_summary": {

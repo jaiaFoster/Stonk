@@ -77,6 +77,7 @@ REPORT_SNAPSHOT_DB_PATH = os.environ.get(
     "REPORT_SNAPSHOT_DB_PATH",
     "/app/data/report_snapshots.sqlite3" if os.path.isdir("/app/data") else "data/report_snapshots.sqlite3",
 )
+BROKER_POSITION_SNAPSHOT_DB_PATH = os.environ.get("BROKER_POSITION_SNAPSHOT_DB_PATH", REPORT_SNAPSHOT_DB_PATH)
 STRATEGY_OPPORTUNITY_DB_PATH = os.environ.get(
     "STRATEGY_OPPORTUNITY_DB_PATH",
     "/app/data/strategy_opportunities.sqlite3" if os.path.isdir("/app/data") else "data/strategy_opportunities.sqlite3",

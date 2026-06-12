@@ -90,6 +90,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "market_data_derived_metrics_ttl_seconds": config.MARKET_DATA_DERIVED_METRICS_TTL_SECONDS,
         "market_data_max_provider_fetches_per_run": config.MARKET_DATA_MAX_PROVIDER_FETCHES_PER_RUN,
         "report_snapshot_db_path": config.REPORT_SNAPSHOT_DB_PATH,
+        "broker_position_snapshot_db_path": config.BROKER_POSITION_SNAPSHOT_DB_PATH,
         "strategy_opportunity_db_path": config.STRATEGY_OPPORTUNITY_DB_PATH,
         "tradier_max_tickers_per_run": config.TRADIER_MAX_TICKERS_PER_RUN,
         "calendar_max_tickers_per_run": config.CALENDAR_MAX_TICKERS_PER_RUN,

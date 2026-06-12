@@ -20,6 +20,7 @@ from app.utils.log_safety import sanitize_for_log
 MAX_VERIFICATION_POLLS = 10
 _verification_prompt_count = 0
 _last_login_result: dict[str, Any] | None = None
+_last_positions_result: dict[str, Any] | None = None
 
 
 def _patched_input(prompt=""):
@@ -250,20 +251,40 @@ def login_with_retry() -> dict[str, Any]:
 
 def get_positions_with_status() -> dict[str, Any]:
     positions = get_positions()
+    result = dict(_last_positions_result or {})
+    account_results = list(result.get("account_results") or [])
+    failed = sum(str(item.get("status") or "").upper() == "FAILED" for item in account_results)
+    successful = len(account_results) - failed
+    provider_status = _robinhood_auth_status_payload()
+    if failed and provider_status.get("success"):
+        provider_status.update({
+            "success": False,
+            "status": "positions_failed" if not successful else "positions_partial",
+            "error": f"{failed} Robinhood account position request(s) failed.",
+        })
     return {
         "positions": positions,
-        "provider_status": _robinhood_auth_status_payload(),
+        "provider_status": provider_status,
         "has_data": bool(positions),
+        "account_results": account_results,
     }
 
 
 def get_positions():
+    global _last_positions_result
     print("get_positions() called", flush=True)
     logged_in = False
+    account_results: list[dict[str, Any]] = []
 
     try:
         login_result = login_with_retry()
         if not login_result.get("success"):
+            _last_positions_result = {
+                "account_results": [
+                    {"account_id": acct_num, "account_name": acct_label, "status": "FAILED", "positions": None, "error": login_result.get("error")}
+                    for acct_num, acct_label in ACCOUNT_MAP.items()
+                ] + [{"account_id": "crypto", "account_name": "Crypto", "status": "FAILED", "positions": None, "error": login_result.get("error")}],
+            }
             return []
 
         logged_in = True
@@ -273,12 +294,15 @@ def get_positions():
         print("Fetching stock positions from IRA accounts...", flush=True)
         for acct_num, acct_label in ACCOUNT_MAP.items():
             print(f"Account: {acct_label} ({acct_num})", flush=True)
+            account_positions = []
+            build_errors = []
             try:
                 raw = r.account.get_open_stock_positions(account_number=acct_num) or []
                 print(f"Raw response: {len(raw)} record(s)", flush=True)
 
                 if not raw:
                     print(f"No open positions for {acct_label}", flush=True)
+                    account_results.append({"account_id": acct_num, "account_name": acct_label, "status": "SUCCESS_EMPTY", "positions": [], "error": None})
                     continue
 
                 for pos in raw:
@@ -297,17 +321,33 @@ def get_positions():
                         )
                         print(f"Built: {position}", flush=True)
                         all_positions.append(position)
+                        account_positions.append(position)
 
                     except Exception as e:
                         print(f"Failed to build position: {sanitize_for_log(e)}", flush=True)
                         traceback.print_exc()
+                        build_errors.append(str(e))
 
+                if raw and not account_positions and build_errors:
+                    account_results.append({
+                        "account_id": acct_num, "account_name": acct_label, "status": "FAILED",
+                        "positions": None, "error": f"Position normalization failed for {len(build_errors)} record(s).",
+                    })
+                else:
+                    account_results.append({
+                        "account_id": acct_num, "account_name": acct_label,
+                        "status": "SUCCESS" if account_positions else "SUCCESS_EMPTY",
+                        "positions": account_positions, "error": None,
+                    })
             except Exception as e:
                 print(f"Failed to fetch {acct_label}: {sanitize_for_log(e)}", flush=True)
                 traceback.print_exc()
+                account_results.append({"account_id": acct_num, "account_name": acct_label, "status": "FAILED", "positions": None, "error": str(e)})
 
         # --- CRYPTO ---
         print("Fetching crypto positions...", flush=True)
+        crypto_positions = []
+        crypto_build_errors = []
         try:
             crypto = r.crypto.get_crypto_positions()
             print(f"Found {len(crypto or [])} crypto position(s)", flush=True)
@@ -347,18 +387,37 @@ def get_positions():
                     }
                     print(f"Crypto {ticker}: Built: {position}", flush=True)
                     all_positions.append(position)
+                    crypto_positions.append(position)
                 except Exception as e:
                     print(f"Failed to build crypto position: {sanitize_for_log(e)}", flush=True)
+                    crypto_build_errors.append(str(e))
 
+            if crypto and not crypto_positions and crypto_build_errors:
+                account_results.append({
+                    "account_id": "crypto", "account_name": "Crypto", "status": "FAILED",
+                    "positions": None, "error": f"Position normalization failed for {len(crypto_build_errors)} record(s).",
+                })
+            else:
+                account_results.append({
+                    "account_id": "crypto", "account_name": "Crypto",
+                    "status": "SUCCESS" if crypto_positions else "SUCCESS_EMPTY",
+                    "positions": crypto_positions, "error": None,
+                })
         except Exception as e:
             print(f"Crypto fetch failed: {sanitize_for_log(e)}", flush=True)
+            account_results.append({"account_id": "crypto", "account_name": "Crypto", "status": "FAILED", "positions": None, "error": str(e)})
 
         print(f"Total positions: {len(all_positions)}", flush=True)
+        _last_positions_result = {"account_results": account_results}
         return all_positions
 
     except Exception as e:
         print(f"Robinhood error: {sanitize_for_log(e)}", flush=True)
         traceback.print_exc()
+        _last_positions_result = {"account_results": account_results or [
+            {"account_id": acct_num, "account_name": acct_label, "status": "FAILED", "positions": None, "error": str(e)}
+            for acct_num, acct_label in ACCOUNT_MAP.items()
+        ]}
         return []
 
     finally:
