@@ -58,6 +58,29 @@ MARKET_DATA_CANDLE_RECENT_DAYS = _int_env("MARKET_DATA_CANDLE_RECENT_DAYS", 7)
 TRADIER_HISTORICAL_LOOKBACK_DAYS = _int_env("TRADIER_HISTORICAL_LOOKBACK_DAYS", 460)
 TRADIER_HISTORICAL_INTERVAL = os.environ.get("TRADIER_HISTORICAL_INTERVAL", "daily").strip().lower()
 MARKET_DATA_MAX_TICKERS_PER_RUN = _int_env("MARKET_DATA_MAX_TICKERS_PER_RUN", 20)
+MARKET_DATA_HUB_ENABLED = _bool_env("MARKET_DATA_HUB_ENABLED", True)
+MARKET_DATA_ENABLE_SQLITE_CACHE = _bool_env("MARKET_DATA_ENABLE_SQLITE_CACHE", True)
+MARKET_DATA_ENABLE_WAL = _bool_env("MARKET_DATA_ENABLE_WAL", True)
+MARKET_DATA_DB_PATH = os.environ.get(
+    "MARKET_DATA_DB_PATH",
+    "/app/data/market_data.sqlite3" if os.path.isdir("/app/data") else "data/market_data.sqlite3",
+)
+MARKET_DATA_QUOTE_TTL_SECONDS = _int_env("MARKET_DATA_QUOTE_TTL_SECONDS", 900)
+MARKET_DATA_OPTIONS_CHAIN_TTL_SECONDS = _int_env("MARKET_DATA_OPTIONS_CHAIN_TTL_SECONDS", 1800)
+MARKET_DATA_CANDLES_TTL_SECONDS = _int_env("MARKET_DATA_CANDLES_TTL_SECONDS", 43200)
+MARKET_DATA_EARNINGS_TTL_SECONDS = _int_env("MARKET_DATA_EARNINGS_TTL_SECONDS", 43200)
+MARKET_DATA_DERIVED_METRICS_TTL_SECONDS = _int_env("MARKET_DATA_DERIVED_METRICS_TTL_SECONDS", 43200)
+MARKET_DATA_PROVIDER_ERROR_TTL_SECONDS = _int_env("MARKET_DATA_PROVIDER_ERROR_TTL_SECONDS", 900)
+MARKET_DATA_MAX_PROVIDER_FETCHES_PER_RUN = _int_env("MARKET_DATA_MAX_PROVIDER_FETCHES_PER_RUN", 25)
+MARKET_DATA_SHOW_COVERAGE_PANEL = _bool_env("MARKET_DATA_SHOW_COVERAGE_PANEL", True)
+REPORT_SNAPSHOT_DB_PATH = os.environ.get(
+    "REPORT_SNAPSHOT_DB_PATH",
+    "/app/data/report_snapshots.sqlite3" if os.path.isdir("/app/data") else "data/report_snapshots.sqlite3",
+)
+STRATEGY_OPPORTUNITY_DB_PATH = os.environ.get(
+    "STRATEGY_OPPORTUNITY_DB_PATH",
+    "/app/data/strategy_opportunities.sqlite3" if os.path.isdir("/app/data") else "data/strategy_opportunities.sqlite3",
+)
 
 # --- Tradier market/options data ---
 # Required for Tradier Provider v1. Use your production token for live data,

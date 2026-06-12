@@ -88,7 +88,44 @@ def run(run_mode: str = "prod") -> PipelineResult:
 
 @app.route("/")
 def home():
+    token = request.args.get("token")
+    if _valid_run_token(token):
+        try:
+            from app.services.report_snapshot_service import ReportSnapshotRepository
+            from app.services.report_service import format_html
+
+            snapshot = ReportSnapshotRepository().latest_success()
+            if snapshot:
+                summary = json.loads(snapshot.get("summary_json") or "{}")
+                report = summary.get("report_data") or {}
+                payload = json.loads(snapshot.get("payload_json") or '""')
+                return format_html(
+                    payload,
+                    report.get("positions", []),
+                    report.get("news", {}),
+                    report.get("recommendations", []),
+                    report.get("tradier_snapshot", {}),
+                    report.get("log", []),
+                ), 200
+        except Exception as exc:
+            print(f"Latest report snapshot unavailable: {exc}", flush=True)
     return _render_home_page(), 200
+
+
+@app.route("/refresh-market-data", methods=["GET", "POST"])
+def refresh_market_data():
+    token = request.values.get("token") or request.args.get("token")
+    if not _valid_run_token(token):
+        abort(403)
+    if RUN_LOCK.locked():
+        return jsonify({"status": "already_running", "message": "Refresh already in progress."}), 409
+    mode = _requested_run_mode()
+    return jsonify({
+        "status": "ready",
+        "scope": "merged_strategy_requirements",
+        "message": "Start refresh using redirect_url. Existing successful snapshot remains visible until completion.",
+        "redirect_url": f"/run?token={token}&mode={mode}",
+    }), 202
 
 @app.route("/run")
 def trigger():
