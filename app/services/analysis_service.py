@@ -67,6 +67,7 @@ from app.services.shared_market_metrics_service import build_canonical_market_me
 from app.services.stock_momentum_strategy_service import build_stock_momentum_strategy, select_stock_momentum_market_data_tickers
 from app.services.skew_momentum_vertical_service import build_skew_momentum_vertical_strategy
 from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
+from app.services.forward_factor_service import build_forward_factor_strategy
 from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
 from app.services.watchlist_review_service import review_watchlist_candidates
@@ -402,6 +403,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     stock_momentum_strategy: dict[str, Any] = {}
     daily_opportunity_engine: dict[str, Any] = {}
     skew_momentum_vertical_strategy: dict[str, Any] = {}
+    forward_factor_strategy: dict[str, Any] = {}
     calendar_ranking: dict[str, Any] = dict(EMPTY_CALENDAR_RANKING)
     earnings_mini_backtest: dict[str, Any] = dict(EMPTY_EARNINGS_BACKTEST)
     calendar_opportunity_cache: dict[str, Any] = dict(EMPTY_CALENDAR_OPPORTUNITY_CACHE)
@@ -964,6 +966,22 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_skew_momentum_vertical_cache"] = skew_vertical_cache
 
+    forward_factor_strategy = run_optional_step(
+        "forward_factor_calendar",
+        "Running Forward Factor Calendar Strategy v1 in dry-run mode...",
+        lambda: build_forward_factor_strategy(
+            universe=analysis_tickers,
+            market_metrics=market_metrics,
+            data_hub=hub,
+            run_mode=clean_mode,
+            log_print=log_print,
+        ),
+        {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": True, "dry_run": True, "items": [], "rows": [], "errors": []},
+        lambda result: f"Forward Factor produced {len((result or {}).get('items', []) or [])} dry-run decision row(s).",
+    )
+    tradier_snapshot["_forward_factor_strategy"] = forward_factor_strategy
+    _attach_strategy_actionability(forward_factor_strategy, "items", "rows")
+
     daily_opportunity_engine = run_optional_step(
         "daily_opportunity",
         "Running Daily Opportunity Engine v1...",
@@ -985,6 +1003,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         {
             "earnings_calendar": unified_calendar_engine,
             "skew_momentum_vertical": skew_momentum_vertical_strategy,
+            "forward_factor_calendar": forward_factor_strategy,
             "stock_momentum": stock_momentum_strategy,
         },
     )

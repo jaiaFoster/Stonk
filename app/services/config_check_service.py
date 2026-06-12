@@ -134,6 +134,12 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "skew_vertical_lifecycle_enabled": config.SKEW_VERTICAL_LIFECYCLE_ENABLED,
         "skew_vertical_opportunity_cache_enabled": config.SKEW_VERTICAL_OPPORTUNITY_CACHE_ENABLED,
         "skew_vertical_opportunity_db_path": config.SKEW_VERTICAL_OPPORTUNITY_DB_PATH,
+        "forward_factor_dry_run": config.FORWARD_FACTOR_DRY_RUN,
+        "forward_factor_formula_version": config.FF_FORMULA_VERSION,
+        "forward_factor_threshold": config.FF_MIN_FORWARD_FACTOR,
+        "forward_factor_dte_ranges": f"{config.FF_FRONT_DTE_MIN}-{config.FF_FRONT_DTE_MAX}/{config.FF_BACK_DTE_MIN}-{config.FF_BACK_DTE_MAX}",
+        "forward_factor_max_tickers_per_run": config.FF_MAX_TICKERS_PER_RUN,
+        "forward_factor_dev_max_tickers_per_run": config.FF_DEV_MAX_TICKERS_PER_RUN,
     }
 
     enabled_modules = {
@@ -163,6 +169,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "skew_momentum_vertical": config.SKEW_VERTICAL_STRATEGY_ENABLED,
         "skew_vertical_lifecycle": config.SKEW_VERTICAL_LIFECYCLE_ENABLED,
         "skew_vertical_opportunity_cache": config.SKEW_VERTICAL_OPPORTUNITY_CACHE_ENABLED,
+        "forward_factor_calendar": config.FORWARD_FACTOR_STRATEGY_ENABLED,
     }
 
     ready_count = sum(1 for provider in providers.values() if provider["ready"])

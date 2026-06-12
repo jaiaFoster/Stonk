@@ -78,7 +78,7 @@ class StrategyOpportunityRepository:
 
 def _display_state(verdict: str) -> str:
     upper = verdict.upper()
-    if upper.startswith("PASS") or "CONSIDER ADDING" in upper:
+    if upper.startswith(("PASS", "DRY RUN PASS")) or "CONSIDER ADDING" in upper:
         return "PASS"
     if "WATCH" in upper or "RESEARCH" in upper:
         return "WATCH"
@@ -98,6 +98,9 @@ def opportunity_structure_key(strategy_id: str, row: dict[str, Any]) -> str:
         "back_expiration": _date(row.get("back_expiration") or spread.get("back_expiration")),
         "long_strike": _number(row.get("long_strike") or spread.get("long_strike")),
         "short_strike": _number(row.get("short_strike") or spread.get("short_strike") or row.get("strike")),
+        "put_strike": _number(row.get("put_strike")),
+        "call_strike": _number(row.get("call_strike")),
+        "formula_version": str(row.get("formula_version") or ""),
         "event_date": _date(row.get("event_date") or row.get("earnings_date")),
     }
     explicit = row.get("structure_key")

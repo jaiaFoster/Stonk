@@ -1,0 +1,33 @@
+strategy_id: forward_factor_calendar
+source_name: VolVibes
+source_url: https://www.youtube.com/watch?v=6ao3uXE5KhU
+source_spec_version: 1
+source_reported:
+  forward_factor_threshold: 0.20
+  reported_cagr: 0.27
+  reported_sharpe: 2.4
+  preferred_expiration_pair:
+    front_dte: 60
+    back_dte: 90
+  trade_delta:
+    put: -0.35
+    call: 0.35
+  volatility_input: ex_earnings_iv
+  formula: "(front_ex_earnings_iv - implied_forward_iv) / implied_forward_iv"
+entry:
+  exact_source_rule: SOURCE_UNSPECIFIED
+  source_timestamp_or_section: SOURCE_UNSPECIFIED
+exit:
+  exact_source_rule: SOURCE_UNSPECIFIED
+  source_timestamp_or_section: SOURCE_UNSPECIFIED
+position_sizing:
+  exact_source_rule: SOURCE_UNSPECIFIED
+  source_timestamp_or_section: SOURCE_UNSPECIFIED
+transaction_costs:
+  exact_source_rule: SOURCE_UNSPECIFIED
+  source_timestamp_or_section: SOURCE_UNSPECIFIED
+unresolved:
+  - Complete transcript was not supplied with Patch 26 handoff.
+  - Screener package and source-qualified examples were not supplied.
+  - Exact ex-earnings IV adjustment method is unavailable.
+  - Exact entry, exit, holding-period, and transaction-cost rules are unavailable.

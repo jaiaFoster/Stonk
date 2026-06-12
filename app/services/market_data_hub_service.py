@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import date
 import json
 from typing import Any, Callable
 
@@ -47,7 +48,11 @@ class MarketDataHub:
                 self.log(f"MarketDataHub: options_chain {ticker.upper()} run_context_hit")
                 return reusable
         def fetch() -> dict[str, Any]:
-            dates = self.provider.get_expirations(ticker)[:normalized_expirations]
+            eligible_dates = [
+                expiration for expiration in self.provider.get_expirations(ticker)
+                if self._expiration_in_range(expiration, normalized_min, normalized_max)
+            ]
+            dates = self._sample_expirations(eligible_dates, normalized_expirations)
             return {
                 "expirations": dates,
                 "chains": {date: self.provider.get_option_chain(ticker, date, greeks=True) for date in dates},
@@ -193,6 +198,24 @@ class MarketDataHub:
             max(0, int(max_dte if max_dte is not None else 365)),
             max(1, int(expirations if expirations is not None else 1)),
         )
+
+    @staticmethod
+    def _expiration_in_range(expiration: Any, min_dte: int, max_dte: int) -> bool:
+        try:
+            dte = (date.fromisoformat(str(expiration)[:10]) - date.today()).days
+            return min_dte <= dte <= max_dte
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def _sample_expirations(expirations: list[Any], limit: int) -> list[Any]:
+        ordered = sorted(expirations, key=lambda value: str(value)[:10])
+        if len(ordered) <= limit:
+            return ordered
+        if limit <= 1:
+            return ordered[:1]
+        indexes = [round(index * (len(ordered) - 1) / (limit - 1)) for index in range(limit)]
+        return [ordered[index] for index in dict.fromkeys(indexes)]
 
     @staticmethod
     def _signature(data_type: str, **params: Any) -> str:

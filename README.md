@@ -583,6 +583,15 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Normal dashboard GET loads latest successful snapshot with zero provider calls.
 - Details: `docs/shared_metrics_requirement_correctness_v1.md`.
 
+### Strategy 3: Forward Factor Calendar v1
+
+- Dry-run-only scanner for source-defined implied forward volatility opportunities.
+- Uses time-weighted forward variance, source-correct ex-earnings IV, approximate 60/90 DTE pairs, and matched-strike ±35-delta double calendars.
+- Raw IV cannot produce PASS. Missing ex-earnings IV is shown as a hard failure, not silently substituted.
+- FF rows write to the generic opportunity registry and appear in top summary, dashboard section, exports, and Monitor.
+- Exact source entry/exit/backtest rules remain `SOURCE_UNSPECIFIED` until the complete transcript and screener package are supplied.
+- Details: `docs/forward_factor_strategy_v1.md`.
+
 ### Railway start command
 
 The app uses `start.sh` via `railway.toml` so Railway expands `$PORT` safely at runtime.
