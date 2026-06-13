@@ -119,11 +119,15 @@ def build_forward_factor_strategy(
         "chain_approved": 0, "chain_fetch": 0, "chain_sets": 0, "expiration_coverage_pass": 0,
         "expiration_pairs": 0, "valid_forward_variance": 0, "ff_calculated": 0,
         "source_ff_calculated": 0, "diagnostic_formula_calculated": 0, "structures": 0,
+        "planner_blocked": 0,
         "prefilter_supported_equities": len(supported),
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
         "prefilter_volume_pass": sum(_known_volume_pass(market_metrics.get(ticker) or {}) for ticker in supported),
     }
     plan_by_ticker = (requirement_plan or {}).get("by_ticker", {}) or {}
+    selected_states = ", ".join(f"{ticker}={(plan_by_ticker.get(ticker) or {}).get('state', 'UNPLANNED')}" for ticker in selected)
+    log_print(f"FF service universe count={len(ordered)} selected={selected}")
+    log_print(f"FF selected ticker planner states: {selected_states or 'none'}")
     for ticker in ordered:
         if ticker not in supported:
             rows.append(_blocked(ticker, "FAIL / UNSUPPORTED SECURITY", "Asset type is unsupported for Forward Factor.", data_state="UNSUPPORTED"))
@@ -134,10 +138,14 @@ def build_forward_factor_strategy(
             continue
         planned_state = (plan_by_ticker.get(ticker) or {}).get("state")
         if planned_state == "SKIPPED_DEV_CAP":
+            stage["planner_blocked"] += 1
+            log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=global dev planner cap DEV_MAX_TICKERS={config.DEV_MAX_TICKERS}")
             rows.append(_blocked(ticker, "SKIPPED / DEV CAP", "Shared planner did not approve required cheap facts.", data_state=planned_state))
             continue
         if planned_state == "SKIPPED_PROVIDER_BUDGET":
+            stage["planner_blocked"] += 1
             stage["skipped_provider_budget"] += 1
+            log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=shared provider budget")
             rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget did not approve required cheap facts.", data_state=planned_state))
             continue
         quote = data_hub.get_quote(ticker, required=True, strategy_id="forward_factor_calendar")

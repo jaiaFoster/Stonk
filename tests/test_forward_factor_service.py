@@ -5,6 +5,8 @@ from datetime import date, datetime, timedelta, timezone
 from app.services.forward_factor_backtest_service import forward_factor_backtest_status
 from app.services.forward_factor_data_eligibility_service import validate_required_data
 from app.services.forward_factor_service import build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar
+from app.services.data_requirement_planner import DataRequirementPlanner
+from app.services.data_requirement_service import forward_factor_requirement
 from app.services.strategy_opportunity_repository import opportunity_structure_key
 from app.strategies.registry import normalize_strategy_results
 from app.services.run_data_context_service import create_run_data_context
@@ -24,12 +26,15 @@ class FakeFFHub:
         self.candles = {"payload": {"bars": [{"close": 500, "volume": 10_000_000}] * 240}, "fetched_at": now, "fresh": True, "provider": "tradier", "confidence": "high"}
         self.requested_quotes = []
         self.earnings_lookaheads = []
+        self.chain_set_calls = 0
     def get_quote(self, ticker, *args, **kwargs):
         self.requested_quotes.append(ticker)
         return self.quote
     def get_daily_candles(self, *args, **kwargs): return self.candles
     def get_derived_metrics(self, *args, **kwargs): return {"average_volume_30d": 10_000_000, "realized_volatility_30d": .2}
-    def get_options_chain_set(self, *args, **kwargs): return {"payload": self.payload}
+    def get_options_chain_set(self, *args, **kwargs):
+        self.chain_set_calls += 1
+        return {"payload": self.payload}
     def get_earnings_event(self, *args, **kwargs):
         self.earnings_lookaheads.append(kwargs.get("lookahead_days"))
         return None
@@ -192,6 +197,26 @@ class ForwardFactorTests(unittest.TestCase):
         result = build_forward_factor_strategy(["AAA", "BBB", "CCC", "DDD"], metrics, hub, run_mode="dev")
         self.assertNotIn("AAA", hub.requested_quotes)
         self.assertEqual(result["stage_counts"]["cheap_evaluated"], 3)
+
+    def test_approved_ff_tickers_reach_cheap_evaluation_and_chain_set(self):
+        tickers = ["AMZN", "CRDO", "ELF"]
+        plan = DataRequirementPlanner("dev", dev_ticker_cap=6).merge([forward_factor_requirement(tickers)])
+        self.assertTrue(all(plan["by_ticker"][ticker]["state"] == "APPROVED" for ticker in tickers))
+        hub = FakeFFHub({})
+        result = build_forward_factor_strategy(tickers, {}, hub, run_mode="dev", requirement_plan=plan)
+        self.assertGreater(result["stage_counts"]["cheap_evaluated"], 0)
+        self.assertGreater(result["stage_counts"]["cheap_pass"], 0)
+        self.assertGreater(hub.chain_set_calls, 0)
+
+    def test_planner_blocked_selected_ticker_is_explicit_and_reconciled(self):
+        tickers = ["AMZN", "CRDO", "ELF"]
+        plan = DataRequirementPlanner("dev", dev_ticker_cap=2).merge([forward_factor_requirement(tickers)])
+        logs = []
+        result = build_forward_factor_strategy(tickers, {}, FakeFFHub({}), run_mode="dev", requirement_plan=plan, log_print=logs.append)
+        self.assertTrue(any(row["ticker"] == "ELF" and row["verdict"] == "SKIPPED / DEV CAP" for row in result["items"]))
+        self.assertEqual(result["stage_counts"]["planner_blocked"], 1)
+        self.assertTrue(result["summary"]["counts_reconcile"])
+        self.assertTrue(any("ELF skipped before evaluation" in line for line in logs))
 
     def test_crypto_is_reserved_as_unsupported_security(self):
         hub = FakeFFHub({})

@@ -13,10 +13,13 @@ def enabled_strategies() -> list[Any]:
     return [strategy for strategy in STRATEGY_REGISTRY if strategy.is_enabled()]
 
 
-def collect_requirements(context: Any) -> list[Any]:
+def collect_requirements(context: Any, log_print=None) -> list[Any]:
+    log = log_print or (lambda message: None)
     requirements = []
     for strategy in enabled_strategies():
         universe = strategy.build_universe(context)
+        if strategy.strategy_id == "forward_factor_calendar":
+            log(f"FF adapter universe count={len(universe)} tickers={universe[:10]}")
         requirements.append(strategy.data_requirements(context, universe))
     return requirements
 
