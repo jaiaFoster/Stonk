@@ -5,7 +5,9 @@ from app import config
 
 def apply_forward_factor_verdict(row: dict) -> dict:
     blocker = ""
-    if not row.get("liquidity_pass"):
+    if row.get("liquidity_status") == "WATCH":
+        verdict, blocker = "WATCH / LIQUIDITY DATA PARTIAL", "Four-leg package has usable quotes but incomplete liquidity fields."
+    elif not row.get("liquidity_pass"):
         verdict, blocker = "FAIL / OPTIONS ILLIQUID", "Four-leg package failed configured liquidity or execution-width gates."
     elif float(row.get("debit_at_risk") or 0) > config.FF_MAX_DEBIT_DOLLARS:
         verdict, blocker = "FAIL / DEBIT TOO LARGE", "Conservative package debit exceeds configured risk cap."
