@@ -368,7 +368,7 @@ NTFY_TOPIC = os.environ.get("NTFY_TOPIC")
 # Robinhood portfolio, but limits external provider calls such as NewsAPI,
 # Finnhub, and Tradier.
 APP_MODE = os.environ.get("APP_MODE", "prod").strip().lower()
-DEV_MAX_TICKERS = _int_env("DEV_MAX_TICKERS", 2)
+DEV_MAX_TICKERS = _int_env("DEV_MAX_TICKERS", 6)
 DEV_TICKERS = [
     ticker.strip().upper()
     for ticker in os.environ.get("DEV_TICKERS", "NVDA,AMZN").split(",")

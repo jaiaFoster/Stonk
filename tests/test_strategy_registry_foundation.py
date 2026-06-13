@@ -11,11 +11,18 @@ from app.services.actionability_service import attach_actionability
 from app.services.strategy_execution_service import collect_strategy_results, execute_strategy_registry
 from app.services.staged_scan_service import StagedScan
 from app.strategies.registry import collect_requirements, normalize_strategy_results
+from app.strategies.adapters import ForwardFactorCalendarStrategy
 from app.services.strategy_opportunity_repository import opportunity_structure_key
 from app.providers.robinhood_provider import _resolve_watchlist_names
 
 
 class StrategyRegistryFoundationTests(unittest.TestCase):
+    def test_ff_adapter_build_universe_does_not_pre_cap(self):
+        context = create_run_data_context("dev")
+        context.analysis_tickers = [f"T{i:02d}" for i in range(10)]
+        universe = ForwardFactorCalendarStrategy().build_universe(context)
+        self.assertEqual(len(universe), 10)
+
     def test_registry_declares_current_strategy_requirements(self):
         context = create_run_data_context("dev")
         context.analysis_tickers = ["NVDA"]

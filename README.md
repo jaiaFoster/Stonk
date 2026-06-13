@@ -598,6 +598,8 @@ Patch 26C separates observed `average_volume_30d` from its configured threshold,
 
 Patch 26D reserves bounded provider capacity for FF's expensive stage, fulfills a distinct shared `options_chain_set` fact after cheap eligibility, and calculates numeric source-qualified or raw-IV diagnostic Forward Factor results from valid 50-105 DTE expiration pairs. Every universe ticker now receives exactly one terminal result; crypto is excluded before FF equity-options planning; production runs use strategy-cap terminology.
 
+Patch 26F removes the Forward Factor adapter pre-cap so the shared planner and FF service see the same supported universe. Dev planner coverage defaults to `DEV_MAX_TICKERS=6`; the FF service still applies its own `FF_DEV_MAX_TICKERS_PER_RUN=3` scan cap.
+
 Important FF defaults:
 
 ```text
@@ -606,6 +608,7 @@ FORWARD_FACTOR_DRY_RUN=true
 FF_CHAIN_EXPIRATIONS_PER_TICKER=6
 FF_MAX_CHAIN_TICKERS_PER_RUN=4
 FF_EARNINGS_LOOKAHEAD_DAYS=120
+DEV_MAX_TICKERS=6
 FF_DEV_MAX_TICKERS_PER_RUN=3
 FF_DEV_MAX_CHAIN_TICKERS_PER_RUN=2
 FF_MIN_FORWARD_FACTOR=0.20

@@ -581,7 +581,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     run_context.analysis_tickers = analysis_tickers
     run_context.analysis_positions = analysis_positions
     hub = MarketDataHub(run_context, repository=market_data_repository, log_print=log_print)
-    strategy_requirements = collect_requirements(run_context)
+    strategy_requirements = collect_requirements(run_context, log_print=log_print)
     planner = DataRequirementPlanner(
         clean_mode,
         dev_ticker_cap=config.DEV_MAX_TICKERS if clean_mode == "dev" else None,

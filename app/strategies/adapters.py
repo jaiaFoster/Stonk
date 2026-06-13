@@ -88,8 +88,7 @@ class ForwardFactorCalendarStrategy:
             if str(position.get("account") or "").lower() == "crypto"
         }
         tickers = [ticker for ticker in _tickers(context) if ticker not in crypto and ticker not in {"BTC", "SOL", "ETH", "DOGE", "LTC", "BCH", "AVAX", "LINK", "SHIB"}]
-        cap = config.FF_DEV_MAX_TICKERS_PER_RUN if getattr(context, "mode", "prod") == "dev" else config.FF_MAX_TICKERS_PER_RUN
-        return tickers[:cap]
+        return tickers
 
     def data_requirements(self, context: Any, universe: list[str]):
         return forward_factor_requirement(universe)
