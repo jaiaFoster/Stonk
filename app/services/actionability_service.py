@@ -9,7 +9,10 @@ def attach_actionability(row: dict[str, Any]) -> dict[str, Any]:
     output = dict(row)
     verdict = str(output.get("final_verdict") or output.get("verdict") or output.get("action") or "").upper()
     signal = _score(output.get("signal_score"), output.get("setup_quality_score"), output.get("score"), output.get("ranking_score"))
-    if any(token in verdict for token in ("FAIL", "BLOCKED", "AVOID", "DO NOT ADD", "DATA UNAVAILABLE")):
+    if output.get("strategy_id") == "forward_factor_calendar" and output.get("dry_run"):
+        actionability = 0.0
+        reason = "Forward Factor dry run"
+    elif any(token in verdict for token in ("FAIL", "BLOCKED", "AVOID", "DO NOT ADD", "DATA UNAVAILABLE")):
         actionability = 0.0
         reason = "hard fail"
     elif "WATCH" in verdict or "RESEARCH" in verdict or "SKIPPED" in verdict:

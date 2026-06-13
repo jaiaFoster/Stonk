@@ -90,7 +90,8 @@ class StrategyOpportunityRepository:
             ticker = str(record.get("ticker") or "UNKNOWN")
             item = summary.setdefault(ticker, {
                 "seen_count": 0, "best_diagnostic_ff": None, "best_liquidity_status": "NOT_EVALUATED",
-                "last_positive_signal": None,
+                "last_positive_signal": None, "failure_modes": {}, "valid_pair_seen": False,
+                "structure_seen": False, "liquidity_pass_seen": False,
                 "last_run_id": None,
             })
             item["seen_count"] += int(record.get("seen_count") or 0)
@@ -103,6 +104,13 @@ class StrategyOpportunityRepository:
                 item["best_liquidity_status"] = liquidity
             if payload.get("is_positive_signal") and item["last_positive_signal"] is None:
                 item["last_positive_signal"] = record.get("last_seen_at")
+            verdict = str(payload.get("verdict") or record.get("verdict") or "").upper()
+            mode = _ff_failure_mode(verdict)
+            if mode:
+                item["failure_modes"][mode] = item["failure_modes"].get(mode, 0) + int(record.get("seen_count") or 1)
+            item["valid_pair_seen"] = bool(item["valid_pair_seen"] or (payload.get("front_expiration") and payload.get("back_expiration")))
+            item["structure_seen"] = bool(item["structure_seen"] or payload.get("structure_status") == "COMPLETE")
+            item["liquidity_pass_seen"] = bool(item["liquidity_pass_seen"] or str(payload.get("liquidity_status") or "").upper() == "PASS")
         return summary
 
 
@@ -115,6 +123,19 @@ def _display_state(verdict: str) -> str:
     if "SKIPPED" in upper or "DATA CAP" in upper:
         return "SKIPPED"
     return "FAIL"
+
+
+def _ff_failure_mode(verdict: str) -> str | None:
+    for text, mode in (
+        ("NO ELIGIBLE EXPIRATION PAIR", "NO_ELIGIBLE_EXPIRATION_PAIR"),
+        ("OPTIONS ILLIQUID", "OPTIONS_ILLIQUID"),
+        ("PACKAGE SLIPPAGE TOO WIDE", "PACKAGE_SLIPPAGE_TOO_WIDE"),
+        ("DELTA DATA UNAVAILABLE", "DELTA_DATA_UNAVAILABLE"),
+        ("EX-EARNINGS IV UNAVAILABLE", "SOURCE_IV_UNAVAILABLE"),
+    ):
+        if text in verdict:
+            return mode
+    return None
 
 
 def opportunity_structure_key(strategy_id: str, row: dict[str, Any]) -> str:

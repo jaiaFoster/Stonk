@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from app.services.forward_factor_backtest_service import forward_factor_backtest_status
 from app.services.forward_factor_data_eligibility_service import validate_required_data
+from app.services.forward_factor_candidate_selection_service import score_forward_factor_candidate, select_forward_factor_candidates
 from app.services.forward_factor_service import build_forward_factor_double_calendar_structure, build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar
 from app.services.data_requirement_planner import DataRequirementPlanner
 from app.services.data_requirement_service import forward_factor_requirement
@@ -292,6 +293,38 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertNotIn("AAA", hub.requested_quotes)
         self.assertEqual(result["stage_counts"]["cheap_evaluated"], 3)
 
+    def test_candidate_quality_prioritizes_valid_pair_and_penalizes_repeat_failures(self):
+        valid = score_forward_factor_candidate("ELF", {
+            "current_price": 50, "average_volume_30d": 2_000_000, "options_available": True,
+        }, {"valid_pair_seen": True, "structure_seen": True, "best_liquidity_status": "FAIL"})
+        repeated = score_forward_factor_candidate("CRDO", {
+            "current_price": 50, "average_volume_30d": 2_000_000, "options_available": True,
+        }, {"failure_modes": {"NO_ELIGIBLE_EXPIRATION_PAIR": 3}})
+        self.assertGreater(valid["score"], repeated["score"])
+        self.assertTrue(valid["cached_pair_seen"])
+        self.assertTrue(any("repeated" in warning.lower() for warning in repeated["warnings"]))
+
+    def test_candidate_discovery_pool_is_broader_than_final_selection(self):
+        tickers = [f"T{i:02d}" for i in range(8)]
+        metrics = {ticker: {"current_price": 50, "average_volume_30d": 2_000_000, "options_available": True} for ticker in tickers}
+        selected, audit = select_forward_factor_candidates(tickers, metrics, {}, discovery_pool_size=6, final_cap=3)
+        self.assertEqual(len(selected), 3)
+        self.assertEqual(sum(row["selected_for_discovery_pool"] for row in audit), 6)
+        self.assertEqual(sum(row["selected_for_cheap_eval"] for row in audit), 3)
+
+    def test_repeat_no_pair_candidate_is_deprioritized_when_alternative_exists(self):
+        metrics = {
+            ticker: {"current_price": 50, "average_volume_30d": 2_000_000, "options_available": True}
+            for ticker in ("CRDO", "ELF", "NVDA")
+        }
+        selected, _ = select_forward_factor_candidates(
+            list(metrics), metrics,
+            {"CRDO": {"failure_modes": {"NO_ELIGIBLE_EXPIRATION_PAIR": 4}}, "ELF": {"valid_pair_seen": True}},
+            discovery_pool_size=3, final_cap=2,
+        )
+        self.assertIn("ELF", selected)
+        self.assertNotIn("CRDO", selected)
+
     def test_approved_ff_tickers_reach_cheap_evaluation_and_chain_set(self):
         tickers = ["AMZN", "CRDO", "ELF"]
         plan = DataRequirementPlanner("dev", dev_ticker_cap=6).merge([forward_factor_requirement(tickers)])
@@ -357,6 +390,27 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("forward_variance", html)
         self.assertIn("Positive / Signal Tier", html)
         self.assertIn("DIAGNOSTIC_POSITIVE", html)
+
+    def test_candidate_selection_audit_renders_and_nonpositive_ff_actionability_is_zero(self):
+        front = (date.today() + timedelta(days=60)).isoformat()
+        back = (date.today() + timedelta(days=90)).isoformat()
+        payload = {"expirations": [front, back], "chains": {
+            front: [leg(95, "put", -.35, .5, 1.0), leg(105, "call", .35, .5, 1.0)],
+            back: [leg(95, "put", -.25, 1.4, 1.5), leg(105, "call", .25, 1.4, 1.5)],
+        }, "expiration_metrics": {front: {"raw_iv": .50}, back: {"raw_iv": .45}}}
+        raw = build_forward_factor_strategy(
+            ["ELF"], {"ELF": {"current_price": 50, "average_volume_30d": 2_000_000, "options_available": True}},
+            FakeFFHub(payload), observation_history={"ELF": {"valid_pair_seen": True, "structure_seen": True}},
+        )
+        normalized = normalize_strategy_results(create_run_data_context(), {"forward_factor_calendar": raw})["forward_factor_calendar"]
+        row = normalized["rows"][0]
+        self.assertEqual(row["actionability_score"], 0)
+        self.assertGreater(row["candidate_quality_score"], 0)
+        self.assertTrue(row["what_would_make_positive"])
+        html = format_html("payload", [], {}, [], {"_strategy_results": {"forward_factor_calendar": normalized}, "_pipeline_status": {"mode": "dev", "steps": []}}, [])
+        self.assertIn("FF Candidate Selection Audit", html)
+        self.assertIn("Candidate Quality", html)
+        self.assertIn("what_would_make_positive", html)
 
 
 if __name__ == "__main__":
