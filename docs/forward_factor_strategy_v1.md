@@ -63,3 +63,7 @@ Patch 26C explicitly records observed price and `average_volume_30d`, their conf
 - Explicit source/provider ex-earnings IV remains required for a source-qualified result. Raw-IV Forward Factor is diagnostic only and produces no PASS.
 - FF requests independent 120-day earnings context so a shorter general lookup cannot imply no event exists.
 - Every raw-universe ticker receives exactly one PASS, WATCH, FAIL, or SKIPPED terminal row. Production caps use `SKIPPED / STRATEGY CAP`; crypto and unsupported assets are excluded before equity-options planning.
+
+## Patch 26G diagnostic structures
+
+When raw-IV diagnostic Forward Factor is calculable but source-correct ex-earnings IV is unavailable, FF may construct a diagnostic-only matched-strike double calendar from provider deltas. It selects front put/call legs nearest -0.35/+0.35, requires matching back strikes, prices the conservative and mid four-leg debit, and reports leg/package liquidity. This never creates PASS or actionability. Missing delta, matching strikes, quotes, or liquidity receives an explicit structure status and blocker.

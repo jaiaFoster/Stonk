@@ -53,14 +53,19 @@ def eligible_expiration_pairs(expirations: list[str], today: date | None = None)
 
 
 def construct_double_calendar(front_chain: list[dict[str, Any]], back_chain: list[dict[str, Any]]) -> dict[str, Any] | None:
+    result = build_forward_factor_double_calendar_structure(front_chain, back_chain)
+    return result if result["structure_status"] == "COMPLETE" else None
+
+
+def build_forward_factor_double_calendar_structure(front_chain: list[dict[str, Any]], back_chain: list[dict[str, Any]]) -> dict[str, Any]:
     call = _closest_delta(front_chain, "call", config.FF_TARGET_CALL_DELTA)
     put = _closest_delta(front_chain, "put", config.FF_TARGET_PUT_DELTA)
     if not call or not put:
-        return None
+        return _structure_failure("DELTA_DATA_UNAVAILABLE", "Usable front-expiration ±35-delta put and call legs were not available.")
     back_call = _matching_strike(back_chain, "call", call["strike"])
     back_put = _matching_strike(back_chain, "put", put["strike"])
     if not back_call or not back_put:
-        return None
+        return _structure_failure("NO_MATCHED_DOUBLE_CALENDAR", "Matching back-expiration put and call strikes were not both available.", put, call, back_put, back_call)
     legs = {"front_call": call, "back_call": back_call, "front_put": put, "back_put": back_put}
     if not (
         _valid_market(call, require_short_bid=True)
@@ -68,18 +73,16 @@ def construct_double_calendar(front_chain: list[dict[str, Any]], back_chain: lis
         and _valid_market(back_call, require_long_ask=True)
         and _valid_market(back_put, require_long_ask=True)
     ):
-        return None
+        return _structure_failure("INVALID_QUOTES", "One or more four-leg markets had missing, zero, or crossed required quotes.", put, call, back_put, back_call)
     conservative = float(back_put["ask"]) - float(put["bid"]) + float(back_call["ask"]) - float(call["bid"])
     mid = _mid(back_put) - _mid(put) + _mid(back_call) - _mid(call)
     if conservative <= 0 or mid <= 0:
-        return None
+        return _structure_failure("INVALID_DEBIT", "Four-leg package produced a non-positive conservative or mid debit.", put, call, back_put, back_call)
     slippage = max(0.0, conservative - mid) / max(abs(mid), 0.01) * 100
-    liquidity_checks = {
-        name: {"pass": _liquid(leg), "spread_pct": round(_spread_pct(leg), 2), "open_interest": leg.get("open_interest"), "volume": leg.get("volume")}
-        for name, leg in legs.items()
-    }
-    liquidity = all(item["pass"] for item in liquidity_checks.values()) and slippage <= config.FF_MAX_PACKAGE_SLIPPAGE_PCT
+    liquidity = _liquidity_result(legs, slippage)
     return {
+        "structure_status": "COMPLETE", "structure_reason": "Matched-strike ±35-delta double calendar constructed.",
+        "matched_put_calendar": True, "matched_call_calendar": True,
         "put_strike": float(put["strike"]), "call_strike": float(call["strike"]),
         "front_put_delta": float(put["delta"]), "front_call_delta": float(call["delta"]),
         "put_delta": float(put["delta"]), "call_delta": float(call["delta"]),
@@ -87,9 +90,15 @@ def construct_double_calendar(front_chain: list[dict[str, Any]], back_chain: lis
         "call_delta_deviation": abs(float(call["delta"]) - config.FF_TARGET_CALL_DELTA),
         "front_put_contract": _contract_id(put), "back_put_contract": _contract_id(back_put),
         "front_call_contract": _contract_id(call), "back_call_contract": _contract_id(back_call),
+        "front_put_symbol": _contract_id(put), "back_put_symbol": _contract_id(back_put),
+        "front_call_symbol": _contract_id(call), "back_call_symbol": _contract_id(back_call),
+        "front_put_bid": float(put["bid"]), "back_put_ask": float(back_put["ask"]),
+        "front_call_bid": float(call["bid"]), "back_call_ask": float(back_call["ask"]),
         "conservative_debit": round(conservative, 4), "mid_debit": round(mid, 4),
+        "package_bid_ask_width": round(max(0.0, conservative - mid) * 2, 4),
         "debit_at_risk": round(conservative * 100, 2), "package_slippage_pct": round(slippage, 2),
-        "liquidity_pass": liquidity, "liquidity_checks": liquidity_checks, "legs": legs,
+        "liquidity_status": liquidity["status"], "liquidity_pass": liquidity["status"] == "PASS",
+        "liquidity_result": liquidity, "liquidity_checks": liquidity["leg_checks"], "legs": legs,
     }
 
 
@@ -119,6 +128,7 @@ def build_forward_factor_strategy(
         "chain_approved": 0, "chain_fetch": 0, "chain_sets": 0, "expiration_coverage_pass": 0,
         "expiration_pairs": 0, "valid_forward_variance": 0, "ff_calculated": 0,
         "source_ff_calculated": 0, "diagnostic_formula_calculated": 0, "structures": 0,
+        "structure_attempts": 0, "liquidity_complete": 0, "diagnostic_only": 0,
         "planner_blocked": 0,
         "prefilter_supported_equities": len(supported),
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
@@ -227,12 +237,25 @@ def build_forward_factor_strategy(
             if raw_formula:
                 base["diagnostic_raw_iv_forward_factor"] = raw_formula["forward_factor"]
                 base["diagnostic_raw_iv_formula"] = raw_formula
+                base.update({key: raw_formula[key] for key in ("T1", "T2", "forward_variance", "forward_iv")})
+                base["diagnostic_only"] = True
                 stage["diagnostic_formula_calculated"] += 1
                 stage["ff_calculated"] += 1
             front_ex, back_ex = iv.get("front_ex_earnings_iv"), iv.get("back_ex_earnings_iv")
             if front_ex is None or back_ex is None:
-                verdict = "WATCH / EX-EARNINGS IV UNAVAILABLE" if raw_formula else "FAIL / EX-EARNINGS IV UNAVAILABLE"
-                row = _blocked(ticker, verdict, "Source-correct ex-earnings IV is unavailable; raw-IV FF is diagnostic only.", **base)
+                structure = {}
+                if raw_formula and config.FF_ALLOW_DIAGNOSTIC_STRUCTURE_WITHOUT_SOURCE_IV:
+                    stage["structure_attempts"] += 1
+                    structure = build_forward_factor_double_calendar_structure(front_chain, back_chain)
+                    if structure.get("structure_status") == "COMPLETE":
+                        stage["structures"] += 1
+                        stage["liquidity_complete"] += 1
+                stage["diagnostic_only"] += int(bool(raw_formula))
+                verdict = _diagnostic_structure_verdict(raw_formula, structure)
+                blocker = "Source-correct ex-earnings IV is unavailable; raw-IV FF and structure are diagnostic only."
+                if structure and structure.get("structure_status") != "COMPLETE":
+                    blocker += f" Structure: {structure.get('structure_reason')}"
+                row = _blocked(ticker, verdict, blocker, **base, **structure)
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — source input unavailable"))
                 continue
@@ -249,23 +272,21 @@ def build_forward_factor_strategy(
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — invalid variance"))
                 continue
+            stage["structure_attempts"] += 1
+            structure = build_forward_factor_double_calendar_structure(front_chain, back_chain)
+            if structure.get("structure_status") == "COMPLETE":
+                stage["structures"] += 1
+                stage["liquidity_complete"] += 1
             if formula["forward_factor"] + 1e-12 < config.FF_MIN_FORWARD_FACTOR:
-                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **base, **formula)
+                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure})
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "selected — below threshold"))
                 continue
-            if not _chains_have_deltas(front_chain, back_chain):
-                row = _blocked(ticker, "WATCH / DELTA DATA UNAVAILABLE", "Required contract delta data is unavailable; structure is diagnostic only.", **base, **formula)
+            if structure.get("structure_status") != "COMPLETE":
+                row = _blocked(ticker, _source_structure_verdict(structure), structure.get("structure_reason") or "Double-calendar structure unavailable.", **{**base, **formula, **structure})
                 ticker_rows.append(row)
-                pair_audit.append(_pair_audit(row, "not selected — delta unavailable"))
+                pair_audit.append(_pair_audit(row, "not selected — structure incomplete"))
                 continue
-            structure = construct_double_calendar(front_chain, back_chain)
-            if not structure:
-                row = _blocked(ticker, "FAIL / NO MATCHED DOUBLE CALENDAR", "Matched-strike ±35-delta put and call calendars could not be formed.", **base, **formula)
-                ticker_rows.append(row)
-                pair_audit.append(_pair_audit(row, "not selected — no matched structure"))
-                continue
-            stage["structures"] += 1
             row = {
                 **_base(ticker), **base, **formula, **structure,
                 "structure_type": "double_calendar", "scenario_grid": build_scenario_grid(
@@ -284,7 +305,7 @@ def build_forward_factor_strategy(
         rows.append(ticker_rows[0])
     result = _finalize(rows, ordered, stage, pair_audit, True)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
-    log_print(f"FF: structures={stage['structures']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
+    log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
     return result
 
 
@@ -402,7 +423,19 @@ def _finalize(rows, scanned, stage, pair_audit, enabled):
 
 
 def _readiness(stage, summary):
-    return {"formula_fixtures": "pass", "ex_earnings_iv_fixtures": "partial — source screener missing", "multi_expiration_retrieval": "pass", "delta_structure_construction": "pass", "liquidity_checks": "pass", "live_dry_run_observations": int((stage or {}).get("cheap_evaluated", 0)), "calculation_complete_observations": summary.get("calculation_complete_observations", 0), "dry_run_pass_observations": summary.get("pass_count", 0), "backtest_reproduction": "blocked — historical options data unavailable"}
+    return {
+        "formula_fixtures": "pass", "ex_earnings_iv_fixtures": "partial — source screener missing",
+        "multi_expiration_retrieval": "pass", "delta_structure_construction": "pass", "liquidity_checks": "pass",
+        "live_dry_run_observations": int((stage or {}).get("cheap_evaluated", 0)),
+        "calculation_complete_observations": summary.get("calculation_complete_observations", 0),
+        "structure_attempt_observations": int((stage or {}).get("structure_attempts", 0)),
+        "structure_complete_observations": int((stage or {}).get("structures", 0)),
+        "liquidity_complete_observations": int((stage or {}).get("liquidity_complete", 0)),
+        "source_qualified_observations": int((stage or {}).get("source_ff_calculated", 0)),
+        "diagnostic_only_observations": int((stage or {}).get("diagnostic_only", 0)),
+        "dry_run_pass_observations": summary.get("pass_count", 0),
+        "backtest_reproduction": "blocked — historical options data unavailable",
+    }
 
 
 def _base(ticker):
@@ -444,6 +477,75 @@ def _last_hub_state(hub, ticker, data_type):
     return next((row.get("state") for row in reversed(audit) if row.get("ticker") == ticker and row.get("data_type") == data_type), None)
 def _chains_have_deltas(front_chain, back_chain):
     return any(row.get("delta") is not None for row in front_chain if isinstance(row, dict)) and any(row.get("delta") is not None for row in back_chain if isinstance(row, dict))
+def _diagnostic_structure_verdict(raw_formula, structure):
+    if not raw_formula:
+        return "FAIL / EX-EARNINGS IV UNAVAILABLE"
+    status = structure.get("structure_status") if structure else None
+    if status == "DELTA_DATA_UNAVAILABLE":
+        return "FAIL / DELTA DATA UNAVAILABLE"
+    if status == "NO_MATCHED_DOUBLE_CALENDAR":
+        return "FAIL / NO MATCHED DOUBLE CALENDAR"
+    if status in {"INVALID_QUOTES", "INVALID_DEBIT"}:
+        return "FAIL / OPTIONS ILLIQUID"
+    if status == "COMPLETE" and structure.get("liquidity_status") == "FAIL":
+        return "FAIL / OPTIONS ILLIQUID"
+    if status == "COMPLETE" and float(structure.get("debit_at_risk") or 0) > config.FF_MAX_DEBIT_DOLLARS:
+        return "FAIL / DEBIT TOO LARGE"
+    return "WATCH / EX-EARNINGS IV UNAVAILABLE"
+def _source_structure_verdict(structure):
+    status = structure.get("structure_status")
+    if status == "DELTA_DATA_UNAVAILABLE":
+        return "FAIL / DELTA DATA UNAVAILABLE"
+    if status == "NO_MATCHED_DOUBLE_CALENDAR":
+        return "FAIL / NO MATCHED DOUBLE CALENDAR"
+    return "FAIL / OPTIONS ILLIQUID"
+def _structure_failure(status, reason, front_put=None, front_call=None, back_put=None, back_call=None):
+    return {
+        "structure_status": status, "structure_reason": reason,
+        "matched_put_calendar": bool(front_put and back_put), "matched_call_calendar": bool(front_call and back_call),
+        "put_strike": float(front_put["strike"]) if front_put else None,
+        "call_strike": float(front_call["strike"]) if front_call else None,
+        "front_put_delta": float(front_put["delta"]) if front_put and front_put.get("delta") is not None else None,
+        "front_call_delta": float(front_call["delta"]) if front_call and front_call.get("delta") is not None else None,
+        "front_put_symbol": _contract_id(front_put) if front_put else None,
+        "back_put_symbol": _contract_id(back_put) if back_put else None,
+        "front_call_symbol": _contract_id(front_call) if front_call else None,
+        "back_call_symbol": _contract_id(back_call) if back_call else None,
+        "liquidity_status": "NOT_EVALUATED", "liquidity_pass": False,
+    }
+def _liquidity_result(legs, package_slippage):
+    blockers, warnings, checks = [], [], {}
+    for name, leg in legs.items():
+        spread = round(_spread_pct(leg), 2)
+        oi, volume = leg.get("open_interest"), leg.get("volume")
+        leg_blockers, leg_warnings = [], []
+        if spread > config.FF_MAX_LEG_BID_ASK_PCT:
+            leg_blockers.append("bid/ask spread too wide")
+        if oi is None:
+            leg_warnings.append("open interest unavailable")
+        elif float(oi) < config.FF_MIN_LEG_OPEN_INTEREST:
+            leg_blockers.append("open interest below minimum")
+        if volume is None:
+            leg_warnings.append("volume unavailable")
+        elif float(volume) < config.FF_MIN_LEG_VOLUME:
+            leg_blockers.append("volume below minimum")
+        blockers.extend(f"{name}: {item}" for item in leg_blockers)
+        warnings.extend(f"{name}: {item}" for item in leg_warnings)
+        checks[name] = {"pass": not leg_blockers, "spread_pct": spread, "open_interest": oi, "volume": volume, "blockers": leg_blockers, "warnings": leg_warnings}
+    if package_slippage > config.FF_MAX_PACKAGE_SLIPPAGE_PCT:
+        blockers.append("package slippage above maximum")
+    elif package_slippage > config.FF_WARN_PACKAGE_SLIPPAGE_PCT:
+        warnings.append("package slippage above warning threshold")
+    status = "FAIL" if blockers else "WATCH" if warnings else "PASS"
+    numeric_oi = [float(leg["open_interest"]) for leg in legs.values() if leg.get("open_interest") is not None]
+    numeric_volume = [float(leg["volume"]) for leg in legs.values() if leg.get("volume") is not None]
+    return {
+        "status": status, "blockers": blockers, "warnings": warnings, "leg_checks": checks,
+        "min_open_interest": min(numeric_oi) if numeric_oi else None,
+        "min_volume": min(numeric_volume) if numeric_volume else None,
+        "max_leg_spread_pct": max((item["spread_pct"] for item in checks.values()), default=None),
+        "package_slippage_pct": round(package_slippage, 2),
+    }
 def _terminal_rank(row):
     verdict = str(row.get("verdict") or "")
     return (

@@ -2154,7 +2154,7 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
         f"Formula version: {config.FF_FORMULA_VERSION}; source spec: {config.FF_SOURCE_SPEC_VERSION}",
         f"Source benchmark context: threshold approximately 0.20; reported CAGR approximately 27%; reported Sharpe approximately 2.4; favorable pair approximately 60/90 DTE; structure approximately ±35-delta double calendar.",
         "Historical source claims are not expected returns or proof of implementation correctness.",
-        f"Stages: universe {stage.get('universe', 0)}; supported {stage.get('prefilter_supported_equities', 0)}; unsupported {stage.get('unsupported', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain sets {stage.get('chain_sets', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)} ({stage.get('source_ff_calculated', 0)} source-qualified / {stage.get('diagnostic_formula_calculated', 0)} diagnostic); structures {stage.get('structures', 0)}.",
+        f"Stages: universe {stage.get('universe', 0)}; supported {stage.get('prefilter_supported_equities', 0)}; unsupported {stage.get('unsupported', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain sets {stage.get('chain_sets', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)} ({stage.get('source_ff_calculated', 0)} source-qualified / {stage.get('diagnostic_formula_calculated', 0)} diagnostic); structure attempts {stage.get('structure_attempts', 0)}; structures {stage.get('structures', 0)}; liquidity complete {stage.get('liquidity_complete', 0)}.",
         f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
         f"Terminal count reconciliation: {summary.get('terminal_count', 0)} / {summary.get('universe_count', 0)}; reconciled={summary.get('counts_reconcile', False)}.",
         "",
@@ -2167,8 +2167,13 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
             f"  Front/back ex-earnings IV: {number(row.get('front_ex_earnings_iv'), 4)} / {number(row.get('back_ex_earnings_iv'), 4)}; raw IV: {number(row.get('front_raw_iv'), 4)} / {number(row.get('back_raw_iv'), 4)}",
             f"  T1/T2: {number(row.get('T1'), 6)} / {number(row.get('T2'), 6)}; forward variance: {number(row.get('forward_variance'), 6)}; forward IV: {number(row.get('forward_iv'), 4)}",
             f"  Adjustment: {row.get('adjustment_method') or 'unavailable'} / {row.get('adjustment_version') or 'unavailable'} / confidence {row.get('adjustment_confidence') or 'unavailable'}",
+            f"  Diagnostic only: {bool(row.get('diagnostic_only'))}; structure status: {row.get('structure_status') or 'not attempted'}; reason: {row.get('structure_reason') or 'unavailable'}",
             f"  Structure: put {number(row.get('put_strike'), 2)} / call {number(row.get('call_strike'), 2)}; deltas {number(row.get('front_put_delta'), 3)} / {number(row.get('front_call_delta'), 3)}",
-            f"  Debit: {money(row.get('debit_at_risk'))}; package slippage {pct(row.get('package_slippage_pct'))}; signal/actionability {number(row.get('signal_score'), 1)} / {number(row.get('actionability_score'), 1)}",
+            f"  Four-leg symbols: {row.get('front_put_symbol') or 'unavailable'} / {row.get('back_put_symbol') or 'unavailable'} / {row.get('front_call_symbol') or 'unavailable'} / {row.get('back_call_symbol') or 'unavailable'}",
+            f"  Quotes: front put bid {number(row.get('front_put_bid'), 3)}; back put ask {number(row.get('back_put_ask'), 3)}; front call bid {number(row.get('front_call_bid'), 3)}; back call ask {number(row.get('back_call_ask'), 3)}",
+            f"  Debit: conservative {number(row.get('conservative_debit'), 3)}; mid {number(row.get('mid_debit'), 3)}; at risk {money(row.get('debit_at_risk'))}; package width {number(row.get('package_bid_ask_width'), 3)}; slippage {pct(row.get('package_slippage_pct'))}",
+            f"  Liquidity: {row.get('liquidity_status') or 'not evaluated'}; result {row.get('liquidity_result') or {}}",
+            f"  Signal/actionability: {number(row.get('signal_score'), 1)} / {number(row.get('actionability_score'), 1)}",
             f"  Blocker: {row.get('primary_blocker') or 'none'}",
         ]
     lines += ["", "FF Readiness"]
@@ -2204,9 +2209,10 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
     for row in visible_rows[:20]:
         verdict = _first_text(row.get("verdict"), row.get("final_verdict"), fallback="UNKNOWN")
         eligibility = row.get("data_eligibility", {}) or {}
+        diagnostic_badge = '<span class="badge warn">DIAGNOSTIC ONLY</span>' if row.get("diagnostic_only") else ""
         cards.append(f"""
         <article class="decision-card">
-            <div class="card-title"><strong>{escape(str(row.get("ticker") or "UNKNOWN"))}</strong><span class="badge warn">DRY RUN</span></div>
+            <div class="card-title"><strong>{escape(str(row.get("ticker") or "UNKNOWN"))}</strong><span class="badge warn">DRY RUN</span>{diagnostic_badge}</div>
             <div class="card-action">{escape(verdict)}</div>
             <div class="metric-grid">
                 <div class="metric"><span class="label">Forward Factor</span><span class="value">{number(row.get("forward_factor"), 3)}</span></div>
@@ -2214,6 +2220,9 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
                 <div class="metric"><span class="label">Front / Forward IV</span><span class="value">{number(row.get("front_ex_earnings_iv"), 3)} / {number(row.get("forward_iv"), 3)}</span></div>
                 <div class="metric"><span class="label">Expirations</span><span class="value">{escape(str(row.get("front_expiration") or "unavailable"))}<br>{escape(str(row.get("back_expiration") or "unavailable"))}</span></div>
                 <div class="metric"><span class="label">Put / Call Strikes</span><span class="value">{number(row.get("put_strike"), 2)} / {number(row.get("call_strike"), 2)}</span></div>
+                <div class="metric"><span class="label">Front Put / Call Delta</span><span class="value">{number(row.get("front_put_delta"), 3)} / {number(row.get("front_call_delta"), 3)}</span></div>
+                <div class="metric"><span class="label">Conservative / Mid Debit</span><span class="value">{number(row.get("conservative_debit"), 3)} / {number(row.get("mid_debit"), 3)}</span></div>
+                <div class="metric"><span class="label">Liquidity / Slippage</span><span class="value">{escape(str(row.get("liquidity_status") or "not evaluated"))} / {pct(row.get("package_slippage_pct"))}</span></div>
                 <div class="metric"><span class="label">Debit at Risk</span><span class="value">{money(row.get("debit_at_risk"))}</span></div>
                 <div class="metric"><span class="label">Scores</span><span class="value">{number(row.get("signal_score"), 1)} signal / {number(row.get("actionability_score"), 1)} action</span></div>
                 <div class="metric"><span class="label">Price / Minimum</span><span class="value">{money(eligibility.get("price"))} / {money(eligibility.get("minimum_price"))}</span></div>
@@ -2221,7 +2230,7 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
                 <div class="metric"><span class="label">Data State</span><span class="value">{escape(str(eligibility.get("data_state") or row.get("data_state") or "unavailable"))}</span></div>
             </div>
             <p>{escape(_first_text(row.get("primary_blocker"), row.get("next_action"), fallback="No blocker recorded."))}</p>
-            <details><summary>Formula, pair, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
+            <details><summary>Formula, pair, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "structure_status", "structure_reason", "front_put_symbol", "back_put_symbol", "front_call_symbol", "back_call_symbol", "conservative_debit", "mid_debit", "package_bid_ask_width", "package_slippage_pct", "liquidity_result", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
         </article>""")
     skipped_html = ""
     if skipped_cap:
@@ -2240,6 +2249,7 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
             ("Chain sets", stage.get("chain_sets", 0)),
             ("Calculated", stage.get("ff_calculated", 0)),
             ("Expiration pairs", stage.get("expiration_pairs", 0)),
+            ("Structure attempts", stage.get("structure_attempts", 0)),
             ("Structures", stage.get("structures", 0)),
         )
     ) + "</div>"

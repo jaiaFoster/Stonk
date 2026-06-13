@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from app.services.forward_factor_backtest_service import forward_factor_backtest_status
 from app.services.forward_factor_data_eligibility_service import validate_required_data
-from app.services.forward_factor_service import build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar
+from app.services.forward_factor_service import build_forward_factor_double_calendar_structure, build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar
 from app.services.data_requirement_planner import DataRequirementPlanner
 from app.services.data_requirement_service import forward_factor_requirement
 from app.services.strategy_opportunity_repository import opportunity_structure_key
@@ -70,6 +70,79 @@ class ForwardFactorTests(unittest.TestCase):
     def test_missing_matching_back_strike_rejected(self):
         self.assertIsNone(construct_double_calendar([leg(95, "put", -.35), leg(105, "call", .35)], [leg(100, "put", -.25), leg(105, "call", .25)]))
 
+    def test_structure_builder_explains_missing_delta_and_matching_strike(self):
+        missing_delta = build_forward_factor_double_calendar_structure(
+            [leg(95, "put", None), leg(105, "call", None)],
+            [leg(95, "put", -.25), leg(105, "call", .25)],
+        )
+        self.assertEqual(missing_delta["structure_status"], "DELTA_DATA_UNAVAILABLE")
+        no_match = build_forward_factor_double_calendar_structure(
+            [leg(95, "put", -.35), leg(105, "call", .35)],
+            [leg(100, "put", -.25), leg(105, "call", .25)],
+        )
+        self.assertEqual(no_match["structure_status"], "NO_MATCHED_DOUBLE_CALENDAR")
+        self.assertFalse(no_match["matched_put_calendar"])
+        self.assertTrue(no_match["matched_call_calendar"])
+
+    def test_structure_builder_prices_package_and_reports_liquidity(self):
+        front = [leg(95, "put", -.35, .9, 1.0), leg(105, "call", .35, .9, 1.0)]
+        back = [leg(95, "put", -.25, 1.4, 1.5), leg(105, "call", .25, 1.4, 1.5)]
+        row = build_forward_factor_double_calendar_structure(front, back)
+        self.assertEqual(row["structure_status"], "COMPLETE")
+        self.assertAlmostEqual(row["conservative_debit"], 1.2)
+        self.assertAlmostEqual(row["mid_debit"], 1.0)
+        self.assertAlmostEqual(row["package_bid_ask_width"], .4)
+        self.assertEqual(row["liquidity_status"], "FAIL")
+        self.assertTrue(row["front_put_symbol"])
+
+    def test_structure_builder_handles_invalid_quotes_and_partial_liquidity(self):
+        zero_bid = build_forward_factor_double_calendar_structure(
+            [leg(95, "put", -.35, 0, 1.0), leg(105, "call", .35)],
+            [leg(95, "put", -.25, 1.4, 1.5), leg(105, "call", .25, 1.4, 1.5)],
+        )
+        self.assertEqual(zero_bid["structure_status"], "INVALID_QUOTES")
+        front = [leg(95, "put", -.35, .99, 1.0, oi=None, volume=None), leg(105, "call", .35, .99, 1.0, oi=None, volume=None)]
+        back = [leg(95, "put", -.25, 1.1, 1.11, oi=None, volume=None), leg(105, "call", .25, 1.1, 1.11, oi=None, volume=None)]
+        partial = build_forward_factor_double_calendar_structure(front, back)
+        self.assertEqual(partial["structure_status"], "COMPLETE")
+        self.assertEqual(partial["liquidity_status"], "WATCH")
+
+    def test_structure_builder_liquidity_failures_are_explicit(self):
+        cases = {
+            "low_oi": (
+                [leg(95, "put", -.35, .99, 1.0, oi=1), leg(105, "call", .35, .99, 1.0)],
+                [leg(95, "put", -.25, 1.1, 1.11), leg(105, "call", .25, 1.1, 1.11)],
+                "open interest below minimum",
+            ),
+            "low_volume": (
+                [leg(95, "put", -.35, .99, 1.0, volume=0), leg(105, "call", .35, .99, 1.0)],
+                [leg(95, "put", -.25, 1.1, 1.11), leg(105, "call", .25, 1.1, 1.11)],
+                "volume below minimum",
+            ),
+            "wide_spread": (
+                [leg(95, "put", -.35, .5, 1.0), leg(105, "call", .35, .99, 1.0)],
+                [leg(95, "put", -.25, 1.1, 1.11), leg(105, "call", .25, 1.1, 1.11)],
+                "bid/ask spread too wide",
+            ),
+        }
+        for name, (front, back, blocker) in cases.items():
+            with self.subTest(name=name):
+                result = build_forward_factor_double_calendar_structure(front, back)
+                self.assertEqual(result["liquidity_status"], "FAIL")
+                self.assertTrue(any(blocker in item for item in result["liquidity_result"]["blockers"]))
+
+    def test_structure_builder_rejects_crossed_and_negative_debit_markets(self):
+        crossed = build_forward_factor_double_calendar_structure(
+            [leg(95, "put", -.35, 1.1, 1.0), leg(105, "call", .35)],
+            [leg(95, "put", -.25, 1.4, 1.5), leg(105, "call", .25, 1.4, 1.5)],
+        )
+        self.assertEqual(crossed["structure_status"], "INVALID_QUOTES")
+        negative = build_forward_factor_double_calendar_structure(
+            [leg(95, "put", -.35, 2.0, 2.1), leg(105, "call", .35, 2.0, 2.1)],
+            [leg(95, "put", -.25, 1.0, 1.1), leg(105, "call", .25, 1.0, 1.1)],
+        )
+        self.assertEqual(negative["structure_status"], "INVALID_DEBIT")
+
     def test_backtest_blocks_without_historical_chains(self):
         self.assertEqual(forward_factor_backtest_status()["status"], "BLOCKED / HISTORICAL OPTIONS DATA UNAVAILABLE")
 
@@ -80,8 +153,8 @@ class ForwardFactorTests(unittest.TestCase):
     def test_dry_run_pass_is_counted_but_never_actionable(self):
         front = (date.today() + timedelta(days=60)).isoformat()
         back = (date.today() + timedelta(days=90)).isoformat()
-        front_chain = [leg(95, "put", -.35, .95, 1.0), leg(105, "call", .35, .95, 1.0)]
-        back_chain = [leg(95, "put", -.25, 1.4, 1.45), leg(105, "call", .25, 1.4, 1.45)]
+        front_chain = [leg(95, "put", -.35, .99, 1.0), leg(105, "call", .35, .99, 1.0)]
+        back_chain = [leg(95, "put", -.25, 1.4, 1.41), leg(105, "call", .25, 1.4, 1.41)]
         back_iv = math.sqrt((.4 ** 2 * 30 + .48 ** 2 * 60) / 90)
         payload = {"expirations": [front, back], "chains": {front: front_chain, back: back_chain}, "expiration_metrics": {front: {"ex_earnings_iv": .48}, back: {"ex_earnings_iv": back_iv}}}
         hub = FakeFFHub(payload)
@@ -111,8 +184,27 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertEqual(row["verdict"], "WATCH / EX-EARNINGS IV UNAVAILABLE")
         self.assertIsNotNone(row["diagnostic_raw_iv_forward_factor"])
         self.assertIsNone(row.get("forward_factor"))
+        self.assertEqual(row["structure_status"], "COMPLETE")
+        self.assertIsNotNone(row["put_strike"])
+        self.assertEqual(row["actionability_score"], 0)
+        self.assertTrue(row["diagnostic_only"])
+        self.assertIsNotNone(row["T1"])
+        self.assertEqual(result["stage_counts"]["structure_attempts"], 1)
+        self.assertEqual(result["stage_counts"]["structures"], 1)
+        self.assertEqual(result["readiness"]["diagnostic_only_observations"], 1)
         self.assertEqual(result["stage_counts"]["ff_calculated"], 1)
         self.assertTrue(result["summary"]["counts_reconcile"])
+
+    def test_diagnostic_missing_delta_is_explicit_failure_not_pass(self):
+        front = (date.today() + timedelta(days=60)).isoformat()
+        back = (date.today() + timedelta(days=90)).isoformat()
+        payload = {"expirations": [front, back], "chains": {
+            front: [leg(95, "put", None), leg(105, "call", None)],
+            back: [leg(95, "put", None), leg(105, "call", None)],
+        }}
+        row = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))["items"][0]
+        self.assertEqual(row["verdict"], "FAIL / DELTA DATA UNAVAILABLE")
+        self.assertEqual(row["actionability_score"], 0)
 
     def test_source_qualified_below_threshold_reaches_numeric_terminal_result(self):
         front = (date.today() + timedelta(days=60)).isoformat()
@@ -241,6 +333,23 @@ class ForwardFactorTests(unittest.TestCase):
         html = format_html("payload", [], {}, [], {"_strategy_results": {"forward_factor_calendar": result}, "_pipeline_status": {"mode": "dev", "steps": []}}, [])
         self.assertIn("Skipped by dev cap: 5", html)
         self.assertNotIn("<strong>T0</strong>", html)
+
+    def test_diagnostic_structure_fields_render_in_dashboard_and_export(self):
+        row = {
+            "ticker": "ELF", "verdict": "WATCH / EX-EARNINGS IV UNAVAILABLE", "diagnostic_only": True,
+            "diagnostic_raw_iv_forward_factor": .3118, "T1": .16, "T2": .25, "forward_variance": .3, "forward_iv": .55,
+            "put_strike": 60, "call_strike": 65, "front_put_delta": -.34, "front_call_delta": .36,
+            "front_put_symbol": "ELF-FP", "back_put_symbol": "ELF-BP", "front_call_symbol": "ELF-FC", "back_call_symbol": "ELF-BC",
+            "conservative_debit": 2.1, "mid_debit": 1.9, "debit_at_risk": 210, "package_slippage_pct": 10.5,
+            "liquidity_status": "WATCH", "liquidity_result": {"status": "WATCH"}, "actionability_score": 0,
+        }
+        result = {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "enabled": True, "rows": [row], "pass_count": 0, "watch_count": 1, "fail_count": 0, "skipped_count": 0, "summary": {"stage_counts": {"structure_attempts": 1, "structures": 1}}}
+        html = format_html("payload", [], {}, [], {"_strategy_results": {"forward_factor_calendar": result}, "_pipeline_status": {"mode": "dev", "steps": []}}, [])
+        self.assertIn("DIAGNOSTIC ONLY", html)
+        self.assertIn("ELF-FP", html)
+        self.assertIn("Conservative / Mid Debit", html)
+        self.assertIn("Structure attempts", html)
+        self.assertIn("forward_variance", html)
 
 
 if __name__ == "__main__":
