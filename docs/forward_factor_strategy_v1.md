@@ -67,3 +67,7 @@ Patch 26C explicitly records observed price and `average_volume_30d`, their conf
 ## Patch 26G diagnostic structures
 
 When raw-IV diagnostic Forward Factor is calculable but source-correct ex-earnings IV is unavailable, FF may construct a diagnostic-only matched-strike double calendar from provider deltas. It selects front put/call legs nearest -0.35/+0.35, requires matching back strikes, prices the conservative and mid four-leg debit, and reports leg/package liquidity. This never creates PASS or actionability. Missing delta, matching strikes, quotes, or liquidity receives an explicit structure status and blocker.
+
+## Patch 26H positive-signal gate
+
+FF signal tiers are `SOURCE_QUALIFIED_POSITIVE`, `DIAGNOSTIC_POSITIVE`, `WATCH_NEAR_POSITIVE`, `NEGATIVE_OR_BLOCKED`, and `NOT_EVALUATED`. A diagnostic positive is a review-only research signal: it requires FF at or above 0.20, complete matched structure, liquidity PASS, and debit below warning/maximum limits. It is not source-equivalent, cannot enter Daily Opportunity, and keeps actionability at zero while dry run is enabled. Generic opportunity history stores evaluated observations and excludes cap-skipped rows.
