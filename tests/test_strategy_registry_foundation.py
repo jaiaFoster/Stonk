@@ -45,8 +45,8 @@ class StrategyRegistryFoundationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = StrategyOpportunityRepository(str(Path(temp) / "opps.sqlite3"))
             result = {"skew_momentum_vertical": {"version": "v1", "rows": [{"ticker": "NVDA", "verdict": "WATCH", "score": 80}]}}
-            repo.upsert_results(result)
-            repo.upsert_results(result)
+            repo.upsert_results(result, run_id="run-1")
+            repo.upsert_results(result, run_id="run-2")
             self.assertEqual(repo.recent()[0]["seen_count"], 2)
 
     def test_generic_opportunity_registry_filters_by_strategy(self):
@@ -59,6 +59,23 @@ class StrategyRegistryFoundationTests(unittest.TestCase):
             rows = repo.recent(strategy_id="earnings_calendar")
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["strategy_id"], "earnings_calendar")
+
+    def test_ff_observation_history_tracks_evaluated_rows_not_cap_skips(self):
+        with tempfile.TemporaryDirectory() as temp:
+            repo = StrategyOpportunityRepository(str(Path(temp) / "opps.sqlite3"))
+            result = {"forward_factor_calendar": {"version": "v1", "rows": [
+                {"ticker": "ELF", "verdict": "FAIL / OPTIONS ILLIQUID", "diagnostic_raw_iv_forward_factor": .31, "liquidity_status": "FAIL", "front_expiration": "2030-01-18", "back_expiration": "2030-02-18"},
+                {"ticker": "CRDO", "verdict": "SKIPPED / DEV CAP"},
+            ]}}
+            repo.upsert_results(result, run_id="run-1")
+            repo.upsert_results(result, run_id="run-2")
+            recent = repo.recent(strategy_id="forward_factor_calendar")
+            self.assertEqual(len(recent), 1)
+            summary = repo.observation_summary("forward_factor_calendar")
+            self.assertEqual(summary["ELF"]["seen_count"], 2)
+            self.assertEqual(summary["ELF"]["best_diagnostic_ff"], .31)
+            self.assertEqual(summary["ELF"]["last_run_id"], "run-2")
+            self.assertNotIn("CRDO", summary)
 
     def test_generic_opportunity_identity_dedupes_same_structure_not_different_strikes(self):
         base = {

@@ -2156,6 +2156,7 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
         "Historical source claims are not expected returns or proof of implementation correctness.",
         f"Stages: universe {stage.get('universe', 0)}; supported {stage.get('prefilter_supported_equities', 0)}; unsupported {stage.get('unsupported', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain sets {stage.get('chain_sets', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)} ({stage.get('source_ff_calculated', 0)} source-qualified / {stage.get('diagnostic_formula_calculated', 0)} diagnostic); structure attempts {stage.get('structure_attempts', 0)}; structures {stage.get('structures', 0)}; liquidity complete {stage.get('liquidity_complete', 0)}.",
         f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
+        f"Signals: {summary.get('positive_signal_count', 0)} positive; {summary.get('source_qualified_positive_count', 0)} source-qualified; {summary.get('diagnostic_positive_count', 0)} diagnostic; {summary.get('near_positive_count', 0)} near-positive; {summary.get('failed_liquidity_count', 0)} failed liquidity.",
         f"Terminal count reconciliation: {summary.get('terminal_count', 0)} / {summary.get('universe_count', 0)}; reconciled={summary.get('counts_reconcile', False)}.",
         "",
     ]
@@ -2168,6 +2169,8 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
             f"  T1/T2: {number(row.get('T1'), 6)} / {number(row.get('T2'), 6)}; forward variance: {number(row.get('forward_variance'), 6)}; forward IV: {number(row.get('forward_iv'), 4)}",
             f"  Adjustment: {row.get('adjustment_method') or 'unavailable'} / {row.get('adjustment_version') or 'unavailable'} / confidence {row.get('adjustment_confidence') or 'unavailable'}",
             f"  Diagnostic only: {bool(row.get('diagnostic_only'))}; structure status: {row.get('structure_status') or 'not attempted'}; reason: {row.get('structure_reason') or 'unavailable'}",
+            f"  Signal gate: tier {row.get('signal_tier') or 'NOT_EVALUATED'}; positive {bool(row.get('is_positive_signal'))}; source-qualified {bool(row.get('is_source_qualified'))}; review candidate {bool(row.get('is_trade_review_candidate'))}; Daily Opportunity allowed {bool(row.get('can_enter_daily_opportunity'))}",
+            f"  Gate reasons: positive={row.get('positive_reasons') or []}; warnings={row.get('warnings') or []}; blockers={row.get('blockers') or []}",
             f"  Structure: put {number(row.get('put_strike'), 2)} / call {number(row.get('call_strike'), 2)}; deltas {number(row.get('front_put_delta'), 3)} / {number(row.get('front_call_delta'), 3)}",
             f"  Four-leg symbols: {row.get('front_put_symbol') or 'unavailable'} / {row.get('back_put_symbol') or 'unavailable'} / {row.get('front_call_symbol') or 'unavailable'} / {row.get('back_call_symbol') or 'unavailable'}",
             f"  Quotes: front put bid {number(row.get('front_put_bid'), 3)}; back put ask {number(row.get('back_put_ask'), 3)}; front call bid {number(row.get('front_call_bid'), 3)}; back call ask {number(row.get('back_call_ask'), 3)}",
@@ -2199,6 +2202,7 @@ def _strategy_registry_html(results: dict[str, Any], opportunities: dict[str, An
 
 def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kicker: str) -> str:
     rows = result.get("rows", []) or []
+    history = result.get("observation_history", {}) or {}
     if not result:
         return _section(section_id, "Forward Factor Calendar Candidates", kicker, '<div class="empty-state">Strategy result unavailable.</div>', "0")
     skipped_cap = [row for row in rows if str(row.get("verdict") or "").upper().startswith(("SKIPPED / DEV CAP", "SKIPPED / STRATEGY CAP"))]
@@ -2209,6 +2213,7 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
     for row in visible_rows[:20]:
         verdict = _first_text(row.get("verdict"), row.get("final_verdict"), fallback="UNKNOWN")
         eligibility = row.get("data_eligibility", {}) or {}
+        observation = history.get(str(row.get("ticker") or ""), {}) or {}
         diagnostic_badge = '<span class="badge warn">DIAGNOSTIC ONLY</span>' if row.get("diagnostic_only") else ""
         cards.append(f"""
         <article class="decision-card">
@@ -2217,6 +2222,8 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
             <div class="metric-grid">
                 <div class="metric"><span class="label">Forward Factor</span><span class="value">{number(row.get("forward_factor"), 3)}</span></div>
                 <div class="metric"><span class="label">Raw-IV Diagnostic</span><span class="value">{number(row.get("diagnostic_raw_iv_forward_factor"), 3)}</span></div>
+                <div class="metric"><span class="label">Positive / Signal Tier</span><span class="value">{"yes" if row.get("is_positive_signal") else "no"} / {escape(str(row.get("signal_tier") or "NOT_EVALUATED"))}</span></div>
+                <div class="metric"><span class="label">Source / Diagnostic</span><span class="value">{"qualified" if row.get("is_source_qualified") else "unavailable"} / {"yes" if row.get("is_diagnostic_only") else "no"}</span></div>
                 <div class="metric"><span class="label">Front / Forward IV</span><span class="value">{number(row.get("front_ex_earnings_iv"), 3)} / {number(row.get("forward_iv"), 3)}</span></div>
                 <div class="metric"><span class="label">Expirations</span><span class="value">{escape(str(row.get("front_expiration") or "unavailable"))}<br>{escape(str(row.get("back_expiration") or "unavailable"))}</span></div>
                 <div class="metric"><span class="label">Put / Call Strikes</span><span class="value">{number(row.get("put_strike"), 2)} / {number(row.get("call_strike"), 2)}</span></div>
@@ -2225,12 +2232,13 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
                 <div class="metric"><span class="label">Liquidity / Slippage</span><span class="value">{escape(str(row.get("liquidity_status") or "not evaluated"))} / {pct(row.get("package_slippage_pct"))}</span></div>
                 <div class="metric"><span class="label">Debit at Risk</span><span class="value">{money(row.get("debit_at_risk"))}</span></div>
                 <div class="metric"><span class="label">Scores</span><span class="value">{number(row.get("signal_score"), 1)} signal / {number(row.get("actionability_score"), 1)} action</span></div>
+                <div class="metric"><span class="label">Observation History</span><span class="value">Seen {observation.get("seen_count", 0)}x · best FF {number(observation.get("best_diagnostic_ff"), 3)} · best liquidity {escape(str(observation.get("best_liquidity_status") or "unavailable"))} · last positive {escape(str(observation.get("last_positive_signal") or "never"))}</span></div>
                 <div class="metric"><span class="label">Price / Minimum</span><span class="value">{money(eligibility.get("price"))} / {money(eligibility.get("minimum_price"))}</span></div>
                 <div class="metric"><span class="label">Avg Volume / Minimum</span><span class="value">{number(eligibility.get("average_volume_30d"), 0)} / {number(eligibility.get("minimum_average_volume"), 0)}</span></div>
                 <div class="metric"><span class="label">Data State</span><span class="value">{escape(str(eligibility.get("data_state") or row.get("data_state") or "unavailable"))}</span></div>
             </div>
             <p>{escape(_first_text(row.get("primary_blocker"), row.get("next_action"), fallback="No blocker recorded."))}</p>
-            <details><summary>Formula, pair, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "structure_status", "structure_reason", "front_put_symbol", "back_put_symbol", "front_call_symbol", "back_call_symbol", "conservative_debit", "mid_debit", "package_bid_ask_width", "package_slippage_pct", "liquidity_result", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
+            <details><summary>Entry review, formula, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("signal_tier", "is_positive_signal", "is_source_qualified", "is_diagnostic_only", "is_trade_review_candidate", "can_enter_daily_opportunity", "source_iv_status", "positive_reasons", "warnings", "blockers", "entry_review", "front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "structure_status", "structure_reason", "front_put_symbol", "back_put_symbol", "front_call_symbol", "back_call_symbol", "conservative_debit", "mid_debit", "package_bid_ask_width", "package_slippage_pct", "liquidity_result", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
         </article>""")
     skipped_html = ""
     if skipped_cap:
@@ -2251,6 +2259,8 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
             ("Expiration pairs", stage.get("expiration_pairs", 0)),
             ("Structure attempts", stage.get("structure_attempts", 0)),
             ("Structures", stage.get("structures", 0)),
+            ("Positive signals", (result.get("summary") or {}).get("positive_signal_count", 0)),
+            ("Diagnostic positive", (result.get("summary") or {}).get("diagnostic_positive_count", 0)),
         )
     ) + "</div>"
     body = stage_html + ("".join(cards) if cards else '<div class="empty-state">No detailed Forward Factor rows this run.</div>') + skipped_html

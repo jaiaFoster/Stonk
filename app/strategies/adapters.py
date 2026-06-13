@@ -101,7 +101,7 @@ def _normalize(plugin: Any, raw: dict[str, Any], rows: list[dict[str, Any]]) -> 
     rows = attach_actionability_to_rows(rows)
     def verdict(row: dict[str, Any]) -> str:
         return str(row.get("final_verdict") or row.get("verdict") or row.get("action") or "").upper()
-    pass_count = sum(1 for row in rows if verdict(row).startswith(("PASS", "DRY RUN PASS", "CONSIDER ADDING", "ADD ON")))
+    pass_count = sum(1 for row in rows if verdict(row).startswith(("PASS", "DRY RUN PASS", "CONSIDER ADDING", "ADD ON")) or "POSITIVE FF SIGNAL" in verdict(row))
     watch_count = sum(1 for row in rows if "WATCH" in verdict(row) or "RESEARCH" in verdict(row))
     skipped_count = sum(1 for row in rows if "SKIPPED" in verdict(row) or "DATA CAP" in verdict(row))
     fail_count = max(0, len(rows) - pass_count - watch_count - skipped_count)

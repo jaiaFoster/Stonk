@@ -10,6 +10,7 @@ from typing import Any
 from app import config
 from app.services.forward_factor_data_eligibility_service import validate_required_data
 from app.services.forward_factor_ranking_service import rank_forward_factor
+from app.services.forward_factor_signal_gate_service import evaluate_forward_factor_signal_gate
 from app.services.forward_factor_verdict_service import apply_forward_factor_verdict
 
 
@@ -303,6 +304,7 @@ def build_forward_factor_strategy(
             ticker_rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "No terminal result was produced from the evaluated chain set.", data_eligibility=eligibility))
         ticker_rows.sort(key=_terminal_rank)
         rows.append(ticker_rows[0])
+    rows = [{**row, **evaluate_forward_factor_signal_gate(row)} for row in rows]
     result = _finalize(rows, ordered, stage, pair_audit, True)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
@@ -415,6 +417,11 @@ def _finalize(rows, scanned, stage, pair_audit, enabled):
     if not summary["counts_reconcile"]:
         summary["accounting_warning"] = f"Terminal rows {len(rows)} did not reconcile to universe {len(scanned)}."
     summary["calculation_complete_observations"] = int((stage or {}).get("ff_calculated", 0))
+    summary["positive_signal_count"] = sum(bool(row.get("is_positive_signal")) for row in rows)
+    summary["source_qualified_positive_count"] = sum(row.get("signal_tier") == "SOURCE_QUALIFIED_POSITIVE" for row in rows)
+    summary["diagnostic_positive_count"] = sum(row.get("signal_tier") == "DIAGNOSTIC_POSITIVE" for row in rows)
+    summary["near_positive_count"] = sum(row.get("signal_tier") == "WATCH_NEAR_POSITIVE" for row in rows)
+    summary["failed_liquidity_count"] = sum(str(row.get("liquidity_status") or "").upper() == "FAIL" for row in rows)
     readiness = _readiness(stage, summary)
     summary["stage_counts"] = stage
     summary["readiness"] = readiness

@@ -587,7 +587,7 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 
 - Dry-run-only scanner for source-defined implied forward volatility opportunities.
 - Uses time-weighted forward variance, source-correct ex-earnings IV, approximate 60/90 DTE pairs, and matched-strike ±35-delta double calendars.
-- Raw IV cannot produce PASS. Missing ex-earnings IV is shown as a hard failure, not silently substituted.
+- Raw IV cannot produce source-qualified PASS or actionable output. A strong diagnostic raw-IV setup may produce a review-only positive research signal.
 - FF rows write to the generic opportunity registry and appear in top summary, dashboard section, exports, and Monitor.
 - Exact source entry/exit/backtest rules remain `SOURCE_UNSPECIFIED` until the complete transcript and screener package are supplied.
 - Details: `docs/forward_factor_strategy_v1.md`.
@@ -599,6 +599,8 @@ Patch 26C separates observed `average_volume_30d` from its configured threshold,
 Patch 26D reserves bounded provider capacity for FF's expensive stage, fulfills a distinct shared `options_chain_set` fact after cheap eligibility, and calculates numeric source-qualified or raw-IV diagnostic Forward Factor results from valid 50-105 DTE expiration pairs. Every universe ticker now receives exactly one terminal result; crypto is excluded before FF equity-options planning; production runs use strategy-cap terminology.
 
 Patch 26F removes the Forward Factor adapter pre-cap so the shared planner and FF service see the same supported universe. Dev planner coverage defaults to `DEV_MAX_TICKERS=6`; the FF service still applies its own `FF_DEV_MAX_TICKERS_PER_RUN=3` scan cap.
+
+Patch 26H adds an explicit positive-signal gate. Source-qualified and diagnostic-positive tiers remain distinct; liquidity/debit failures block positive status; every FF row remains excluded from Daily Opportunity while dry run is enabled. Evaluated FF observations use generic opportunity history, while cap-skipped rows are not stored.
 
 Important FF defaults:
 

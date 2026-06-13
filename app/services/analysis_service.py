@@ -1058,10 +1058,13 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     try:
         market_data_repository.save_coverage(run_context.run_id, coverage)
         opportunity_repository = StrategyOpportunityRepository()
-        write_count = opportunity_repository.upsert_results(normalized_strategy_results)
+        write_count = opportunity_repository.upsert_results(normalized_strategy_results, run_id=run_context.run_id)
+        ff_history = opportunity_repository.observation_summary("forward_factor_calendar")
+        normalized_strategy_results.get("forward_factor_calendar", {})["observation_history"] = ff_history
         tradier_snapshot["_strategy_opportunity_registry"] = {
             "write_count": write_count,
             "recent": opportunity_repository.recent(20),
+            "forward_factor_observation_history": ff_history,
         }
     except Exception as exc:
         log_print(f"Shared foundation persistence warning: {exc}")

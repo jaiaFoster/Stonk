@@ -160,8 +160,9 @@ class ForwardFactorTests(unittest.TestCase):
         hub = FakeFFHub(payload)
         raw = build_forward_factor_strategy(["SPY"], {"SPY": {"required_market_data_complete": True, "current_price": 500, "average_volume_30d": 10000000}}, hub)
         row = raw["items"][0]
-        self.assertTrue(row["verdict"].startswith("DRY RUN PASS"))
+        self.assertEqual(row["verdict"], "SOURCE-QUALIFIED POSITIVE FF SIGNAL / REVIEW ENTRY")
         self.assertEqual(row["actionability_score"], 0)
+        self.assertFalse(row["can_enter_daily_opportunity"])
         normalized = normalize_strategy_results(create_run_data_context(), {"forward_factor_calendar": raw})["forward_factor_calendar"]
         self.assertEqual(normalized["pass_count"], 1)
 
@@ -176,12 +177,12 @@ class ForwardFactorTests(unittest.TestCase):
         front = (date.today() + timedelta(days=60)).isoformat()
         back = (date.today() + timedelta(days=90)).isoformat()
         payload = {"expirations": [front, back], "chains": {
-            front: [leg(95, "put", -.35, .95, 1.0), leg(105, "call", .35, .95, 1.0)],
-            back: [leg(95, "put", -.25, 1.4, 1.45), leg(105, "call", .25, 1.4, 1.45)],
-        }}
+            front: [leg(95, "put", -.35, .99, 1.0), leg(105, "call", .35, .99, 1.0)],
+            back: [leg(95, "put", -.25, 1.2, 1.21), leg(105, "call", .25, 1.2, 1.21)],
+        }, "expiration_metrics": {front: {"raw_iv": .50}, back: {"raw_iv": .45}}}
         result = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))
         row = result["items"][0]
-        self.assertEqual(row["verdict"], "WATCH / EX-EARNINGS IV UNAVAILABLE")
+        self.assertEqual(row["verdict"], "DIAGNOSTIC POSITIVE FF SIGNAL / REVIEW ONLY")
         self.assertIsNotNone(row["diagnostic_raw_iv_forward_factor"])
         self.assertIsNone(row.get("forward_factor"))
         self.assertEqual(row["structure_status"], "COMPLETE")
@@ -192,6 +193,7 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertEqual(result["stage_counts"]["structure_attempts"], 1)
         self.assertEqual(result["stage_counts"]["structures"], 1)
         self.assertEqual(result["readiness"]["diagnostic_only_observations"], 1)
+        self.assertEqual(result["summary"]["diagnostic_positive_count"], 1)
         self.assertEqual(result["stage_counts"]["ff_calculated"], 1)
         self.assertTrue(result["summary"]["counts_reconcile"])
 
@@ -337,6 +339,9 @@ class ForwardFactorTests(unittest.TestCase):
     def test_diagnostic_structure_fields_render_in_dashboard_and_export(self):
         row = {
             "ticker": "ELF", "verdict": "WATCH / EX-EARNINGS IV UNAVAILABLE", "diagnostic_only": True,
+            "signal_tier": "DIAGNOSTIC_POSITIVE", "is_positive_signal": True, "is_source_qualified": False,
+            "is_diagnostic_only": True, "is_trade_review_candidate": True, "can_enter_daily_opportunity": False,
+            "positive_reasons": ["FF above threshold"], "warnings": ["Source unavailable"], "blockers": [],
             "diagnostic_raw_iv_forward_factor": .3118, "T1": .16, "T2": .25, "forward_variance": .3, "forward_iv": .55,
             "put_strike": 60, "call_strike": 65, "front_put_delta": -.34, "front_call_delta": .36,
             "front_put_symbol": "ELF-FP", "back_put_symbol": "ELF-BP", "front_call_symbol": "ELF-FC", "back_call_symbol": "ELF-BC",
@@ -350,6 +355,8 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("Conservative / Mid Debit", html)
         self.assertIn("Structure attempts", html)
         self.assertIn("forward_variance", html)
+        self.assertIn("Positive / Signal Tier", html)
+        self.assertIn("DIAGNOSTIC_POSITIVE", html)
 
 
 if __name__ == "__main__":
