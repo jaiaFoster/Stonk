@@ -118,9 +118,15 @@ def build_forward_factor_strategy(
     selection_label = "dev" if is_dev else "production"
     cap = config.FF_DEV_MAX_TICKERS_PER_RUN if run_mode == "dev" else config.FF_MAX_TICKERS_PER_RUN
     supported = [ticker for ticker in ordered if _supported_equity(ticker, market_metrics.get(ticker) or {})]
+    plan_by_ticker = (requirement_plan or {}).get("by_ticker", {}) or {}
+    planner_states = {
+        ticker: str((plan_by_ticker.get(ticker) or {}).get("state") or "UNPLANNED")
+        for ticker in supported
+    } if requirement_plan is not None else None
     selected, candidate_audit = select_forward_factor_candidates(
         supported, market_metrics, observation_history or {},
         config.FF_CANDIDATE_DISCOVERY_POOL_SIZE, cap,
+        planner_states=planner_states,
     )
     audit_by_ticker = {row["ticker"]: row for row in candidate_audit}
     rows, cheap_pass, pair_audit = [], [], []
@@ -137,6 +143,8 @@ def build_forward_factor_strategy(
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
         "prefilter_volume_pass": sum(_known_volume_pass(market_metrics.get(ticker) or {}) for ticker in supported),
         "candidate_pool_size": sum(bool(row.get("selected_for_discovery_pool")) for row in candidate_audit),
+        "planner_approved_candidates": sum(bool(row.get("planner_approved")) for row in candidate_audit),
+        "final_selected": len(selected), "pre_eval_skipped": 0,
         "repeat_no_pair_candidates": sum(int((row.get("recent_failure_modes") or {}).get("NO_ELIGIBLE_EXPIRATION_PAIR", 0) or 0) >= 3 for row in candidate_audit),
         "repeat_liquidity_fail_candidates": sum(
             int((row.get("recent_failure_modes") or {}).get("OPTIONS_ILLIQUID", 0) or 0)
@@ -144,7 +152,6 @@ def build_forward_factor_strategy(
             for row in candidate_audit
         ),
     }
-    plan_by_ticker = (requirement_plan or {}).get("by_ticker", {}) or {}
     selected_states = ", ".join(f"{ticker}={(plan_by_ticker.get(ticker) or {}).get('state', 'UNPLANNED')}" for ticker in selected)
     log_print(f"FF service universe count={len(ordered)} selected={selected}")
     log_print(f"FF selected ticker planner states: {selected_states or 'none'}")
@@ -152,6 +159,25 @@ def build_forward_factor_strategy(
         "FF candidate selection: pool="
         f"{stage['candidate_pool_size']} selected={selected}; "
         + "; ".join(f"{row['ticker']}={row['score']}" for row in candidate_audit if row.get("selected_for_cheap_eval"))
+    )
+    selected_nonapproved = [
+        row for row in candidate_audit
+        if row.get("selected_for_cheap_eval") and not row.get("planner_approved")
+    ]
+    if selected_nonapproved:
+        log_print(
+            "FF selector validation failed: removing non-approved final candidates "
+            + ", ".join(f"{row['ticker']}={row['planner_state']}" for row in selected_nonapproved)
+        )
+        selected = [ticker for ticker in selected if (audit_by_ticker.get(ticker) or {}).get("planner_approved")]
+    selected_state_counts = {
+        state: sum((audit_by_ticker.get(ticker) or {}).get("planner_state") == state for ticker in selected)
+        for state in ("APPROVED", "SKIPPED_DEV_CAP", "SKIPPED_PROVIDER_BUDGET")
+    }
+    log_print(
+        f"FF selector validation: final_selected={len(selected)} approved={selected_state_counts['APPROVED'] if requirement_plan is not None else len(selected)} "
+        f"skipped_dev_cap={selected_state_counts['SKIPPED_DEV_CAP']} skipped_provider_budget={selected_state_counts['SKIPPED_PROVIDER_BUDGET']} "
+        f"invalid={len(selected_nonapproved)}"
     )
     for ticker in ordered:
         if ticker not in supported:
@@ -164,11 +190,13 @@ def build_forward_factor_strategy(
         planned_state = (plan_by_ticker.get(ticker) or {}).get("state")
         if planned_state == "SKIPPED_DEV_CAP":
             stage["planner_blocked"] += 1
+            stage["pre_eval_skipped"] += 1
             log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=global dev planner cap DEV_MAX_TICKERS={config.DEV_MAX_TICKERS}")
             rows.append(_blocked(ticker, "SKIPPED / DEV CAP", "Shared planner did not approve required cheap facts.", data_state=planned_state))
             continue
         if planned_state == "SKIPPED_PROVIDER_BUDGET":
             stage["planner_blocked"] += 1
+            stage["pre_eval_skipped"] += 1
             stage["skipped_provider_budget"] += 1
             log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=shared provider budget")
             rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget did not approve required cheap facts.", data_state=planned_state))
@@ -199,6 +227,7 @@ def build_forward_factor_strategy(
     log_print(f"FF selected for {selection_label}: {', '.join(selected) or 'none'}; priority=known complete facts, liquidity, stable ticker")
     log_print(f"FF planner: universe={len(ordered)} {cap_label} candidate cap={cap} cheap-data approved={len(selected)} skipped {cap_label} cap={stage['skipped_dev_cap']}")
     log_print(f"FF cheap filter: evaluated={stage['cheap_evaluated']} passed={stage['cheap_pass']} failed={stage['cheap_evaluated'] - stage['cheap_pass']}")
+    log_print(f"FF evaluation reconciliation: final_selected={len(selected)} evaluated={stage['cheap_evaluated']} pre_eval_skipped={stage['pre_eval_skipped']}")
     log_print(f"FF expensive-data plan: chain-approved={stage['chain_approved']} chain-skipped-budget={max(0, len(cheap_pass) - chain_cap)}")
     for index, (ticker, eligibility) in enumerate(cheap_pass):
         if index >= stage["chain_approved"]:
@@ -336,6 +365,7 @@ def build_forward_factor_strategy(
             "candidate_selection_reasons": audit.get("reasons", []),
             "candidate_selection_warnings": audit.get("warnings", []),
             "recent_failure_modes": audit.get("recent_failure_modes", {}),
+            "planner_state": audit.get("planner_state", "UNPLANNED"),
             "selected_for_cheap_eval": bool(audit.get("selected_for_cheap_eval")),
             "selected_for_chain_eval": bool(audit.get("selected_for_chain_eval")),
             "chain_selection_rank": audit.get("chain_selection_rank"),
@@ -347,6 +377,7 @@ def build_forward_factor_strategy(
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
+    log_print(f"FF chain reconciliation: cheap_pass={stage['cheap_pass']} chain_approved={stage['chain_approved']} chain_skipped_budget={max(0, stage['cheap_pass'] - stage['chain_approved'])} chain_sets={stage['chain_sets']}")
     return result
 
 
