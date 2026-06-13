@@ -1,6 +1,7 @@
 import math
 import unittest
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import patch
 
 from app.services.forward_factor_backtest_service import forward_factor_backtest_status
 from app.services.forward_factor_data_eligibility_service import validate_required_data
@@ -325,6 +326,66 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("ELF", selected)
         self.assertNotIn("CRDO", selected)
 
+    def test_final_selector_excludes_planner_skipped_high_score_candidates(self):
+        tickers = ["ELF", "AMZN", "FANUY", "FSLR", "CRDO", "LULU", "METU"]
+        metrics = {
+            ticker: {"current_price": 50, "average_volume_30d": 2_000_000, "options_available": True}
+            for ticker in tickers
+        }
+        history = {"ELF": {"valid_pair_seen": True}}
+        planner_states = {
+            "ELF": "APPROVED", "AMZN": "SKIPPED_DEV_CAP", "FANUY": "SKIPPED_DEV_CAP",
+            "FSLR": "SKIPPED_DEV_CAP", "CRDO": "APPROVED", "LULU": "APPROVED", "METU": "APPROVED",
+        }
+        selected, audit = select_forward_factor_candidates(
+            tickers, metrics, history, discovery_pool_size=12, final_cap=4, planner_states=planner_states,
+        )
+        self.assertEqual(selected, ["ELF", "CRDO", "LULU", "METU"])
+        by_ticker = {row["ticker"]: row for row in audit}
+        self.assertFalse(by_ticker["AMZN"]["selected_for_cheap_eval"])
+        self.assertIn("SKIPPED_DEV_CAP", by_ticker["AMZN"]["not_selected_reason"])
+        self.assertTrue(by_ticker["AMZN"]["selected_for_discovery_pool"])
+
+    def test_selector_does_not_fill_slots_when_only_two_planner_candidates_are_approved(self):
+        tickers = ["ELF", "CRDO", "AMZN", "FSLR"]
+        metrics = {
+            ticker: {"current_price": 50, "average_volume_30d": 2_000_000, "options_available": True}
+            for ticker in tickers
+        }
+        selected, audit = select_forward_factor_candidates(
+            tickers, metrics, {}, discovery_pool_size=12, final_cap=4,
+            planner_states={"ELF": "APPROVED", "CRDO": "APPROVED", "AMZN": "SKIPPED_DEV_CAP", "FSLR": "SKIPPED_DEV_CAP"},
+        )
+        self.assertEqual(selected, ["CRDO", "ELF"])
+        self.assertEqual(sum(row["planner_approved"] for row in audit), 2)
+
+    def test_planner_aligned_service_selection_has_no_pre_eval_dev_cap_skips(self):
+        tickers = ["ELF", "AMZN", "FANUY", "FSLR", "CRDO", "LULU", "METU"]
+        metrics = {
+            ticker: {"current_price": 50, "average_volume_30d": 2_000_000, "options_available": True}
+            for ticker in tickers
+        }
+        approved = {"ELF", "CRDO", "LULU", "METU"}
+        plan = {"by_ticker": {
+            ticker: {"state": "APPROVED" if ticker in approved else "SKIPPED_DEV_CAP"}
+            for ticker in tickers
+        }, "forward_factor_chain_reserve": 4}
+        logs = []
+        with patch("app.config.FF_DEV_MAX_TICKERS_PER_RUN", 4), patch("app.config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN", 4):
+            result = build_forward_factor_strategy(
+                tickers, metrics, FakeFFHub({"expirations": [], "chains": {}}), run_mode="dev", requirement_plan=plan,
+                observation_history={"ELF": {"valid_pair_seen": True}}, log_print=logs.append,
+            )
+        self.assertEqual(result["stage_counts"]["final_selected"], 4)
+        self.assertEqual(result["stage_counts"]["planner_approved_candidates"], 4)
+        self.assertEqual(result["stage_counts"]["pre_eval_skipped"], 0)
+        self.assertEqual(result["stage_counts"]["cheap_evaluated"], 4)
+        self.assertEqual(result["stage_counts"]["chain_approved"], 4)
+        self.assertEqual(result["stage_counts"]["chain_sets"], 4)
+        self.assertTrue(any("FF selector validation: final_selected=4 approved=4" in line for line in logs))
+        self.assertTrue(any("FF evaluation reconciliation: final_selected=4 evaluated=4 pre_eval_skipped=0" in line for line in logs))
+        self.assertTrue(any("FF chain reconciliation: cheap_pass=4 chain_approved=4 chain_skipped_budget=0 chain_sets=4" in line for line in logs))
+
     def test_approved_ff_tickers_reach_cheap_evaluation_and_chain_set(self):
         tickers = ["AMZN", "CRDO", "ELF"]
         plan = DataRequirementPlanner("dev", dev_ticker_cap=6).merge([forward_factor_requirement(tickers)])
@@ -335,15 +396,17 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertGreater(result["stage_counts"]["cheap_pass"], 0)
         self.assertGreater(hub.chain_set_calls, 0)
 
-    def test_planner_blocked_selected_ticker_is_explicit_and_reconciled(self):
+    def test_planner_blocked_ticker_is_excluded_before_evaluation_and_reconciled(self):
         tickers = ["AMZN", "CRDO", "ELF"]
         plan = DataRequirementPlanner("dev", dev_ticker_cap=2).merge([forward_factor_requirement(tickers)])
         logs = []
         result = build_forward_factor_strategy(tickers, {}, FakeFFHub({}), run_mode="dev", requirement_plan=plan, log_print=logs.append)
         self.assertTrue(any(row["ticker"] == "ELF" and row["verdict"] == "SKIPPED / DEV CAP" for row in result["items"]))
-        self.assertEqual(result["stage_counts"]["planner_blocked"], 1)
+        self.assertEqual(result["stage_counts"]["planner_blocked"], 0)
+        self.assertEqual(result["stage_counts"]["pre_eval_skipped"], 0)
+        self.assertEqual(result["stage_counts"]["cheap_evaluated"], 2)
         self.assertTrue(result["summary"]["counts_reconcile"])
-        self.assertTrue(any("ELF skipped before evaluation" in line for line in logs))
+        self.assertTrue(any("FF selector validation: final_selected=2 approved=2" in line for line in logs))
 
     def test_crypto_is_reserved_as_unsupported_security(self):
         hub = FakeFFHub({})

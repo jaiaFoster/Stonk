@@ -94,14 +94,20 @@ def select_forward_factor_candidates(
     observation_history: dict[str, dict[str, Any]],
     discovery_pool_size: int,
     final_cap: int,
+    planner_states: dict[str, str] | None = None,
 ) -> tuple[list[str], list[dict[str, Any]]]:
+    planner_filter_active = planner_states is not None
+    planner_states = planner_states or {}
     scored = [
         score_forward_factor_candidate(ticker, market_metrics.get(ticker), observation_history.get(ticker))
         for ticker in tickers
     ]
-    scored.sort(key=lambda row: (row["hard_blocked"], -row["score"], row["ticker"]))
+    for row in scored:
+        row["planner_state"] = planner_states.get(row["ticker"], "UNPLANNED")
+        row["planner_approved"] = not planner_filter_active or row["planner_state"] == "APPROVED"
+    scored.sort(key=lambda row: (row["hard_blocked"], not row["planner_approved"], -row["score"], row["ticker"]))
     pool = [row for row in scored if not row["hard_blocked"]][:max(1, discovery_pool_size)]
-    selected = [row["ticker"] for row in pool[:max(1, final_cap)]]
+    selected = [row["ticker"] for row in pool if row["planner_approved"]][:max(1, final_cap)]
     pool_names = {row["ticker"] for row in pool}
     for row in scored:
         row["selected_for_discovery_pool"] = row["ticker"] in pool_names
@@ -110,6 +116,8 @@ def select_forward_factor_candidates(
         row["chain_selection_rank"] = None
         if row["hard_blocked"]:
             row["not_selected_reason"] = "; ".join(row["blockers"]) or "Failed cheap eligibility."
+        elif not row["planner_approved"]:
+            row["not_selected_reason"] = f"Planner {row['planner_state']} — excluded before final FF selection."
         elif row["ticker"] not in pool_names:
             row["not_selected_reason"] = "Outside FF candidate discovery pool."
         elif row["ticker"] not in selected:
