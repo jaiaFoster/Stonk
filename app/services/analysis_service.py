@@ -1007,6 +1007,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_skew_momentum_vertical_cache"] = skew_vertical_cache
 
+    try:
+        opportunity_repository = StrategyOpportunityRepository()
+        prior_ff_history = opportunity_repository.observation_summary(
+            "forward_factor_calendar", limit=max(50, config.FF_CANDIDATE_HISTORY_LOOKBACK_RUNS * 10),
+        )
+    except Exception as exc:
+        opportunity_repository = None
+        prior_ff_history = {}
+        log_print(f"FF candidate history unavailable: {exc}")
+
     forward_factor_strategy = run_optional_step(
         "forward_factor_calendar",
         "Running Forward Factor Calendar Strategy v1 in dry-run mode...",
@@ -1017,6 +1027,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             run_mode=clean_mode,
             log_print=log_print,
             requirement_plan=requirement_plan,
+            observation_history=prior_ff_history,
         ),
         {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": True, "dry_run": True, "items": [], "rows": [], "errors": []},
         lambda result: f"Forward Factor produced {len((result or {}).get('items', []) or [])} dry-run decision row(s).",
@@ -1057,7 +1068,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     tradier_snapshot["_data_coverage"] = coverage
     try:
         market_data_repository.save_coverage(run_context.run_id, coverage)
-        opportunity_repository = StrategyOpportunityRepository()
+        opportunity_repository = opportunity_repository or StrategyOpportunityRepository()
         write_count = opportunity_repository.upsert_results(normalized_strategy_results, run_id=run_context.run_id)
         ff_history = opportunity_repository.observation_summary("forward_factor_calendar")
         normalized_strategy_results.get("forward_factor_calendar", {})["observation_history"] = ff_history

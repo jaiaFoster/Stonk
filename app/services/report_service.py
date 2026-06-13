@@ -2157,6 +2157,7 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
         f"Stages: universe {stage.get('universe', 0)}; supported {stage.get('prefilter_supported_equities', 0)}; unsupported {stage.get('unsupported', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain sets {stage.get('chain_sets', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)} ({stage.get('source_ff_calculated', 0)} source-qualified / {stage.get('diagnostic_formula_calculated', 0)} diagnostic); structure attempts {stage.get('structure_attempts', 0)}; structures {stage.get('structures', 0)}; liquidity complete {stage.get('liquidity_complete', 0)}.",
         f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
         f"Signals: {summary.get('positive_signal_count', 0)} positive; {summary.get('source_qualified_positive_count', 0)} source-qualified; {summary.get('diagnostic_positive_count', 0)} diagnostic; {summary.get('near_positive_count', 0)} near-positive; {summary.get('failed_liquidity_count', 0)} failed liquidity.",
+        f"Candidate selection: pool {stage.get('candidate_pool_size', 0)}; selected cheap {stage.get('cheap_approved', 0)}; selected chain {stage.get('chain_approved', 0)}; repeat no-pair {stage.get('repeat_no_pair_candidates', 0)}; repeat liquidity-fail {stage.get('repeat_liquidity_fail_candidates', 0)}; best near-positive {summary.get('best_near_positive_ticker') or 'none'}.",
         f"Terminal count reconciliation: {summary.get('terminal_count', 0)} / {summary.get('universe_count', 0)}; reconciled={summary.get('counts_reconcile', False)}.",
         "",
     ]
@@ -2177,8 +2178,19 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
             f"  Debit: conservative {number(row.get('conservative_debit'), 3)}; mid {number(row.get('mid_debit'), 3)}; at risk {money(row.get('debit_at_risk'))}; package width {number(row.get('package_bid_ask_width'), 3)}; slippage {pct(row.get('package_slippage_pct'))}",
             f"  Liquidity: {row.get('liquidity_status') or 'not evaluated'}; result {row.get('liquidity_result') or {}}",
             f"  Signal/actionability: {number(row.get('signal_score'), 1)} / {number(row.get('actionability_score'), 1)}",
+            f"  Candidate quality: {number(row.get('candidate_quality_score'), 1)}; selected cheap={bool(row.get('selected_for_cheap_eval'))}; selected chain={bool(row.get('selected_for_chain_eval'))}; chain rank={row.get('chain_selection_rank') or 'unavailable'}",
+            f"  Selection reasons: {row.get('candidate_selection_reasons') or []}; warnings={row.get('candidate_selection_warnings') or []}; recent failures={row.get('recent_failure_modes') or {}}; not selected={row.get('not_selected_reason') or 'none'}",
+            f"  What would make positive: {row.get('what_would_make_positive') or []}",
             f"  Blocker: {row.get('primary_blocker') or 'none'}",
         ]
+    lines += ["", "FF Candidate Selection Audit"]
+    for row in (summary.get("candidate_selection_audit", []) or []):
+        if row.get("selected_for_cheap_eval") or row.get("selected_for_chain_eval") or row.get("not_selected_reason"):
+            lines.append(
+                f"- {row.get('ticker')}: score {row.get('score')}; cheap={bool(row.get('selected_for_cheap_eval'))}; "
+                f"chain={bool(row.get('selected_for_chain_eval'))}; reasons={row.get('reasons') or []}; "
+                f"warnings={row.get('warnings') or []}; not selected={row.get('not_selected_reason') or 'none'}"
+            )
     lines += ["", "FF Readiness"]
     lines += [f"- {key.replace('_', ' ').title()}: {value}" for key, value in readiness.items()]
     lines += ["", "Expiration pair audit"]
@@ -2232,12 +2244,14 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
                 <div class="metric"><span class="label">Liquidity / Slippage</span><span class="value">{escape(str(row.get("liquidity_status") or "not evaluated"))} / {pct(row.get("package_slippage_pct"))}</span></div>
                 <div class="metric"><span class="label">Debit at Risk</span><span class="value">{money(row.get("debit_at_risk"))}</span></div>
                 <div class="metric"><span class="label">Scores</span><span class="value">{number(row.get("signal_score"), 1)} signal / {number(row.get("actionability_score"), 1)} action</span></div>
+                <div class="metric"><span class="label">Candidate Quality</span><span class="value">{number(row.get("candidate_quality_score"), 1)} · chain rank {escape(str(row.get("chain_selection_rank") or "unavailable"))}</span></div>
                 <div class="metric"><span class="label">Observation History</span><span class="value">Seen {observation.get("seen_count", 0)}x · best FF {number(observation.get("best_diagnostic_ff"), 3)} · best liquidity {escape(str(observation.get("best_liquidity_status") or "unavailable"))} · last positive {escape(str(observation.get("last_positive_signal") or "never"))}</span></div>
                 <div class="metric"><span class="label">Price / Minimum</span><span class="value">{money(eligibility.get("price"))} / {money(eligibility.get("minimum_price"))}</span></div>
                 <div class="metric"><span class="label">Avg Volume / Minimum</span><span class="value">{number(eligibility.get("average_volume_30d"), 0)} / {number(eligibility.get("minimum_average_volume"), 0)}</span></div>
                 <div class="metric"><span class="label">Data State</span><span class="value">{escape(str(eligibility.get("data_state") or row.get("data_state") or "unavailable"))}</span></div>
             </div>
             <p>{escape(_first_text(row.get("primary_blocker"), row.get("next_action"), fallback="No blocker recorded."))}</p>
+            <details><summary>Why selected / what would make positive</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("candidate_quality_score", "candidate_selection_reasons", "candidate_selection_warnings", "recent_failure_modes", "selected_for_cheap_eval", "selected_for_chain_eval", "chain_selection_rank", "not_selected_reason", "what_would_make_positive")}, indent=2, default=str))}</pre></details>
             <details><summary>Entry review, formula, liquidity, and scenario details</summary><pre>{escape(json.dumps({key: row.get(key) for key in ("signal_tier", "is_positive_signal", "is_source_qualified", "is_diagnostic_only", "is_trade_review_candidate", "can_enter_daily_opportunity", "source_iv_status", "positive_reasons", "warnings", "blockers", "entry_review", "front_raw_iv", "back_raw_iv", "front_ex_earnings_iv", "back_ex_earnings_iv", "adjustment_method", "adjustment_version", "T1", "T2", "forward_variance", "forward_iv", "forward_factor", "diagnostic_raw_iv_formula", "structure_status", "structure_reason", "front_put_symbol", "back_put_symbol", "front_call_symbol", "back_call_symbol", "conservative_debit", "mid_debit", "package_bid_ask_width", "package_slippage_pct", "liquidity_result", "liquidity_checks", "scenario_grid", "data_eligibility")}, indent=2, default=str))}</pre></details>
         </article>""")
     skipped_html = ""
@@ -2253,6 +2267,8 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
         f'<div class="metric"><span class="label">{escape(label)}</span><span class="value">{escape(str(value))}</span></div>'
         for label, value in (
             ("Evaluated", stage.get("cheap_evaluated", 0)),
+            ("Candidate pool", stage.get("candidate_pool_size", 0)),
+            ("Selected for chain", stage.get("chain_approved", 0)),
             ("Universe / Supported", f"{stage.get('universe', 0)} / {stage.get('prefilter_supported_equities', 0)}"),
             ("Chain sets", stage.get("chain_sets", 0)),
             ("Calculated", stage.get("ff_calculated", 0)),
@@ -2261,9 +2277,14 @@ def _generic_strategy_section_html(section_id: str, result: dict[str, Any], kick
             ("Structures", stage.get("structures", 0)),
             ("Positive signals", (result.get("summary") or {}).get("positive_signal_count", 0)),
             ("Diagnostic positive", (result.get("summary") or {}).get("diagnostic_positive_count", 0)),
+            ("Repeat no-pair / liquidity fail", f"{stage.get('repeat_no_pair_candidates', 0)} / {stage.get('repeat_liquidity_fail_candidates', 0)}"),
+            ("Best near-positive", (result.get("summary") or {}).get("best_near_positive_ticker") or "none"),
         )
     ) + "</div>"
-    body = stage_html + ("".join(cards) if cards else '<div class="empty-state">No detailed Forward Factor rows this run.</div>') + skipped_html
+    candidate_audit = (result.get("summary") or {}).get("candidate_selection_audit", []) or []
+    selected_audit = [row for row in candidate_audit if row.get("selected_for_cheap_eval")]
+    audit_html = '<details><summary>FF Candidate Selection Audit</summary><pre>' + escape(json.dumps(selected_audit, indent=2, default=str)) + '</pre></details>'
+    body = stage_html + ("".join(cards) if cards else '<div class="empty-state">No detailed Forward Factor rows this run.</div>') + audit_html + skipped_html
     count = f"{result.get('pass_count', 0)}P · {result.get('watch_count', 0)}W · {result.get('fail_count', 0)}F · {result.get('skipped_count', 0)}S"
     return _section(section_id, "Forward Factor Calendar Candidates", kicker, body, count)
 

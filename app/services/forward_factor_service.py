@@ -8,6 +8,7 @@ from statistics import median
 from typing import Any
 
 from app import config
+from app.services.forward_factor_candidate_selection_service import select_forward_factor_candidates, what_would_make_positive
 from app.services.forward_factor_data_eligibility_service import validate_required_data
 from app.services.forward_factor_ranking_service import rank_forward_factor
 from app.services.forward_factor_signal_gate_service import evaluate_forward_factor_signal_gate
@@ -106,6 +107,7 @@ def build_forward_factor_double_calendar_structure(front_chain: list[dict[str, A
 def build_forward_factor_strategy(
     universe: list[str], market_metrics: dict[str, dict[str, Any]], data_hub: Any,
     run_mode: str = "prod", log_print=None, requirement_plan: dict[str, Any] | None = None,
+    observation_history: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     log_print = log_print or (lambda message: None)
     if not config.FORWARD_FACTOR_STRATEGY_ENABLED:
@@ -116,11 +118,11 @@ def build_forward_factor_strategy(
     selection_label = "dev" if is_dev else "production"
     cap = config.FF_DEV_MAX_TICKERS_PER_RUN if run_mode == "dev" else config.FF_MAX_TICKERS_PER_RUN
     supported = [ticker for ticker in ordered if _supported_equity(ticker, market_metrics.get(ticker) or {})]
-    ranked = sorted(supported, key=lambda ticker: _candidate_rank(ticker, market_metrics.get(ticker) or {}))
-    known_eligible = [ticker for ticker in ranked if _known_cheap_eligible(market_metrics.get(ticker) or {})]
-    unknown = [ticker for ticker in ranked if ticker not in known_eligible and not _known_cheap_failure(market_metrics.get(ticker) or {})]
-    known_failures = [ticker for ticker in ranked if _known_cheap_failure(market_metrics.get(ticker) or {})]
-    selected = (known_eligible + unknown + known_failures)[:cap]
+    selected, candidate_audit = select_forward_factor_candidates(
+        supported, market_metrics, observation_history or {},
+        config.FF_CANDIDATE_DISCOVERY_POOL_SIZE, cap,
+    )
+    audit_by_ticker = {row["ticker"]: row for row in candidate_audit}
     rows, cheap_pass, pair_audit = [], [], []
     stage = {
         "universe": len(ordered), "cheap_approved": len(selected), "cheap_evaluated": 0, "cheap_pass": 0,
@@ -134,11 +136,23 @@ def build_forward_factor_strategy(
         "prefilter_supported_equities": len(supported),
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
         "prefilter_volume_pass": sum(_known_volume_pass(market_metrics.get(ticker) or {}) for ticker in supported),
+        "candidate_pool_size": sum(bool(row.get("selected_for_discovery_pool")) for row in candidate_audit),
+        "repeat_no_pair_candidates": sum(int((row.get("recent_failure_modes") or {}).get("NO_ELIGIBLE_EXPIRATION_PAIR", 0) or 0) >= 3 for row in candidate_audit),
+        "repeat_liquidity_fail_candidates": sum(
+            int((row.get("recent_failure_modes") or {}).get("OPTIONS_ILLIQUID", 0) or 0)
+            + int((row.get("recent_failure_modes") or {}).get("PACKAGE_SLIPPAGE_TOO_WIDE", 0) or 0) >= 3
+            for row in candidate_audit
+        ),
     }
     plan_by_ticker = (requirement_plan or {}).get("by_ticker", {}) or {}
     selected_states = ", ".join(f"{ticker}={(plan_by_ticker.get(ticker) or {}).get('state', 'UNPLANNED')}" for ticker in selected)
     log_print(f"FF service universe count={len(ordered)} selected={selected}")
     log_print(f"FF selected ticker planner states: {selected_states or 'none'}")
+    log_print(
+        "FF candidate selection: pool="
+        f"{stage['candidate_pool_size']} selected={selected}; "
+        + "; ".join(f"{row['ticker']}={row['score']}" for row in candidate_audit if row.get("selected_for_cheap_eval"))
+    )
     for ticker in ordered:
         if ticker not in supported:
             rows.append(_blocked(ticker, "FAIL / UNSUPPORTED SECURITY", "Asset type is unsupported for Forward Factor.", data_state="UNSUPPORTED"))
@@ -172,6 +186,14 @@ def build_forward_factor_strategy(
     chain_cap = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if is_dev else config.FF_MAX_CHAIN_TICKERS_PER_RUN
     reserve = int((requirement_plan or {}).get("forward_factor_chain_reserve", chain_cap))
     stage["chain_approved"] = min(chain_cap, reserve, len(cheap_pass))
+    cheap_pass.sort(key=lambda item: (-float((audit_by_ticker.get(item[0]) or {}).get("score") or 0), item[0]))
+    for rank, (ticker, _) in enumerate(cheap_pass[:stage["chain_approved"]], start=1):
+        audit = audit_by_ticker.get(ticker) or {}
+        audit["selected_for_chain_eval"] = True
+        audit["chain_selection_rank"] = rank
+    for ticker, _ in cheap_pass[stage["chain_approved"]:]:
+        audit = audit_by_ticker.get(ticker) or {}
+        audit["not_selected_reason"] = "FF expensive-chain cap reached after cheap eligibility."
     log_print(f"FF universe: raw={len(ordered)} unsupported={stage['unsupported']} supported_equities={len(supported)}")
     log_print(f"FF candidate prefilter: universe={len(ordered)} supported equities={stage['prefilter_supported_equities']} price-pass={stage['prefilter_price_pass']} volume-pass={stage['prefilter_volume_pass']} selected-for-{selection_label}={len(selected)}")
     log_print(f"FF selected for {selection_label}: {', '.join(selected) or 'none'}; priority=known complete facts, liquidity, stable ticker")
@@ -304,8 +326,25 @@ def build_forward_factor_strategy(
             ticker_rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "No terminal result was produced from the evaluated chain set.", data_eligibility=eligibility))
         ticker_rows.sort(key=_terminal_rank)
         rows.append(ticker_rows[0])
-    rows = [{**row, **evaluate_forward_factor_signal_gate(row)} for row in rows]
-    result = _finalize(rows, ordered, stage, pair_audit, True)
+    gated_rows = []
+    for row in rows:
+        ticker = str(row.get("ticker") or "")
+        audit = audit_by_ticker.get(ticker) or {}
+        enriched = {
+            **row,
+            "candidate_quality_score": audit.get("score", 0.0),
+            "candidate_selection_reasons": audit.get("reasons", []),
+            "candidate_selection_warnings": audit.get("warnings", []),
+            "recent_failure_modes": audit.get("recent_failure_modes", {}),
+            "selected_for_cheap_eval": bool(audit.get("selected_for_cheap_eval")),
+            "selected_for_chain_eval": bool(audit.get("selected_for_chain_eval")),
+            "chain_selection_rank": audit.get("chain_selection_rank"),
+            "not_selected_reason": audit.get("not_selected_reason"),
+        }
+        gated = {**enriched, **evaluate_forward_factor_signal_gate(enriched)}
+        gated["what_would_make_positive"] = what_would_make_positive(gated)
+        gated_rows.append(gated)
+    result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
     return result
@@ -403,7 +442,7 @@ def _candidate_rank(ticker: str, metrics: dict[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _finalize(rows, scanned, stage, pair_audit, enabled):
+def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
     def verdict(row): return str(row.get("verdict") or "").upper()
     summary = {
         "pass_count": sum("DRY RUN PASS" in verdict(row) for row in rows),
@@ -426,7 +465,9 @@ def _finalize(rows, scanned, stage, pair_audit, enabled):
     summary["stage_counts"] = stage
     summary["readiness"] = readiness
     summary["pair_audit"] = pair_audit
-    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": True, "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "summary": summary, "readiness": readiness}
+    summary["candidate_selection_audit"] = candidate_audit or []
+    summary["best_near_positive_ticker"] = _best_near_positive(rows)
+    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": True, "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness}
 
 
 def _readiness(stage, summary):
@@ -451,6 +492,13 @@ def _base(ticker):
 
 def _blocked(ticker: str, verdict: str, blocker: str, **fields: Any) -> dict[str, Any]:
     return {**_base(ticker), "verdict": verdict, "primary_blocker": blocker, "next_action": "MANUAL REVIEW REQUIRED — SOURCE DOES NOT SPECIFY AUTOMATIC EXIT", "actionability_score": 0, **fields}
+
+
+def _best_near_positive(rows):
+    candidates = [row for row in rows if row.get("signal_tier") in {"DIAGNOSTIC_POSITIVE", "SOURCE_QUALIFIED_POSITIVE", "WATCH_NEAR_POSITIVE"}]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda row: float(row.get("signal_score") or 0)).get("ticker")
 
 
 def _pair_audit(row, disposition): return {"ticker": row.get("ticker"), "front_expiration": row.get("front_expiration"), "back_expiration": row.get("back_expiration"), "forward_factor": row.get("forward_factor"), "diagnostic_raw_iv_forward_factor": row.get("diagnostic_raw_iv_forward_factor"), "verdict": row.get("verdict"), "disposition": disposition}

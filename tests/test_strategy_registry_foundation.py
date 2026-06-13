@@ -75,6 +75,8 @@ class StrategyRegistryFoundationTests(unittest.TestCase):
             self.assertEqual(summary["ELF"]["seen_count"], 2)
             self.assertEqual(summary["ELF"]["best_diagnostic_ff"], .31)
             self.assertEqual(summary["ELF"]["last_run_id"], "run-2")
+            self.assertEqual(summary["ELF"]["failure_modes"]["OPTIONS_ILLIQUID"], 2)
+            self.assertTrue(summary["ELF"]["valid_pair_seen"])
             self.assertNotIn("CRDO", summary)
 
     def test_generic_opportunity_identity_dedupes_same_structure_not_different_strikes(self):
