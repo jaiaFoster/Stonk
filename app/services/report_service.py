@@ -2440,6 +2440,32 @@ def _hot_shell_portfolio_status_html(
     return _section("portfolio-status", "Portfolio Status", "Compact account and refresh health from the stored report.", body, None)
 
 
+def _hot_shell_risk_state(
+    groups: dict[str, list[dict[str, Any]]],
+    recommendations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], int]:
+    """Separate true risk controls from generic missing-metric WATCH rows."""
+    risk_items = list(groups.get("risk", []) or [])
+    seen = {str(item.get("ticker") or "").upper().strip() for item in risk_items}
+    unavailable_count = 0
+    for rec in recommendations:
+        action = str(rec.get("action") or "")
+        ticker = str(rec.get("ticker") or "").upper().strip()
+        risk_messages = [str(item).lower() for item in (rec.get("risks", []) or [])]
+        unavailable_phrases = ("metrics were not evaluated", "data incomplete", "data unavailable", "skipped by dev data cap")
+        unavailable_only = bool(risk_messages) and all(
+            any(phrase in message for phrase in unavailable_phrases)
+            for message in risk_messages
+        )
+        if unavailable_only and _action_group(action) != "risk":
+            unavailable_count += 1
+            continue
+        if ticker and ticker not in seen and (_action_group(action) == "risk" or (rec.get("risks") and not unavailable_only)):
+            risk_items.append(rec)
+            seen.add(ticker)
+    return risk_items, unavailable_count
+
+
 def _hot_shell_profile_warning_html(tradier_snapshot: dict[str, Any]) -> str:
     runtime = _snapshot_dict(tradier_snapshot, "_runtime_profile")
     payload = _snapshot_dict(tradier_snapshot, "_payload_size_profile")
@@ -2610,7 +2636,7 @@ def format_html(
         today=today,
         active_count=len(active_rows),
         urgent_count=urgent_count,
-        risk_count=risk_count,
+        risk_count=(len(_hot_shell_risk_state(potential_groups, display_recommendations)[0]) if dashboard_view == "shell" else risk_count),
         adds_count=add_count,
         blocked_count=len(blocked_rows),
         pipeline_status=pipeline_status,
@@ -2665,12 +2691,13 @@ def format_html(
         strategy_registry_html=_strategy_registry_html(strategy_results, strategy_opportunities),
     )
     max_shell_rows = max(1, int(getattr(config, "REPORT_DEFAULT_MAX_ROWS_PER_SECTION", 3) or 3))
-    shell_risk_items = list(potential_groups.get("risk", []) or [])
-    if not shell_risk_items:
-        shell_risk_items = [
-            rec for rec in display_recommendations
-            if rec.get("risks") or _action_group(rec.get("action")) == "risk"
-        ]
+    shell_risk_items, unavailable_metric_count = _hot_shell_risk_state(potential_groups, display_recommendations)
+    shell_risk_body = _shell_action_rows(shell_risk_items, max_shell_rows, "No urgent risk controls surfaced this run.")
+    if unavailable_metric_count:
+        shell_risk_body += (
+            f'<p class="muted">Metrics unavailable for {unavailable_metric_count} holding(s) due to dev cap or missing shared facts. '
+            'These rows remain available in the full report and are not classified as urgent risk.</p>'
+        )
     shell_sections = "".join([
         _hot_shell_portfolio_status_html(display_positions, display_recommendations, pipeline_status, provider_status),
         macro_html,
@@ -2687,8 +2714,8 @@ def format_html(
             "risk-review",
             "Urgent Risk Review",
             "Highest-priority holding and portfolio risks.",
-            _shell_action_rows(shell_risk_items, max_shell_rows, "No urgent risk controls surfaced this run."),
-            str(risk_count),
+            shell_risk_body,
+            str(len(shell_risk_items)),
         ),
         _hot_shell_strategy_summary_html(skew_vertical, strategy_results, blocked_rows),
     ])

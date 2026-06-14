@@ -551,6 +551,13 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Use `?view=full` or `?detail=full` to load the existing complete report, exports, candidate sections, and Monitor / Debug.
 - `DASHBOARD_DEFAULT_VIEW`, `REPORT_DEFAULT_MAX_ROWS_PER_SECTION`, and `REPORT_SHOW_DETAIL_LOAD_BUTTONS` control presentation only; strategy scoring is unchanged.
 
+### Patch 27D: Snapshot Slimming
+
+- Latest shell/profile reads use compact hot snapshot state and do not fetch or deserialize dormant full-report blobs.
+- Full report and full developer snapshot detail remain available on explicit request through compressed compatibility storage.
+- Existing uncompressed snapshots remain readable; no major report data is permanently deleted.
+- Shell Urgent Risk Review excludes generic dev-cap/missing-metric WATCH rows and summarizes their unavailable-metric count separately.
+
 ### Open Items Cleanup Patch v1
 
 - Added purpose-specific copy/download exports for daily brief, calendar report, holdings report, potential adds, and full debug payload.

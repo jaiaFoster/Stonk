@@ -258,8 +258,8 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = ReportSnapshotRepository(str(Path(temp) / "reports.sqlite3"))
             repo.save_success("run-1", "dev", "payload", {"report_data": {"positions": []}}, {"states": {}}, {})
-            latest = repo.latest_success()
-            self.assertEqual(json.loads(latest["payload_json"]), "payload")
+            latest = repo.latest_success(include_full=True)
+            self.assertEqual(repo.load_payload(latest, full=True), "payload")
             self.assertEqual(latest["status"], "complete")
 
     def test_failed_snapshot_does_not_replace_latest_success(self):

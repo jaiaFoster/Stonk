@@ -29,3 +29,19 @@ not treated as the permanent financial-data archive.
 
 Storage profiling reports SQLite size, table counts, and dry-run pruning counts.
 Patch 27A does not delete cached market data.
+
+## Patch 27D snapshot slimming
+
+Completed report snapshots now use a compatibility-preserving two-part record:
+
+- `summary_json` is compact hot state used by the default shell, latest profiles,
+  feature health, and lightweight Advisor reads.
+- Full report detail and the full advisor payload are compressed and dormant
+  until `?view=full` or a full developer snapshot explicitly requests them.
+
+Existing uncompressed snapshots remain readable. New runs do not permanently
+delete full report detail, and read-only shell/profile requests do not fetch or
+decompress full-detail blobs.
+
+Snapshot diagnostics expose hot-summary, original-full, and compressed-full
+sizes so later patches can measure storage improvements safely.
