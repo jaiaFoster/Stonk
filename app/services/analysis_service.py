@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import traceback
 from dataclasses import asdict
+from time import perf_counter
 from typing import Any, Callable
 
 from app import config
@@ -1007,15 +1008,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_skew_momentum_vertical_cache"] = skew_vertical_cache
 
+    begin_step(pipeline_status, "forward_factor_history", "Loading Forward Factor observation history...")
     try:
         opportunity_repository = StrategyOpportunityRepository()
         prior_ff_history = opportunity_repository.observation_summary(
             "forward_factor_calendar", limit=max(50, config.FF_CANDIDATE_HISTORY_LOOKBACK_RUNS * 10),
         )
+        complete_step(pipeline_status, "forward_factor_history", f"Loaded history for {len(prior_ff_history)} ticker(s).")
     except Exception as exc:
         opportunity_repository = None
         prior_ff_history = {}
         log_print(f"FF candidate history unavailable: {exc}")
+        fail_step(pipeline_status, "forward_factor_history", f"FF history lookup failed: {exc}")
 
     forward_factor_strategy = run_optional_step(
         "forward_factor_calendar",
@@ -1066,6 +1070,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     run_context.coverage = coverage
     tradier_snapshot["_strategy_results"] = normalized_strategy_results
     tradier_snapshot["_data_coverage"] = coverage
+    begin_step(pipeline_status, "strategy_registry_persistence", "Persisting strategy registry and data coverage...")
     try:
         market_data_repository.save_coverage(run_context.run_id, coverage)
         opportunity_repository = opportunity_repository or StrategyOpportunityRepository()
@@ -1077,8 +1082,10 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             "recent": opportunity_repository.recent(20),
             "forward_factor_observation_history": ff_history,
         }
+        complete_step(pipeline_status, "strategy_registry_persistence", f"Persisted coverage and {write_count} strategy opportunity row(s).")
     except Exception as exc:
         log_print(f"Shared foundation persistence warning: {exc}")
+        fail_step(pipeline_status, "strategy_registry_persistence", f"Shared persistence failed: {exc}")
 
     begin_step(pipeline_status, "format_payload", "Formatting payload")
     log_print("Formatting payload...")
@@ -1091,29 +1098,73 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         complete_step(pipeline_status, "format_payload", f"Payload formatted: {len(payload)} chars.")
         report_quality = pipeline_status.get("report_quality", "SUCCESS_COMPLETE")
         finish_pipeline(pipeline_status, "complete" if report_quality == "SUCCESS_COMPLETE" else "degraded")
+        if config.ENABLE_RUNTIME_PROFILE:
+            from app.services.runtime_profile_service import build_runtime_profile, compact_runtime_log
+            runtime_profile = build_runtime_profile(pipeline_status)
+            tradier_snapshot["_runtime_profile"] = runtime_profile
+            log_print(compact_runtime_log(runtime_profile))
+        else:
+            runtime_profile = {}
+        if config.ENABLE_STORAGE_PROFILE:
+            storage_profile = market_data_repository.storage_profile()
+            tradier_snapshot["_storage_profile"] = storage_profile
+        else:
+            storage_profile = {}
+        report_summary = {
+            "strategy_results": normalized_strategy_results,
+            "pipeline_status": pipeline_status,
+            "report_quality": report_quality,
+        }
+        if config.ENABLE_PAYLOAD_SIZE_PROFILE:
+            from app.services.payload_profile_service import build_payload_size_profile, compact_payload_log
+            payload_profile = build_payload_size_profile(payload, positions, news, recommendations, tradier_snapshot, log, report_summary)
+            payload_profile["sections_bytes"]["report_snapshot_save"] = (
+                payload_profile["sections_bytes"].get("payload_text", 0)
+                + payload_profile["sections_bytes"].get("report_summary_json", 0)
+            )
+            tradier_snapshot["_payload_size_profile"] = payload_profile
+            log_print(compact_payload_log(payload_profile))
+        else:
+            payload_profile = {}
         attach_status()
         try:
             report_repository = ReportSnapshotRepository(log_print=log_print)
             snapshot_method = report_repository.save_success if report_quality == "SUCCESS_COMPLETE" else report_repository.save_degraded
+            trimmed_log = log[-config.REPORT_SNAPSHOT_MAX_LOG_LINES:]
+            snapshot_summary = {
+                **report_summary,
+                "runtime_profile": runtime_profile,
+                "payload_size_profile": payload_profile,
+                "storage_profile": storage_profile,
+                "report_data": {
+                    "positions": positions,
+                    "news": news,
+                    "recommendations": recommendations,
+                    "tradier_snapshot": tradier_snapshot,
+                    "log": trimmed_log,
+                },
+            }
+            snapshot_started = perf_counter()
             snapshot_method(
                 run_context.run_id,
                 clean_mode,
                 payload,
-                {
-                    "strategy_results": normalized_strategy_results,
-                    "pipeline_status": pipeline_status,
-                    "report_quality": report_quality,
-                    "report_data": {
-                        "positions": positions,
-                        "news": news,
-                        "recommendations": recommendations,
-                        "tradier_snapshot": tradier_snapshot,
-                        "log": log,
-                    },
-                },
+                snapshot_summary,
                 coverage,
                 provider_status,
             )
+            snapshot_save_ms = round((perf_counter() - snapshot_started) * 1000)
+            runtime_profile.setdefault("phases_ms", {})["report_snapshot_save"] = snapshot_save_ms
+            runtime_profile["total_ms"] = int(runtime_profile.get("total_ms", 0)) + snapshot_save_ms
+            log_print(f"RuntimeProfile: report_snapshot_save={snapshot_save_ms}ms")
+            from app.services.run_manifest_repository import RunManifestRepository, build_run_manifest
+            manifest = build_run_manifest(
+                run_context.run_id, clean_mode, pipeline_status.get("overall_status", "complete"),
+                report_quality, runtime_profile, payload_profile, pipeline_status, normalized_strategy_results,
+                daily_opportunity_engine, provider_fetch_count=len(run_context.fetch_audit),
+            )
+            RunManifestRepository().save(manifest)
+            tradier_snapshot["_run_manifest"] = manifest
         except Exception as exc:
             log_print(f"Report snapshot persistence warning: {exc}")
     except Exception as exc:

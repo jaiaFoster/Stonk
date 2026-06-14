@@ -384,8 +384,7 @@ def refresh_active_trades():
             "urgent_count": ((lifecycle or {}).get("summary", {}) or {}).get("urgent_count", 0),
             "exit_review_count": ((lifecycle or {}).get("summary", {}) or {}).get("exit_review_count", 0),
         }
-        return jsonify(
-            {
+        response = {
                 "status": "ok",
                 "scope": "active_trades_only",
                 "provider_status": provider_status,
@@ -404,11 +403,14 @@ def refresh_active_trades():
                     "full portfolio scoring",
                 ],
                 "summary": summary,
-                "open_options": open_options,
-                "lifecycle": lifecycle,
                 "log_tail": log[-20:],
             }
-        ), 200
+        detail = str(request.values.get("detail") or request.args.get("detail") or config.ACTIVE_TRADES_DEFAULT_DETAIL).lower()
+        response["detail"] = detail
+        if detail == "full":
+            response["open_options"] = open_options
+            response["lifecycle"] = lifecycle
+        return jsonify(response), 200
     except Exception as e:
         return jsonify({"status": "error", "error": str(e), "traceback": traceback.format_exc()}), 500
     finally:
@@ -418,6 +420,24 @@ def refresh_active_trades():
 @app.route("/health")
 def health():
     return "OK", 200
+
+
+@app.route("/api/dev/snapshot")
+@app.route("/dev/snapshot")
+def developer_snapshot():
+    if not config.ENABLE_DEV_SNAPSHOT_ENDPOINT:
+        abort(404)
+    if config.DEV_SNAPSHOT_REQUIRE_TOKEN and not _valid_run_token(request.args.get("token")):
+        abort(403)
+    mode = str(request.args.get("mode") or config.DEV_SNAPSHOT_DEFAULT_MODE).strip().lower()
+    if mode == "fresh":
+        if not config.DEV_SNAPSHOT_ALLOW_FRESH:
+            return jsonify({"status": "disabled", "error": "Fresh developer snapshots are disabled."}), 403
+        return jsonify({"status": "ready", "redirect_url": f"/run?token={request.args.get('token')}&mode={_requested_run_mode()}"}), 202
+    if mode not in {"latest", "manifest_only", "summary", "full"}:
+        return jsonify({"status": "error", "error": "Unsupported snapshot mode."}), 400
+    from app.services.developer_snapshot_service import build_developer_snapshot
+    return jsonify(build_developer_snapshot(mode)), 200
 
 
 def _run_job(job_id: str, run_mode: str = "prod") -> None:

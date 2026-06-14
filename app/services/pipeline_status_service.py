@@ -37,6 +37,7 @@ def new_pipeline_status(run_mode: str) -> dict[str, Any]:
             "error_count": 0,
             "skipped_count": 0,
         },
+        "_perf_start": perf_counter(),
     }
 
 
@@ -95,6 +96,8 @@ def skip_step(
 def finish_pipeline(status: dict[str, Any], overall_status: str = "complete") -> None:
     status["finished_at"] = utc_now_iso()
     status["overall_status"] = overall_status
+    started = status.pop("_perf_start", None)
+    status["total_duration_ms"] = round((perf_counter() - float(started)) * 1000) if started is not None else None
     steps = status.get("steps", []) or []
     status["summary"] = {
         "completed_count": sum(1 for step in steps if step.get("status") == "complete"),
