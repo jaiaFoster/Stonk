@@ -38,5 +38,16 @@ are removed by the redaction service.
 5. Inspect latest manifest, profiles, and feature health.
 6. Stop if health, run completion, or required feature checks fail.
 
+## Run timeout recovery
+
+`/api/dev/status` includes `run_lock` metadata. `/run/status/<job_id>` includes
+the run start, heartbeat, timeout reason, failed stage, lock state, and whether
+a retry is safe.
+
+`ROBINHOOD_LOGIN_TIMEOUT_SECONDS` bounds the Robinhood approval/login wait.
+`RUN_STALE_TIMEOUT_SECONDS` marks an overlong background run timed out and
+rotates its lock so a new run can start without a Railway restart. A late
+result from the timed-out worker is discarded.
+
 Codex does not merge its own PR. A human merges and approves any Railway token
 or environment-variable changes.

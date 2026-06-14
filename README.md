@@ -566,6 +566,13 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Supported sections include `daily_opportunity`, `data_coverage`, `lifecycle`, `pipeline`, `portfolio`, `providers`, `strategies`, and `strategy?strategy_id=...`.
 - Full reports and full developer snapshots remain available for compatibility.
 
+### Patch 27F: Run Timeout Watchdog
+
+- Robinhood device-approval/login requests have a configurable hard deadline through `ROBINHOOD_LOGIN_TIMEOUT_SECONDS`.
+- Overlong background runs are marked `timeout` after `RUN_STALE_TIMEOUT_SECONDS`; the stale lock is rotated so a retry can start without restarting Railway.
+- `/run/status/<job_id>` and `/api/dev/status` expose timeout reason, failed stage, lock state, run age, and retry safety.
+- A timed-out worker cannot overwrite its timeout state or clear a replacement run's active-job state if it later returns.
+
 ### Open Items Cleanup Patch v1
 
 - Added purpose-specific copy/download exports for daily brief, calendar report, holdings report, potential adds, and full debug payload.

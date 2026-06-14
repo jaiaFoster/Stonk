@@ -98,6 +98,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "enable_dev_snapshot_endpoint": config.ENABLE_DEV_SNAPSHOT_ENDPOINT,
         "enable_dev_diagnostics_endpoints": config.ENABLE_DEV_DIAGNOSTICS_ENDPOINTS,
         "dev_api_token_configured": bool(config.DEV_API_TOKEN),
+        "robinhood_login_timeout_seconds": config.ROBINHOOD_LOGIN_TIMEOUT_SECONDS,
+        "run_stale_timeout_seconds": config.RUN_STALE_TIMEOUT_SECONDS,
         "dev_snapshot_default_mode": config.DEV_SNAPSHOT_DEFAULT_MODE,
         "dev_snapshot_allow_fresh": config.DEV_SNAPSHOT_ALLOW_FRESH,
         "report_snapshot_retention_limit": config.REPORT_SNAPSHOT_RETENTION_LIMIT,

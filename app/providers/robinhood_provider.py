@@ -7,6 +7,8 @@ Roth IRA, Rollover IRA, and Crypto.
 
 import builtins
 import getpass
+import importlib
+import threading
 import time
 import traceback
 from typing import Any
@@ -49,6 +51,11 @@ getpass.getpass = lambda prompt="", stream=None: (
 
 import robin_stocks.robinhood as r  # noqa: E402
 
+try:
+    robinhood_authentication = importlib.import_module("robin_stocks.robinhood.authentication")
+except (ImportError, ModuleNotFoundError):
+    robinhood_authentication = None
+
 DEBUG = True
 
 ACCOUNT_MAP = {
@@ -58,6 +65,37 @@ ACCOUNT_MAP = {
 
 MAX_LOGIN_RETRIES = 3
 RETRY_INTERVAL_SECONDS = 60
+_auth_deadline = threading.local()
+_original_auth_request_get = getattr(robinhood_authentication, "request_get", None)
+_original_auth_request_post = getattr(robinhood_authentication, "request_post", None)
+
+
+def _check_auth_deadline() -> None:
+    deadline = getattr(_auth_deadline, "value", None)
+    if deadline is not None and time.monotonic() >= deadline:
+        _auth_deadline.timed_out = True
+        raise TimeoutError(
+            f"Robinhood approval/login timed out after {config.ROBINHOOD_LOGIN_TIMEOUT_SECONDS} seconds."
+        )
+
+
+def _bounded_auth_request_get(*args, **kwargs):
+    _check_auth_deadline()
+    if _original_auth_request_get is None:
+        raise RuntimeError("Robinhood authentication request_get is unavailable.")
+    return _original_auth_request_get(*args, **kwargs)
+
+
+def _bounded_auth_request_post(*args, **kwargs):
+    _check_auth_deadline()
+    if _original_auth_request_post is None:
+        raise RuntimeError("Robinhood authentication request_post is unavailable.")
+    return _original_auth_request_post(*args, **kwargs)
+
+
+if robinhood_authentication is not None:
+    robinhood_authentication.request_get = _bounded_auth_request_get
+    robinhood_authentication.request_post = _bounded_auth_request_post
 
 
 def _login_result(
@@ -65,6 +103,7 @@ def _login_result(
     error: str | None = None,
     rate_limited: bool = False,
     auth_required: bool = False,
+    timed_out: bool = False,
     status: str | None = None,
 ) -> dict[str, Any]:
     if status is None:
@@ -74,6 +113,8 @@ def _login_result(
             status = "rate_limited"
         elif auth_required:
             status = "auth_required"
+        elif timed_out:
+            status = "auth_timeout"
         else:
             status = "auth_failed"
     return {
@@ -81,6 +122,7 @@ def _login_result(
         "error": error,
         "rate_limited": bool(rate_limited),
         "auth_required": bool(auth_required),
+        "timed_out": bool(timed_out),
         "status": status,
     }
 
@@ -105,11 +147,14 @@ def _classify_login_error(error: Any) -> dict[str, Any]:
     )
     if "max_verification_polls" in lowered or "verification polling exceeded" in lowered:
         auth_required = True
+    timed_out = "timed out" in lowered or "timeout" in lowered
     return _login_result(
         success=False,
         error=text,
         rate_limited=rate_limited,
         auth_required=auth_required and not rate_limited,
+        timed_out=timed_out,
+        status="auth_timeout" if timed_out else None,
     )
 
 
@@ -133,13 +178,16 @@ def _robinhood_auth_status_payload(login_result: dict[str, Any] | None = None) -
         "error": result.get("error"),
         "rate_limited": bool(result.get("rate_limited")),
         "auth_required": bool(result.get("auth_required")),
+        "timed_out": bool(result.get("timed_out")),
     }
 
 
 def _log_robinhood_login_failure(result: dict[str, Any]) -> None:
     print("[ROBINHOOD]\nLogin failed.", flush=True)
     reason = result.get("error") or result.get("status") or "unknown"
-    if result.get("rate_limited"):
+    if result.get("timed_out"):
+        reason = f"Authentication/verification timed out. {reason}"
+    elif result.get("rate_limited"):
         reason = "429 rate limit encountered during verification."
     elif result.get("auth_required"):
         reason = f"Authentication/verification required. {reason}"
@@ -195,13 +243,21 @@ def login_with_retry() -> dict[str, Any]:
     for attempt in range(1, MAX_LOGIN_RETRIES + 1):
         try:
             _verification_prompt_count = 0
+            _auth_deadline.value = time.monotonic() + max(1, int(config.ROBINHOOD_LOGIN_TIMEOUT_SECONDS))
+            _auth_deadline.timed_out = False
             print(f"Login attempt {attempt}/{MAX_LOGIN_RETRIES}...", flush=True)
-            r.login(
+            response = r.login(
                 username=config.ROBINHOOD_USERNAME,
                 password=config.ROBINHOOD_PASSWORD,
                 store_session=True,
                 pickle_name="robinhood_session",
             )
+            if getattr(_auth_deadline, "timed_out", False):
+                raise TimeoutError(
+                    f"Robinhood approval/login timed out after {config.ROBINHOOD_LOGIN_TIMEOUT_SECONDS} seconds."
+                )
+            if not response:
+                raise RuntimeError("Robinhood login returned no authenticated session.")
             print("Login successful.", flush=True)
             return _set_last_login_result(_login_result(True))
 
@@ -217,6 +273,15 @@ def login_with_retry() -> dict[str, Any]:
                     "Robinhood login rate-limited during verification polling. "
                     "Skipping Robinhood-dependent modules for this run.",
                     title="Stonk Reporter - Robinhood Rate Limited",
+                )
+                return classified
+            if classified.get("timed_out"):
+                _set_last_login_result(classified)
+                _log_robinhood_login_failure(classified)
+                notify(
+                    "Robinhood login timed out during device approval. "
+                    "Skipping Robinhood-dependent modules for this run.",
+                    title="Stonk Reporter - Robinhood Approval Timed Out",
                 )
                 return classified
 
@@ -237,6 +302,9 @@ def login_with_retry() -> dict[str, Any]:
 
             if attempt < MAX_LOGIN_RETRIES:
                 time.sleep(RETRY_INTERVAL_SECONDS)
+        finally:
+            _auth_deadline.value = None
+            _auth_deadline.timed_out = False
 
     result = _login_result(False, f"Robinhood login failed after {MAX_LOGIN_RETRIES} attempts.")
     notify(
