@@ -16,6 +16,7 @@ def build_dev_status(
     jobs: dict[str, dict[str, Any]] | None = None,
     active_job_id: str | None = None,
     booted_at: str | None = None,
+    run_lock: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     jobs = jobs or {}
     active = jobs.get(active_job_id or "", {}) if active_job_id else {}
@@ -30,6 +31,7 @@ def build_dev_status(
         "git_branch": _git_branch(),
         "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
         "active_run": _job_summary(active_job_id, active) if active else None,
+        "run_lock": run_lock or {},
         "tracked_job_count": len(jobs),
         "latest_run": latest,
         "provider_calls_triggered": False,
@@ -119,6 +121,11 @@ def _job_summary(job_id: str | None, job: dict[str, Any]) -> dict[str, Any]:
         "mode": job.get("mode"),
         "created_at": job.get("created_at"),
         "updated_at": job.get("updated_at"),
+        "started_at": job.get("started_at"),
+        "heartbeat_at": job.get("heartbeat_at"),
+        "timeout_reason": job.get("timeout_reason"),
+        "failed_stage": job.get("failed_stage"),
+        "retry_safe": bool(job.get("retry_safe")),
         "log_tail": log_tail,
     }
 

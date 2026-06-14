@@ -397,6 +397,8 @@ RUN_TOKEN = os.environ.get("RUN_TOKEN")
 # Optional separate token for read-only developer diagnostics. Falls back to
 # RUN_TOKEN when unset.
 DEV_API_TOKEN = os.environ.get("DEV_API_TOKEN")
+ROBINHOOD_LOGIN_TIMEOUT_SECONDS = _int_env("ROBINHOOD_LOGIN_TIMEOUT_SECONDS", 150)
+RUN_STALE_TIMEOUT_SECONDS = _int_env("RUN_STALE_TIMEOUT_SECONDS", 900)
 
 # --- Optional notifications ---
 # Used by the notification provider and Robinhood login failure alerts.

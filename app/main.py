@@ -35,6 +35,7 @@ install_werkzeug_redaction_filter()
 
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()
+RUN_STATE_LOCK = threading.Lock()
 ACTIVE_TRADE_REFRESH_LOCK = threading.Lock()
 RUN_JOBS: dict[str, dict[str, Any]] = {}
 ACTIVE_JOB_ID: str | None = None
@@ -144,6 +145,7 @@ def refresh_market_data():
     token = request.values.get("token") or request.args.get("token")
     if not _valid_run_token(token):
         abort(403)
+    _recover_stale_run_if_needed()
     if RUN_LOCK.locked():
         return jsonify({"status": "already_running", "message": "Refresh already in progress."}), 409
     mode = _requested_run_mode()
@@ -169,25 +171,33 @@ def trigger():
     _cleanup_old_jobs()
 
     global ACTIVE_JOB_ID
+    _recover_stale_run_if_needed()
+    with RUN_STATE_LOCK:
+        job_lock = RUN_LOCK
+        if not job_lock.acquire(blocking=False):
+            if ACTIVE_JOB_ID and ACTIVE_JOB_ID in RUN_JOBS:
+                active_mode = str(RUN_JOBS.get(ACTIVE_JOB_ID, {}).get("mode", "prod"))
+                return loading_page(ACTIVE_JOB_ID, token, already_running=True, run_mode=active_mode), 202
+            return run_already_active_page(), 409
 
-    if not RUN_LOCK.acquire(blocking=False):
-        if ACTIVE_JOB_ID and ACTIVE_JOB_ID in RUN_JOBS:
-            active_mode = str(RUN_JOBS.get(ACTIVE_JOB_ID, {}).get("mode", "prod"))
-            return loading_page(ACTIVE_JOB_ID, token, already_running=True, run_mode=active_mode), 202
-        return run_already_active_page(), 409
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        ACTIVE_JOB_ID = job_id
+        RUN_JOBS[job_id] = {
+            "status": "running",
+            "message": _initial_job_message(run_mode),
+            "mode": run_mode,
+            "created_at": now,
+            "started_at": now,
+            "heartbeat_at": now,
+            "updated_at": now,
+            "timeout_reason": None,
+            "failed_stage": None,
+            "retry_safe": False,
+            "result": None,
+        }
 
-    job_id = uuid.uuid4().hex
-    ACTIVE_JOB_ID = job_id
-    RUN_JOBS[job_id] = {
-        "status": "running",
-        "message": _initial_job_message(run_mode),
-        "mode": run_mode,
-        "created_at": time.time(),
-        "updated_at": time.time(),
-        "result": None,
-    }
-
-    worker = threading.Thread(target=_run_job, args=(job_id, run_mode), daemon=True)
+    worker = threading.Thread(target=_run_job, args=(job_id, run_mode, job_lock), daemon=True)
     worker.start()
 
     print(f"=== /run ENDPOINT HIT; async job {job_id} started; mode={run_mode} ===", flush=True)
@@ -200,6 +210,7 @@ def run_status(job_id: str):
     if not _valid_run_token(token):
         abort(403)
 
+    _recover_stale_run_if_needed()
     job = RUN_JOBS.get(job_id)
     if not job:
         return jsonify(
@@ -227,6 +238,12 @@ def run_status(job_id: str):
             "log_tail": log_tail,
             "mode": job.get("mode", "prod"),
             "updated_at": job.get("updated_at"),
+            "started_at": job.get("started_at"),
+            "heartbeat_at": job.get("heartbeat_at"),
+            "timeout_reason": job.get("timeout_reason"),
+            "failed_stage": job.get("failed_stage"),
+            "retry_safe": bool(job.get("retry_safe")),
+            "run_lock": _run_lock_status(),
         }
     )
 
@@ -485,7 +502,8 @@ def _require_dev_diagnostics_token() -> None:
 def dev_status():
     _require_dev_diagnostics_token()
     from app.services.app_diagnostics_service import build_dev_status
-    return jsonify(build_dev_status(RUN_JOBS, ACTIVE_JOB_ID, APP_BOOTED_AT)), 200
+    _recover_stale_run_if_needed()
+    return jsonify(build_dev_status(RUN_JOBS, ACTIVE_JOB_ID, APP_BOOTED_AT, _run_lock_status())), 200
 
 
 @app.route("/api/dev/latest-run-manifest")
@@ -509,15 +527,19 @@ def dev_feature_health():
     return jsonify(build_feature_health()), 200
 
 
-def _run_job(job_id: str, run_mode: str = "prod") -> None:
+def _run_job(job_id: str, run_mode: str = "prod", job_lock: threading.Lock | None = None) -> None:
     global ACTIVE_JOB_ID
 
     try:
         RUN_JOBS[job_id]["message"] = _running_job_message(run_mode)
         RUN_JOBS[job_id]["updated_at"] = time.time()
+        RUN_JOBS[job_id]["heartbeat_at"] = time.time()
 
         print(f"=== BACKGROUND RUN {job_id} STARTED; mode={run_mode} ===", flush=True)
         result = run(run_mode=run_mode)
+        if RUN_JOBS[job_id].get("status") == "timeout":
+            print(f"=== BACKGROUND RUN {job_id} RETURNED AFTER TIMEOUT; RESULT DISCARDED ===", flush=True)
+            return
         payload, positions, news, recommendations, tradier_snapshot, log = result
 
         if payload is None:
@@ -529,9 +551,14 @@ def _run_job(job_id: str, run_mode: str = "prod") -> None:
 
         RUN_JOBS[job_id]["result"] = result
         RUN_JOBS[job_id]["updated_at"] = time.time()
+        RUN_JOBS[job_id]["heartbeat_at"] = time.time()
+        RUN_JOBS[job_id]["retry_safe"] = True
         print(f"=== BACKGROUND RUN {job_id} FINISHED ===", flush=True)
 
     except Exception as e:
+        if RUN_JOBS.get(job_id, {}).get("status") == "timeout":
+            print(f"=== BACKGROUND RUN {job_id} ERRORED AFTER TIMEOUT; ERROR DISCARDED ===", flush=True)
+            return
         RUN_JOBS[job_id]["status"] = "error"
         RUN_JOBS[job_id]["message"] = f"Unexpected run error: {e}"
         RUN_JOBS[job_id]["result"] = (
@@ -547,15 +574,21 @@ def _run_job(job_id: str, run_mode: str = "prod") -> None:
             ],
         )
         RUN_JOBS[job_id]["updated_at"] = time.time()
+        RUN_JOBS[job_id]["heartbeat_at"] = time.time()
+        RUN_JOBS[job_id]["retry_safe"] = True
         print(f"=== BACKGROUND RUN {job_id} ERRORED: {e} ===", flush=True)
 
     finally:
-        ACTIVE_JOB_ID = None
-        RUN_LOCK.release()
+        with RUN_STATE_LOCK:
+            if ACTIVE_JOB_ID == job_id:
+                ACTIVE_JOB_ID = None
+        _safe_release_lock(job_lock)
 
 
 def run_sync_response(run_mode: str = "prod"):
-    if not RUN_LOCK.acquire(blocking=False):
+    _recover_stale_run_if_needed()
+    sync_lock = RUN_LOCK
+    if not sync_lock.acquire(blocking=False):
         return run_already_active_page(), 409
 
     try:
@@ -589,7 +622,7 @@ def run_sync_response(run_mode: str = "prod"):
             return error_page("Report Render Failed", error_log), 500
 
     finally:
-        RUN_LOCK.release()
+        _safe_release_lock(sync_lock)
 
 
 
@@ -966,10 +999,67 @@ def _cleanup_old_jobs() -> None:
     expired = [
         job_id
         for job_id, job in RUN_JOBS.items()
-        if now - float(job.get("created_at", now)) > MAX_JOB_AGE_SECONDS
+        if job.get("status") != "running" and now - float(job.get("created_at", now)) > MAX_JOB_AGE_SECONDS
     ]
     for job_id in expired:
         RUN_JOBS.pop(job_id, None)
+
+
+def _recover_stale_run_if_needed(now: float | None = None) -> bool:
+    """Mark an overlong run timed out and rotate the lock so retry can proceed."""
+    global ACTIVE_JOB_ID, RUN_LOCK
+    current_time = float(now if now is not None else time.time())
+    with RUN_STATE_LOCK:
+        job_id = ACTIVE_JOB_ID
+        job = RUN_JOBS.get(job_id or "") if job_id else None
+        if not RUN_LOCK.locked() or not job or job.get("status") != "running":
+            return False
+        started_at = float(job.get("started_at") or job.get("created_at") or current_time)
+        age_seconds = max(0.0, current_time - started_at)
+        timeout_seconds = max(1, int(config.RUN_STALE_TIMEOUT_SECONDS))
+        if age_seconds <= timeout_seconds:
+            return False
+        job.update({
+            "status": "timeout",
+            "message": f"Run timed out after {int(age_seconds)}s. Safe retry is available.",
+            "updated_at": current_time,
+            "heartbeat_at": current_time,
+            "timeout_reason": "run_stale_timeout",
+            "failed_stage": "background_run",
+            "retry_safe": True,
+        })
+        print(
+            f"RunWatchdog: job={job_id} timed out age={int(age_seconds)}s "
+            f"limit={timeout_seconds}s; rotating run lock for safe retry.",
+            flush=True,
+        )
+        ACTIVE_JOB_ID = None
+        RUN_LOCK = threading.Lock()
+        return True
+
+
+def _run_lock_status() -> dict[str, Any]:
+    job = RUN_JOBS.get(ACTIVE_JOB_ID or "") if ACTIVE_JOB_ID else None
+    now = time.time()
+    started_at = float((job or {}).get("started_at") or (job or {}).get("created_at") or now)
+    return {
+        "held": bool(RUN_LOCK.locked()),
+        "active_job_id": ACTIVE_JOB_ID,
+        "active_run_age_seconds": round(max(0.0, now - started_at), 1) if job else None,
+        "stale_timeout_seconds": int(config.RUN_STALE_TIMEOUT_SECONDS),
+        "timeout_reason": (job or {}).get("timeout_reason"),
+        "retry_safe": not RUN_LOCK.locked() or bool((job or {}).get("retry_safe")),
+    }
+
+
+def _safe_release_lock(lock: Any) -> None:
+    if lock is None:
+        return
+    try:
+        if lock.locked():
+            lock.release()
+    except RuntimeError:
+        pass
 
 
 if __name__ == "__main__":
