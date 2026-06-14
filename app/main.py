@@ -73,6 +73,12 @@ def _valid_dev_token(token: str | None) -> bool:
     return bool(expected) and token == expected
 
 
+def _requested_dashboard_view() -> str:
+    """Return shell/full without changing the underlying stored report."""
+    requested = str(request.args.get("view") or request.args.get("detail") or config.DASHBOARD_DEFAULT_VIEW).strip().lower()
+    return "full" if requested in {"full", "detail"} else "shell"
+
+
 def run(run_mode: str = "prod") -> PipelineResult:
     """
     Backward-compatible run function.
@@ -124,6 +130,7 @@ def home():
                     report.get("recommendations", []),
                     report_snapshot,
                     report.get("log", []),
+                    view=_requested_dashboard_view(),
                 ), 200
         except Exception as exc:
             print(f"Latest report snapshot unavailable: {exc}", flush=True)
@@ -250,7 +257,10 @@ def run_result(job_id: str):
     try:
         from app.services.report_service import format_html
 
-        return format_html(payload, positions, news, recommendations, tradier_snapshot, log), 200
+        return format_html(
+            payload, positions, news, recommendations, tradier_snapshot, log,
+            view=_requested_dashboard_view(),
+        ), 200
     except Exception as e:
         error_log = escape(
             "\n".join(
@@ -543,7 +553,10 @@ def run_sync_response(run_mode: str = "prod"):
         try:
             from app.services.report_service import format_html
 
-            return format_html(payload, positions, news, recommendations, tradier_snapshot, log), 200
+            return format_html(
+                payload, positions, news, recommendations, tradier_snapshot, log,
+                view=_requested_dashboard_view(),
+            ), 200
         except Exception as e:
             error_log = escape(
                 "\n".join(

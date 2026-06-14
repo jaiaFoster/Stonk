@@ -355,6 +355,13 @@ UI_OVERHAUL_CSS = """
             .summary-chips { display: flex; flex-wrap: wrap; gap: 4px; }
             .summary-chips .chip { white-space: nowrap; break-inside: avoid; }
         }
+        .dashboard-view-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin: 0.8rem 0;
+        }
+        .hot-shell-warning { margin: 0.8rem 0; }
 """
 
 
@@ -1069,6 +1076,7 @@ def _top_summary_html(
     provider_status: dict[str, Any],
     skew_vertical: dict[str, Any],
     strategy_results: dict[str, Any],
+    dashboard_view: str = "full",
 ) -> str:
     mode = _first_text(pipeline_status.get("mode"), pipeline_status.get("run_mode"), fallback="dev/prod")
     skew = _skew_vertical_summary(skew_vertical)
@@ -1082,6 +1090,10 @@ def _top_summary_html(
     )
     ff = strategy_results.get("forward_factor_calendar", {}) or {}
     ff_value = "OFF" if not ff.get("enabled", True) else f"{ff.get('pass_count', 0)}P · {ff.get('watch_count', 0)}W · {ff.get('fail_count', 0)}F"
+    adds_href = "#potential-adds" if dashboard_view == "shell" else "#actionable-adds"
+    blocked_href = "#strategy-summary" if dashboard_view == "shell" else "#blocked-calendars"
+    skew_href = "#strategy-summary" if dashboard_view == "shell" else "#skew-verticals"
+    ff_href = "#strategy-summary" if dashboard_view == "shell" else "#forward-factor"
     return f"""
     <header class="top-summary">
         <div class="summary-title">
@@ -1092,10 +1104,10 @@ def _top_summary_html(
             {_chip("ACTIVE", active_count, "warn" if active_count else "neutral", "#active-calendars")}
             {_chip("URGENT", urgent_count, "bad" if urgent_count else "neutral", "#active-calendars")}
             {_chip("RISK", risk_count, "warn" if risk_count else "neutral", "#risk-review")}
-            {_chip("ADDS", adds_count, "good" if adds_count else "neutral", "#actionable-adds")}
-            {_chip("BLOCKED", blocked_count, "bad" if blocked_count else "neutral", "#blocked-calendars")}
-            {_chip("SKEW", skew_value, "good" if skew["pass_count"] else "warn" if skew["watch_count"] or skew["fail_count"] else "neutral", "#skew-verticals")}
-            {_chip("FF DRY", ff_value, "warn" if ff.get("rows") else "neutral", "#forward-factor")}
+            {_chip("ADDS", adds_count, "good" if adds_count else "neutral", adds_href)}
+            {_chip("BLOCKED", blocked_count, "bad" if blocked_count else "neutral", blocked_href)}
+            {_chip("SKEW", skew_value, "good" if skew["pass_count"] else "warn" if skew["watch_count"] or skew["fail_count"] else "neutral", skew_href)}
+            {_chip("FF DRY", ff_value, "warn" if ff.get("rows") else "neutral", ff_href)}
             {_chip("MODE", mode, "neutral")}
             {_provider_chips(provider_status)}
         </div>
@@ -1190,7 +1202,11 @@ def _robinhood_unavailable(provider_status: dict[str, Any] | None) -> bool:
     return bool(rh.get("rate_limited") or rh.get("auth_required") or rh.get("auth_failed") or status in {"rate_limited", "auth_required", "auth_failed", "positions_failed", "positions_partial"})
 
 
-def _active_calendar_section_html(rows: list[dict[str, Any]], provider_status: dict[str, Any] | None = None) -> str:
+def _active_calendar_section_html(
+    rows: list[dict[str, Any]],
+    provider_status: dict[str, Any] | None = None,
+    display_limit: int = 20,
+) -> str:
     refresh = """
         <div class="refresh-row">
             <button type="button" class="export-btn" onclick="refreshActiveTrades()">Refresh Active Trades</button>
@@ -1211,7 +1227,7 @@ def _active_calendar_section_html(rows: list[dict[str, Any]], provider_status: d
         )
     else:
         cards = []
-        for row in rows[:20]:
+        for row in rows[:display_limit]:
             ticker = _safe_text(row.get("ticker"), "UNKNOWN")
             action = _first_text(row.get("verdict"), row.get("action"), fallback="HOLD / MONITOR")
             current_debit = _get_first_present(row, "current_mid_debit", "current_debit", "current_spread_debit", "current_spread_value")
@@ -1796,6 +1812,12 @@ def _dashboard_script_html() -> str:
             URL.revokeObjectURL(url);
             showToast('Download started.', false);
         }
+        function setDashboardView(view) {
+            const url = new URL(window.location.href);
+            url.searchParams.set('view', view);
+            url.searchParams.delete('detail');
+            window.location.href = url.toString();
+        }
         async function refreshActiveTrades() {
             const status = document.getElementById('refreshActiveStatus');
             const token = new URLSearchParams(window.location.search).get('token') || '';
@@ -2339,6 +2361,120 @@ def _section(section_id: str, title: str, kicker: str, body: str, count: str | N
     </section>"""
 
 
+def _shell_action_rows(items: list[dict[str, Any]], limit: int, empty_text: str) -> str:
+    rows = []
+    for item in items[:limit]:
+        action = _first_text(item.get("action"), item.get("verdict"), fallback="REVIEW")
+        rows.append(f"""
+        <div class="decision-card add-row quiet-list" role="group">
+            <span class="ticker">{_safe_text(item.get('ticker'), 'UNKNOWN')}</span>
+            <span class="score">{number(_get_first_present(item, 'priority_score', 'score', 'actionability_score'), 1)}</span>
+            <span>{_chip(action, None, _tone_for_text(action))}</span>
+            <span>{_safe_text(_first_text(item.get('why'), item.get('main_reason'), item.get('reason'), fallback='Review setup'))}</span>
+            <span class="chip-row">{_chip(str(item.get('source') or item.get('type') or 'advisor'), None, 'neutral')}</span>
+            <span class="muted">{_safe_text(_first_text(item.get('next_step'), item.get('next_action'), item.get('next_check'), fallback='Review next check'))}</span>
+        </div>""")
+    return "".join(rows) if rows else f'<p class="empty">{escape(empty_text)}</p>'
+
+
+def _daily_opportunity_shell_html(actions: list[dict[str, Any]], limit: int) -> str:
+    body = _shell_action_rows(actions, limit, "No Daily Opportunity actions cleared this run.")
+    return _section(
+        "daily-opportunity",
+        "Daily Opportunity",
+        f"Top {min(limit, len(actions))} prioritized read-only decisions. Full diagnostics remain available on demand.",
+        body,
+        str(len(actions)),
+    )
+
+
+def _hot_shell_strategy_summary_html(
+    skew_vertical: dict[str, Any],
+    strategy_results: dict[str, Any],
+    blocked_rows: list[dict[str, Any]],
+) -> str:
+    skew = _skew_vertical_summary(skew_vertical)
+    ff = strategy_results.get("forward_factor_calendar", {}) or {}
+    calendar = strategy_results.get("earnings_calendar", {}) or {}
+    cells = [
+        ("CALENDAR", f"{calendar.get('pass_count', 0)}P / {calendar.get('watch_count', 0)}W / {calendar.get('fail_count', 0)}F"),
+        ("SKEW", f"{skew['pass_count']}P / {skew['watch_count']}W / {skew['fail_count']}F"),
+        ("FF DRY", f"{ff.get('pass_count', 0)}P / {ff.get('watch_count', 0)}W / {ff.get('fail_count', 0)}F"),
+        ("BLOCKED", str(len(blocked_rows))),
+    ]
+    body = '<div class="metric-grid">' + "".join(
+        f'<div class="metric"><span class="label">{escape(label)}</span><span class="value">{escape(value)}</span></div>'
+        for label, value in cells
+    ) + "</div>"
+    return _section("strategy-summary", "Strategy Summary", "Compact current-run status; open the full report for candidate diagnostics.", body, None)
+
+
+def _hot_shell_portfolio_status_html(
+    positions: list[dict[str, Any]],
+    recommendations: list[dict[str, Any]],
+    pipeline_status: dict[str, Any],
+    provider_status: dict[str, Any],
+) -> str:
+    total_value = sum(
+        safe_float(_get_first_present(row, "market_value", "position_value")) or 0.0
+        for row in positions
+    )
+    accounts = sorted({
+        str(row.get("account") or row.get("account_name") or "").strip()
+        for row in positions if row.get("account") or row.get("account_name")
+    })
+    snapshot = pipeline_status.get("report_snapshot", {}) or {}
+    rh = (provider_status.get("robinhood") or {}) if isinstance(provider_status, dict) else {}
+    cells = [
+        ("HOLDINGS", str(len(positions) or len(recommendations))),
+        ("PORTFOLIO VALUE", money(total_value) if total_value else "Unavailable"),
+        ("ACCOUNTS", str(len(accounts)) if accounts else "Unavailable"),
+        ("BROKER DATA", str(rh.get("status") or "unknown").upper()),
+        ("REPORT QUALITY", str(pipeline_status.get("report_quality") or "SUCCESS_COMPLETE")),
+        ("REFRESHED", str(snapshot.get("market_data_refreshed_at") or snapshot.get("generated_at") or "Unavailable")),
+    ]
+    body = '<div class="metric-grid">' + "".join(
+        f'<div class="metric"><span class="label">{escape(label)}</span><span class="value">{escape(value)}</span></div>'
+        for label, value in cells
+    ) + "</div>"
+    return _section("portfolio-status", "Portfolio Status", "Compact account and refresh health from the stored report.", body, None)
+
+
+def _hot_shell_profile_warning_html(tradier_snapshot: dict[str, Any]) -> str:
+    runtime = _snapshot_dict(tradier_snapshot, "_runtime_profile")
+    payload = _snapshot_dict(tradier_snapshot, "_payload_size_profile")
+    total_ms = safe_float(runtime.get("total_ms"))
+    sections = payload.get("sections_bytes", {}) if isinstance(payload.get("sections_bytes"), dict) else {}
+    largest_name = ""
+    largest_bytes = 0
+    for name, value in sections.items():
+        size = int(safe_float(value) or 0)
+        if size > largest_bytes:
+            largest_name, largest_bytes = str(name), size
+    warnings = []
+    if total_ms and total_ms >= 30_000:
+        warnings.append(f"Heavy run: {total_ms / 1000:.1f}s total.")
+    if largest_bytes >= 500_000:
+        warnings.append(f"Largest payload section: {largest_name} ({largest_bytes / 1024:.0f} KB).")
+    if not warnings:
+        return ""
+    return '<div class="empty-state hot-shell-warning"><strong>Operational profile:</strong> ' + escape(" ".join(warnings)) + "</div>"
+
+
+def _dashboard_view_controls_html(view: str) -> str:
+    if not bool(getattr(config, "REPORT_SHOW_DETAIL_LOAD_BUTTONS", True)):
+        return ""
+    if view == "full":
+        label, target = "Compact Dashboard", "shell"
+    else:
+        label, target = "Open Full Report", "full"
+    return f"""
+    <div class="dashboard-view-controls">
+        <button type="button" class="export-btn" onclick="setDashboardView('{target}')">{label}</button>
+        <span class="muted">{'Complete diagnostics and exports are visible.' if view == 'full' else 'Heavy detail stays dormant until requested.'}</span>
+    </div>"""
+
+
 def format_html(
     payload: str,
     positions: list[dict[str, Any]],
@@ -2346,6 +2482,8 @@ def format_html(
     recommendations: Recommendations | list[str] | None = None,
     tradier_snapshot: TradierSnapshot | list[str] | None = None,
     log_lines: list[str] | None = None,
+    *,
+    view: str = "full",
 ) -> str:
     """
     Wrap the report in a clean HTML page for browser viewing.
@@ -2361,6 +2499,7 @@ def format_html(
     parsed_recommendations: Recommendations = []
     parsed_log_lines: list[str] = []
     parsed_tradier_snapshot: TradierSnapshot = {}
+    dashboard_view = "full" if str(view).strip().lower() in {"full", "detail"} else "shell"
 
     if isinstance(news_map, list) and all(isinstance(item, str) for item in news_map):
         parsed_log_lines = news_map
@@ -2478,6 +2617,7 @@ def format_html(
         provider_status=provider_status,
         skew_vertical=skew_vertical,
         strategy_results=strategy_results,
+        dashboard_view=dashboard_view,
     )
     macro_html = _section(
         "macro-context",
@@ -2524,6 +2664,74 @@ def format_html(
         data_coverage_html=_data_coverage_html(data_coverage),
         strategy_registry_html=_strategy_registry_html(strategy_results, strategy_opportunities),
     )
+    max_shell_rows = max(1, int(getattr(config, "REPORT_DEFAULT_MAX_ROWS_PER_SECTION", 3) or 3))
+    shell_risk_items = list(potential_groups.get("risk", []) or [])
+    if not shell_risk_items:
+        shell_risk_items = [
+            rec for rec in display_recommendations
+            if rec.get("risks") or _action_group(rec.get("action")) == "risk"
+        ]
+    shell_sections = "".join([
+        _hot_shell_portfolio_status_html(display_positions, display_recommendations, pipeline_status, provider_status),
+        macro_html,
+        _active_calendar_section_html(active_rows, provider_status, display_limit=max_shell_rows),
+        _daily_opportunity_shell_html(daily_actions, 5),
+        _section(
+            "potential-adds",
+            "Top Actionable Adds",
+            "Highest-priority add candidates only; risk and avoid rows remain separate.",
+            _shell_action_rows(potential_groups.get("actionable", []), max_shell_rows, "No actionable add candidates cleared this run."),
+            str(len(potential_groups.get("actionable", []) or [])),
+        ),
+        _section(
+            "risk-review",
+            "Urgent Risk Review",
+            "Highest-priority holding and portfolio risks.",
+            _shell_action_rows(shell_risk_items, max_shell_rows, "No urgent risk controls surfaced this run."),
+            str(risk_count),
+        ),
+        _hot_shell_strategy_summary_html(skew_vertical, strategy_results, blocked_rows),
+    ])
+    full_sections = "".join([
+        export_toolbar_html,
+        macro_html,
+        active_calendar_html,
+        skew_vertical_html,
+        forward_factor_html,
+        holdings_html,
+        potential_adds_html,
+        risk_review_html,
+        blocked_calendar_html,
+        calendar_reliability_html,
+        portfolio_infographic_html,
+        monitor_debug_html,
+    ])
+    view_controls_html = _dashboard_view_controls_html(dashboard_view)
+    profile_warning_html = _hot_shell_profile_warning_html(parsed_tradier_snapshot) if dashboard_view == "shell" else ""
+    sections_html = full_sections if dashboard_view == "full" else shell_sections
+    nav_html = (
+        """
+            <a href="#macro-context">Macro</a>
+            <a href="#active-calendars">Active Calendars</a>
+            <a href="#skew-verticals">Skew Verticals</a>
+            <a href="#forward-factor">Forward Factor</a>
+            <a href="#holdings">Holdings</a>
+            <a href="#potential-adds">Potential Adds</a>
+            <a href="#risk-review">Risk Review</a>
+            <a href="#blocked-calendars">Blocked Calendars</a>
+            <a href="#calendar-reliability">Calendar Reliability</a>
+            <a href="#portfolio-infographic">Portfolio</a>
+            <a href="#exports">Exports</a>
+            <a href="#monitor-debug">Monitor</a>
+        """ if dashboard_view == "full" else """
+            <a href="#portfolio-status">Portfolio</a>
+            <a href="#active-calendars">Active Options</a>
+            <a href="#daily-opportunity">Daily Opportunity</a>
+            <a href="#potential-adds">Adds</a>
+            <a href="#risk-review">Risk</a>
+            <a href="#strategy-summary">Strategies</a>
+        """
+    )
 
     return f"""<!DOCTYPE html>
 <html>
@@ -2537,35 +2745,15 @@ def format_html(
     </style>
 </head>
 <body>
-    <main class="report-shell">
+    <main class="report-shell" data-dashboard-view="{dashboard_view}">
         {top_summary_html}
         {quality_banner}
+        {profile_warning_html}
+        {view_controls_html}
         <nav class="quick-nav" aria-label="Report sections">
-            <a href="#macro-context">Macro</a>
-            <a href="#active-calendars">Active Calendars</a>
-            <a href="#skew-verticals">Skew Verticals</a>
-            <a href="#forward-factor">Forward Factor</a>
-            <a href="#holdings">Holdings</a>
-            <a href="#potential-adds">Potential Adds</a>
-            <a href="#risk-review">Risk Review</a>
-            <a href="#blocked-calendars">Blocked Calendars</a>
-            <a href="#calendar-reliability">Calendar Reliability</a>
-            <a href="#portfolio-infographic">Portfolio</a>
-            <a href="#exports">Exports</a>
-            <a href="#monitor-debug">Monitor</a>
+            {nav_html}
         </nav>
-        {export_toolbar_html}
-        {macro_html}
-        {active_calendar_html}
-        {skew_vertical_html}
-        {forward_factor_html}
-        {holdings_html}
-        {potential_adds_html}
-        {risk_review_html}
-        {blocked_calendar_html}
-        {calendar_reliability_html}
-        {portfolio_infographic_html}
-        {monitor_debug_html}
+        {sections_html}
         {_dashboard_script_html()}
     </main>
 </body>
