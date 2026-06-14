@@ -160,30 +160,24 @@ def build_hot_report_summary(summary: dict[str, Any]) -> dict[str, Any]:
     """Keep only facts needed by shell, diagnostics, and lightweight advisor reads."""
     report = (summary or {}).get("report_data", {}) or {}
     tradier = report.get("tradier_snapshot", {}) or {}
-    keep_keys = {
+    direct_keys = {
         "_benchmark_metrics", "_calendar_lifecycle_checks", "_daily_opportunity_engine",
-        "_data_coverage", "_open_options_positions", "_payload_size_profile", "_pipeline_status",
+        "_data_coverage", "_open_options_positions", "_payload_size_profile",
         "_portfolio_gap", "_provider_status", "_runtime_profile", "_storage_profile",
         "_stock_momentum_strategy", "_unified_calendar_trade_engine",
     }
-    hot_tradier = {key: tradier.get(key) for key in keep_keys if key in tradier}
+    hot_tradier = {key: tradier.get(key) for key in direct_keys if key in tradier}
+    if isinstance(tradier.get("_pipeline_status"), dict):
+        hot_tradier["_pipeline_status"] = _compact_hot_detail(tradier.get("_pipeline_status"))
     hot_tradier["_strategy_results"] = {
-        key: _compact_strategy(value)
+        key: _compact_strategy(value, include_rows=False)
         for key, value in (tradier.get("_strategy_results", {}) or {}).items()
         if isinstance(value, dict)
     }
     skew = tradier.get("_skew_momentum_vertical_strategy")
     if isinstance(skew, dict):
-        hot_tradier["_skew_momentum_vertical_strategy"] = _compact_strategy(skew)
-    output = {
-        key: value for key, value in (summary or {}).items()
-        if key != "report_data" and key != "strategy_results"
-    }
-    output["strategy_results"] = {
-        key: _compact_strategy(value)
-        for key, value in ((summary or {}).get("strategy_results", {}) or {}).items()
-        if isinstance(value, dict)
-    }
+        hot_tradier["_skew_momentum_vertical_strategy"] = _compact_strategy(skew, include_rows=True)
+    output = {"report_quality": (summary or {}).get("report_quality")}
     output["report_data"] = {
         "positions": report.get("positions", []),
         "news": {},
@@ -194,14 +188,33 @@ def build_hot_report_summary(summary: dict[str, Any]) -> dict[str, Any]:
     return output
 
 
-def _compact_strategy(value: dict[str, Any]) -> dict[str, Any]:
+def _compact_strategy(value: dict[str, Any], *, include_rows: bool) -> dict[str, Any]:
     row_limit = int(getattr(config, "REPORT_SNAPSHOT_HOT_STRATEGY_ROWS", 5) or 5)
     keep = {
         "strategy_id", "strategy_label", "enabled", "ran", "mode", "run_mode",
         "pass_count", "watch_count", "fail_count", "skipped_count", "summary",
     }
     output = {key: value.get(key) for key in keep if key in value}
-    for key in ("pass_items", "watch_items", "blocked_items", "items", "rows"):
+    if include_rows:
+        for key in ("pass_items", "watch_items", "blocked_items", "items", "rows"):
+            if isinstance(value.get(key), list):
+                output[key] = value.get(key)[:row_limit]
+    return output
+
+
+def _compact_hot_detail(value: dict[str, Any]) -> dict[str, Any]:
+    """Preserve shell-driving summaries and a bounded number of visible rows."""
+    row_limit = max(5, int(getattr(config, "REPORT_SNAPSHOT_HOT_STRATEGY_ROWS", 5) or 5))
+    scalar_keys = {
+        "enabled", "has_data", "mode", "run_mode", "overall_status", "report_quality",
+        "target_profile", "summary", "broker_summary", "config_snapshot", "errors", "warnings",
+    }
+    row_keys = {
+        "actions", "checks", "items", "new_trade_rows", "open_trade_rows",
+        "risk_rows", "suggestions",
+    }
+    output = {key: value.get(key) for key in scalar_keys if key in value}
+    for key in row_keys:
         if isinstance(value.get(key), list):
             output[key] = value.get(key)[:row_limit]
     return output
