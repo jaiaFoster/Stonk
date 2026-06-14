@@ -636,6 +636,24 @@ REPORT_SNAPSHOT_MAX_LOG_LINES=250
 RUN_MANIFEST_RETENTION_LIMIT=200
 ACTIVE_TRADES_DEFAULT_DETAIL=summary
 ```
+
+### Deploy Self-Check
+
+Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy
+verification:
+
+```text
+/api/dev/status
+/api/dev/latest-run-manifest
+/api/dev/latest-profiles
+/api/dev/feature-health
+/api/dev/snapshot?mode=manifest_only
+/api/dev/snapshot?mode=summary
+```
+
+Set `ENABLE_DEV_DIAGNOSTICS_ENDPOINTS=true` where deploy checks are allowed.
+`DEV_API_TOKEN` may protect read-only diagnostics separately; when unset,
+diagnostics use `RUN_TOKEN`. Responses are redacted and never trigger providers.
 FF_DEV_MAX_CHAIN_TICKERS_PER_RUN=2
 FF_ALLOW_DIAGNOSTIC_STRUCTURE_WITHOUT_SOURCE_IV=true
 FF_WARN_PACKAGE_SLIPPAGE_PCT=10
