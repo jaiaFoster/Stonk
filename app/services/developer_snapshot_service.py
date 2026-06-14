@@ -18,10 +18,10 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     manifest_repository = manifest_repository or RunManifestRepository()
     manifest = manifest_repository.latest()
     if mode == "manifest_only":
-        return redact({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "run_manifest": manifest})
+        return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "run_manifest": manifest}))
     snapshot = report_repository.latest_success(include_full=mode == "full")
     if not snapshot:
-        return redact({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "source_status": "unavailable", "run_manifest": manifest})
+        return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "source_status": "unavailable", "run_manifest": manifest}))
     summary = report_repository.load_summary(snapshot, full=mode == "full")
     report = summary.get("report_data", {}) or {}
     tradier = report.get("tradier_snapshot", {}) or {}
@@ -33,6 +33,7 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     result = {
         "snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(),
         "source_run_id": snapshot.get("run_id"), "source_status": snapshot.get("status"), "app_mode": snapshot.get("mode"),
+        "available_detail_sections": ["daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "strategies", "strategy"],
         "git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT"),
         "git_branch": os.environ.get("RAILWAY_GIT_BRANCH") or os.environ.get("GIT_BRANCH"),
         "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
@@ -49,7 +50,56 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
         "errors": (tradier.get("_pipeline_status", {}) or {}).get("errors", []),
         "warnings": (tradier.get("_pipeline_status", {}) or {}).get("warnings", []),
     }
-    return redact(result)
+    return redact(_read_only(result))
+
+
+def build_snapshot_detail(
+    section: str,
+    *,
+    strategy_id: str | None = None,
+    report_repository: ReportSnapshotRepository | None = None,
+) -> dict[str, Any]:
+    """Load one explicit detail section from dormant full snapshot state."""
+    report_repository = report_repository or ReportSnapshotRepository()
+    snapshot = report_repository.latest_success(include_full=True)
+    base = {
+        "snapshot_version": 1,
+        "snapshot_mode": "detail",
+        "detail_section": section,
+        "created_at": _now(),
+        "source_run_id": (snapshot or {}).get("run_id"),
+        "source_status": (snapshot or {}).get("status"),
+    }
+    if not snapshot:
+        return redact(_read_only({**base, "status": "unavailable", "detail": None}))
+    summary = report_repository.load_summary(snapshot, full=True)
+    report = summary.get("report_data", {}) or {}
+    tradier = report.get("tradier_snapshot", {}) or {}
+    strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
+    details = {
+        "daily_opportunity": tradier.get("_daily_opportunity_engine"),
+        "data_coverage": tradier.get("_data_coverage"),
+        "lifecycle": {
+            "open_options": tradier.get("_open_options_positions"),
+            "calendar_lifecycle": tradier.get("_calendar_lifecycle_checks"),
+            "calendar_engine": tradier.get("_unified_calendar_trade_engine"),
+        },
+        "pipeline": tradier.get("_pipeline_status"),
+        "portfolio": {
+            "positions": report.get("positions", []),
+            "recommendations": report.get("recommendations", []),
+            "portfolio_gap": tradier.get("_portfolio_gap"),
+        },
+        "providers": tradier.get("_provider_status"),
+        "strategies": strategies,
+    }
+    if section == "strategy":
+        detail = (strategies or {}).get(str(strategy_id or ""))
+        base["strategy_id"] = strategy_id
+    else:
+        detail = details.get(section)
+    status = "ok" if detail is not None else "not_found"
+    return redact(_read_only({**base, "status": status, "detail": detail}))
 
 
 def _strategy_summary(result: dict[str, Any], include_rows: bool) -> dict[str, Any]:
@@ -79,3 +129,7 @@ def _json(raw: Any, fallback: Any) -> Any:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _read_only(value: dict[str, Any]) -> dict[str, Any]:
+    return {**value, "provider_calls_triggered": False, "read_only": True}

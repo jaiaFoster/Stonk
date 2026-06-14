@@ -13,6 +13,12 @@ do not call brokers, market-data providers, or the analysis pipeline.
   Factor dry-run and Daily Opportunity exclusion.
 - `/api/dev/snapshot?mode=manifest_only`: compact stored manifest.
 - `/api/dev/snapshot?mode=summary`: compact stored report summary.
+- `/api/dev/snapshot/detail/<section>`: one explicit whitelisted detail section
+  from dormant full snapshot state; use `strategy?strategy_id=...` for one
+  strategy.
+
+Snapshot and detail responses explicitly include `provider_calls_triggered=false`
+and `read_only=true`.
 
 ## Protection
 

@@ -558,6 +558,14 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Existing uncompressed snapshots remain readable; no major report data is permanently deleted.
 - Shell Urgent Risk Review excludes generic dev-cap/missing-metric WATCH rows and summarizes their unavailable-metric count separately.
 
+### Patch 27E: On-Demand Snapshot Details
+
+- Hot snapshots no longer duplicate top-level pipeline and strategy detail already retained in dormant compressed full state.
+- Snapshot responses explicitly report `provider_calls_triggered=false` and `read_only=true`.
+- Token-protected `/api/dev/snapshot/detail/<section>` routes load one whitelisted full-detail section only when requested.
+- Supported sections include `daily_opportunity`, `data_coverage`, `lifecycle`, `pipeline`, `portfolio`, `providers`, `strategies`, and `strategy?strategy_id=...`.
+- Full reports and full developer snapshots remain available for compatibility.
+
 ### Open Items Cleanup Patch v1
 
 - Added purpose-specific copy/download exports for daily brief, calendar report, holdings report, potential adds, and full debug payload.

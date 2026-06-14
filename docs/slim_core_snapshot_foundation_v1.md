@@ -45,3 +45,18 @@ decompress full-detail blobs.
 
 Snapshot diagnostics expose hot-summary, original-full, and compressed-full
 sizes so later patches can measure storage improvements safely.
+
+## Patch 27E on-demand detail boundary
+
+Hot snapshot state removes duplicate top-level pipeline and strategy payloads
+and keeps only bounded shell-driving rows. Dormant compressed full state remains
+the compatibility source for the full dashboard and full developer snapshot.
+
+Explicit token-protected detail reads use:
+
+`/api/dev/snapshot/detail/<section>`
+
+Whitelisted sections are daily opportunity, data coverage, lifecycle, pipeline,
+portfolio, providers, all strategies, or one strategy selected with
+`strategy_id`. These reads never trigger providers and every snapshot/detail
+response includes `provider_calls_triggered=false` and `read_only=true`.
