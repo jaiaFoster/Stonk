@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app import config
+from app.services.provider_payload_compaction_service import compact_tradier_snapshot
 
 
 class ReportSnapshotRepository:
@@ -27,6 +28,7 @@ class ReportSnapshotRepository:
                 schema_version INTEGER, created_at TEXT)""")
             self._ensure_column(conn, "full_payload_blob", "BLOB")
             self._ensure_column(conn, "full_summary_blob", "BLOB")
+            self._ensure_column(conn, "raw_provider_blob", "BLOB")
             self._ensure_column(conn, "snapshot_profile_json", "TEXT")
 
     @contextmanager
@@ -53,33 +55,44 @@ class ReportSnapshotRepository:
 
     def _save(self, run_id: str, mode: str, status: str, payload: str, summary: dict[str, Any], coverage: dict[str, Any], provider_status: dict[str, Any]) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        full_summary_json = json.dumps(summary, default=str, separators=(",", ":"))
+        compact_full_summary = build_compact_full_report_summary(summary)
+        full_summary_json = json.dumps(compact_full_summary, default=str, separators=(",", ":"))
         full_payload_json = json.dumps(payload, separators=(",", ":"))
+        raw_provider_json = json.dumps(
+            (((summary or {}).get("report_data") or {}).get("tradier_snapshot") or {}),
+            default=str,
+            separators=(",", ":"),
+        )
         hot_summary = build_hot_report_summary(summary)
         hot_summary_json = json.dumps(hot_summary, default=str, separators=(",", ":"))
         compressed = bool(getattr(config, "REPORT_SNAPSHOT_STORE_COMPRESSED_FULL", True))
         full_summary_blob = zlib.compress(full_summary_json.encode("utf-8")) if compressed else None
         full_payload_blob = zlib.compress(full_payload_json.encode("utf-8")) if compressed else None
+        raw_provider_blob = zlib.compress(raw_provider_json.encode("utf-8"))
+        compact_tradier = (((compact_full_summary or {}).get("report_data") or {}).get("tradier_snapshot") or {})
         profile = {
             "hot_summary_bytes": len(hot_summary_json.encode("utf-8")),
             "full_summary_bytes": len(full_summary_json.encode("utf-8")),
             "compressed_full_summary_bytes": len(full_summary_blob or b""),
             "full_payload_bytes": len(full_payload_json.encode("utf-8")),
             "compressed_full_payload_bytes": len(full_payload_blob or b""),
+            "raw_provider_snapshot_bytes": len(raw_provider_json.encode("utf-8")),
+            "compressed_raw_provider_bytes": len(raw_provider_blob or b""),
+            "compact_tradier_snapshot_bytes": len(json.dumps(compact_tradier, default=str, separators=(",", ":")).encode("utf-8")),
             "compression_enabled": compressed,
         }
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO report_snapshots
                    (run_id,mode,status,started_at,completed_at,payload_json,summary_json,data_coverage_json,
-                    provider_status_json,schema_version,created_at,full_payload_blob,full_summary_blob,snapshot_profile_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    provider_status_json,schema_version,created_at,full_payload_blob,full_summary_blob,raw_provider_blob,snapshot_profile_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     run_id, mode, status, now, now,
                     "" if compressed else full_payload_json,
                     hot_summary_json if compressed else full_summary_json,
                     json.dumps(coverage, default=str), json.dumps(provider_status, default=str),
-                    self.SCHEMA_VERSION, now, full_payload_blob, full_summary_blob,
+                    self.SCHEMA_VERSION, now, full_payload_blob, full_summary_blob, raw_provider_blob,
                     json.dumps(profile, separators=(",", ":")),
                 ),
             )
@@ -95,10 +108,10 @@ class ReportSnapshotRepository:
             conn.execute(
                 """INSERT OR REPLACE INTO report_snapshots
                    (run_id,mode,status,started_at,completed_at,payload_json,summary_json,data_coverage_json,
-                    provider_status_json,schema_version,created_at,full_payload_blob,full_summary_blob,snapshot_profile_json)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    provider_status_json,schema_version,created_at,full_payload_blob,full_summary_blob,raw_provider_blob,snapshot_profile_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (run_id, mode, "failed", now, now, "", json.dumps(summary or {}, default=str), "{}", "{}",
-                 self.SCHEMA_VERSION, now, None, None, "{}"),
+                 self.SCHEMA_VERSION, now, None, None, None, "{}"),
             )
         self.log(f"ReportSnapshot: failed run preserved previous snapshot={(previous or {}).get('run_id', 'none')}")
 
@@ -133,9 +146,27 @@ class ReportSnapshotRepository:
     def load_summary(snapshot: dict[str, Any] | None, *, full: bool = False) -> dict[str, Any]:
         if not snapshot:
             return {}
-        if full and snapshot.get("full_summary_blob"):
-            return _decompress_json(snapshot.get("full_summary_blob"), {})
+        if full:
+            summary = (
+                _decompress_json(snapshot.get("full_summary_blob"), {})
+                if snapshot.get("full_summary_blob")
+                else _json(snapshot.get("summary_json"), {})
+            )
+            raw_provider = ReportSnapshotRepository.load_raw_provider_snapshot(snapshot)
+            if raw_provider:
+                summary.setdefault("report_data", {})["tradier_snapshot"] = raw_provider
+            return summary
         return _json(snapshot.get("summary_json"), {})
+
+    @staticmethod
+    def load_raw_provider_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
+        if not snapshot:
+            return {}
+        if snapshot.get("raw_provider_blob"):
+            value = _decompress_json(snapshot.get("raw_provider_blob"), {})
+            return value if isinstance(value, dict) else {}
+        summary = _decompress_json(snapshot.get("full_summary_blob"), {}) if snapshot.get("full_summary_blob") else {}
+        return (((summary or {}).get("report_data") or {}).get("tradier_snapshot") or {})
 
     @staticmethod
     def load_payload(snapshot: dict[str, Any] | None, *, full: bool = False) -> str:
@@ -185,6 +216,15 @@ def build_hot_report_summary(summary: dict[str, Any]) -> dict[str, Any]:
         "tradier_snapshot": hot_tradier,
         "log": list(report.get("log", []) or [])[-int(getattr(config, "REPORT_SNAPSHOT_HOT_LOG_LINES", 10) or 10):],
     }
+    return output
+
+
+def build_compact_full_report_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Keep full report sections but move raw provider collections to separate archive."""
+    output = dict(summary or {})
+    report = dict(output.get("report_data", {}) or {})
+    report["tradier_snapshot"] = compact_tradier_snapshot(report.get("tradier_snapshot"))
+    output["report_data"] = report
     return output
 
 

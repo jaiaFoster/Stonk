@@ -61,6 +61,7 @@ def build_latest_profiles() -> dict[str, Any]:
         "payload_size_profile": payload,
         "storage_profile": storage,
         "report_snapshot_profile": snapshot.get("report_snapshot_profile"),
+        "provider_payload_budget": snapshot.get("provider_payload_budget"),
         "slowest_runtime_phase": _slowest_phase(runtime),
         "largest_payload_section": _largest_section(payload),
         "provider_calls_triggered": False,

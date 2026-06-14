@@ -16,6 +16,9 @@ do not call brokers, market-data providers, or the analysis pipeline.
 - `/api/dev/snapshot/detail/<section>`: one explicit whitelisted detail section
   from dormant full snapshot state; use `strategy?strategy_id=...` for one
   strategy.
+- `/api/dev/snapshot/detail/provider_raw`: separately compressed raw Tradier
+  archive; default snapshots and stored full-summary blobs use compact provider
+  records.
 
 Snapshot and detail responses explicitly include `provider_calls_triggered=false`
 and `read_only=true`.

@@ -483,7 +483,7 @@ def developer_snapshot_detail(section: str):
         abort(404)
     if config.DEV_SNAPSHOT_REQUIRE_TOKEN and not _valid_dev_token(request.args.get("token")):
         abort(403)
-    allowed = {"daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "strategies", "strategy"}
+    allowed = {"daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "provider_raw", "strategies", "strategy"}
     if section not in allowed:
         return jsonify({"status": "error", "error": "Unsupported detail section.", "provider_calls_triggered": False, "read_only": True}), 400
     from app.services.developer_snapshot_service import build_snapshot_detail

@@ -573,6 +573,13 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - `/run/status/<job_id>` and `/api/dev/status` expose timeout reason, failed stage, lock state, run age, and retry safety.
 - A timed-out worker cannot overwrite its timeout state or clear a replacement run's active-job state if it later returns.
 
+### Patch 27G: Tradier Snapshot Compaction
+
+- Stored full summaries replace raw option-chain/provider collections with compact count/audit records.
+- Raw Tradier detail remains compressed and available only through explicit `provider_raw` developer detail requests.
+- Payload profiles expose raw/compact Tradier sizes, reduction percentage, oversized status, and largest provider sections.
+- Live strategy inputs and provider fetch behavior are unchanged.
+
 ### Open Items Cleanup Patch v1
 
 - Added purpose-specific copy/download exports for daily brief, calendar report, holdings report, potential adds, and full debug payload.
