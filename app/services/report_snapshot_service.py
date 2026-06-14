@@ -14,7 +14,6 @@ from app import config
 
 class ReportSnapshotRepository:
     SCHEMA_VERSION = 1
-    RETENTION_LIMIT = 20
 
     def __init__(self, db_path: str | None = None, log_print=None):
         self.db_path = str(db_path or config.REPORT_SNAPSHOT_DB_PATH)
@@ -56,7 +55,7 @@ class ReportSnapshotRepository:
                           json.dumps(coverage, default=str), json.dumps(provider_status, default=str), self.SCHEMA_VERSION, now))
             conn.execute(
                 "DELETE FROM report_snapshots WHERE run_id IN (SELECT run_id FROM report_snapshots ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
-                (self.RETENTION_LIMIT,),
+                (config.REPORT_SNAPSHOT_RETENTION_LIMIT,),
             )
 
     def record_failure(self, run_id: str, mode: str, summary: dict[str, Any] | None = None) -> None:

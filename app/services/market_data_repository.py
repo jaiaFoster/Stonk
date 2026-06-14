@@ -183,3 +183,7 @@ class MarketDataRepository:
                     "INSERT OR REPLACE INTO data_coverage_runs (run_id,created_at,summary_json) VALUES (?,?,?)",
                     (run_id, datetime.now(timezone.utc).isoformat(), json.dumps(summary, default=str)),
                 )
+
+    def storage_profile(self) -> dict[str, Any]:
+        from app.services.storage_profile_service import build_storage_profile
+        return build_storage_profile(self.db_path)

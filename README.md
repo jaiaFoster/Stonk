@@ -615,6 +615,27 @@ FF_DEV_MAX_TICKERS_PER_RUN=3
 FF_CANDIDATE_DISCOVERY_POOL_SIZE=12
 FF_CANDIDATE_HISTORY_LOOKBACK_RUNS=10
 FF_SCAN_MODE=balanced
+
+### Slim Core + Pull-On-Demand Snapshots
+
+Patch 27A adds compact runtime/payload/storage profiles, bounded report
+snapshots, small run manifests, and a token-protected `/api/dev/snapshot`
+endpoint. Stored-state snapshot modes do not call providers. Heavy long-term
+archives remain deferred to a future local vault.
+
+```text
+ENABLE_RUNTIME_PROFILE=true
+ENABLE_PAYLOAD_SIZE_PROFILE=true
+ENABLE_STORAGE_PROFILE=true
+ENABLE_DEV_SNAPSHOT_ENDPOINT=true
+DEV_SNAPSHOT_REQUIRE_TOKEN=true
+DEV_SNAPSHOT_DEFAULT_MODE=latest
+DEV_SNAPSHOT_ALLOW_FRESH=false
+REPORT_SNAPSHOT_RETENTION_LIMIT=20
+REPORT_SNAPSHOT_MAX_LOG_LINES=250
+RUN_MANIFEST_RETENTION_LIMIT=200
+ACTIVE_TRADES_DEFAULT_DETAIL=summary
+```
 FF_DEV_MAX_CHAIN_TICKERS_PER_RUN=2
 FF_ALLOW_DIAGNOSTIC_STRUCTURE_WITHOUT_SOURCE_IV=true
 FF_WARN_PACKAGE_SLIPPAGE_PCT=10
