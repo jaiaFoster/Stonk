@@ -19,10 +19,10 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     manifest = manifest_repository.latest()
     if mode == "manifest_only":
         return redact({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "run_manifest": manifest})
-    snapshot = report_repository.latest_success()
+    snapshot = report_repository.latest_success(include_full=mode == "full")
     if not snapshot:
         return redact({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "source_status": "unavailable", "run_manifest": manifest})
-    summary = _json(snapshot.get("summary_json"), {})
+    summary = report_repository.load_summary(snapshot, full=mode == "full")
     report = summary.get("report_data", {}) or {}
     tradier = report.get("tradier_snapshot", {}) or {}
     strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
@@ -36,6 +36,7 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
         "git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT"),
         "git_branch": os.environ.get("RAILWAY_GIT_BRANCH") or os.environ.get("GIT_BRANCH"),
         "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+        "report_snapshot_profile": report_repository.snapshot_profile(snapshot),
         "run_manifest": manifest, "runtime_profile": tradier.get("_runtime_profile"),
         "payload_size_profile": tradier.get("_payload_size_profile"), "storage_profile": tradier.get("_storage_profile"),
         "provider_status": tradier.get("_provider_status"), "data_coverage": tradier.get("_data_coverage"),

@@ -109,11 +109,13 @@ def home():
             from app.services.report_snapshot_service import ReportSnapshotRepository
             from app.services.report_service import format_html
 
-            snapshot = ReportSnapshotRepository(log_print=lambda message: print(message, flush=True)).latest_success()
+            repository = ReportSnapshotRepository(log_print=lambda message: print(message, flush=True))
+            dashboard_view = _requested_dashboard_view()
+            snapshot = repository.latest_success(include_full=dashboard_view == "full")
             if snapshot:
-                summary = json.loads(snapshot.get("summary_json") or "{}")
+                summary = repository.load_summary(snapshot, full=dashboard_view == "full")
                 report = summary.get("report_data") or {}
-                payload = json.loads(snapshot.get("payload_json") or '""')
+                payload = repository.load_payload(snapshot, full=dashboard_view == "full")
                 report_snapshot = report.get("tradier_snapshot", {}) or {}
                 report_snapshot["_report_snapshot"] = {
                     "run_id": snapshot.get("run_id"),
@@ -130,7 +132,7 @@ def home():
                     report.get("recommendations", []),
                     report_snapshot,
                     report.get("log", []),
-                    view=_requested_dashboard_view(),
+                    view=dashboard_view,
                 ), 200
         except Exception as exc:
             print(f"Latest report snapshot unavailable: {exc}", flush=True)

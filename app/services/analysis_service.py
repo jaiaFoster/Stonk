@@ -337,8 +337,9 @@ def _robinhood_unavailable_lifecycle(provider_status: dict[str, Any]) -> dict[st
 
 def _latest_complete_broker_state(log_print: Callable[[str], None]) -> dict[str, Any]:
     try:
-        snapshot = ReportSnapshotRepository(log_print=log_print).latest_success()
-        summary = json.loads((snapshot or {}).get("summary_json") or "{}")
+        repository = ReportSnapshotRepository(log_print=log_print)
+        snapshot = repository.latest_success()
+        summary = repository.load_summary(snapshot)
         tradier = ((summary.get("report_data") or {}).get("tradier_snapshot") or {})
         return {
             "open_options": tradier.get("_open_options_positions"),
@@ -1144,6 +1145,19 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                     "log": trimmed_log,
                 },
             }
+            if config.ENABLE_PAYLOAD_SIZE_PROFILE:
+                import zlib
+                from app.services.report_snapshot_service import build_hot_report_summary
+                full_summary_json = json.dumps(snapshot_summary, default=str, separators=(",", ":")).encode("utf-8")
+                hot_summary_json = json.dumps(build_hot_report_summary(snapshot_summary), default=str, separators=(",", ":")).encode("utf-8")
+                compressed_summary = zlib.compress(full_summary_json)
+                compressed_payload = zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+                payload_profile["sections_bytes"].update({
+                    "report_hot_summary_json": len(hot_summary_json),
+                    "report_compressed_full_summary": len(compressed_summary),
+                    "report_compressed_full_payload": len(compressed_payload),
+                    "report_snapshot_save": len(hot_summary_json) + len(compressed_summary) + len(compressed_payload),
+                })
             snapshot_started = perf_counter()
             snapshot_method(
                 run_context.run_id,
