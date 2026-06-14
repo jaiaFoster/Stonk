@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.services.provider_payload_compaction_service import build_provider_payload_budget
+
 
 def json_bytes(value: Any) -> int:
     try:
@@ -35,7 +37,13 @@ def build_payload_size_profile(
         "data_coverage": json_bytes(snapshot.get("_data_coverage")),
         "log": json_bytes(log),
     }
-    return {"total_profiled_bytes": sum(sections.values()), "sections_bytes": sections}
+    provider_budget = build_provider_payload_budget(snapshot)
+    sections["tradier_snapshot_compact"] = provider_budget["compact_tradier_snapshot_bytes"]
+    return {
+        "total_profiled_bytes": sum(sections.values()),
+        "sections_bytes": sections,
+        "provider_payload_budget": provider_budget,
+    }
 
 
 def compact_payload_log(profile: dict[str, Any]) -> str:

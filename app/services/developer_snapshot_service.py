@@ -33,13 +33,14 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     result = {
         "snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(),
         "source_run_id": snapshot.get("run_id"), "source_status": snapshot.get("status"), "app_mode": snapshot.get("mode"),
-        "available_detail_sections": ["daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "strategies", "strategy"],
+        "available_detail_sections": ["daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "provider_raw", "strategies", "strategy"],
         "git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT"),
         "git_branch": os.environ.get("RAILWAY_GIT_BRANCH") or os.environ.get("GIT_BRANCH"),
         "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
         "report_snapshot_profile": report_repository.snapshot_profile(snapshot),
         "run_manifest": manifest, "runtime_profile": tradier.get("_runtime_profile"),
         "payload_size_profile": tradier.get("_payload_size_profile"), "storage_profile": tradier.get("_storage_profile"),
+        "provider_payload_budget": (tradier.get("_payload_size_profile") or {}).get("provider_payload_budget"),
         "provider_status": tradier.get("_provider_status"), "data_coverage": tradier.get("_data_coverage"),
         "portfolio_summary": {"position_count": len(report.get("positions", []) or []), "recommendation_count": len(report.get("recommendations", []) or [])},
         "positions_summary": report.get("positions", []), "open_options_summary": _compact(tradier.get("_open_options_positions")),
@@ -96,6 +97,9 @@ def build_snapshot_detail(
     if section == "strategy":
         detail = (strategies or {}).get(str(strategy_id or ""))
         base["strategy_id"] = strategy_id
+    elif section == "provider_raw":
+        detail = report_repository.load_raw_provider_snapshot(snapshot)
+        base["raw_provider_payload"] = True
     else:
         detail = details.get(section)
     status = "ok" if detail is not None else "not_found"

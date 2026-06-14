@@ -1147,16 +1147,28 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             }
             if config.ENABLE_PAYLOAD_SIZE_PROFILE:
                 import zlib
-                from app.services.report_snapshot_service import build_hot_report_summary
-                full_summary_json = json.dumps(snapshot_summary, default=str, separators=(",", ":")).encode("utf-8")
+                from app.services.report_snapshot_service import build_compact_full_report_summary, build_hot_report_summary
+                full_summary_json = json.dumps(
+                    build_compact_full_report_summary(snapshot_summary),
+                    default=str,
+                    separators=(",", ":"),
+                ).encode("utf-8")
                 hot_summary_json = json.dumps(build_hot_report_summary(snapshot_summary), default=str, separators=(",", ":")).encode("utf-8")
                 compressed_summary = zlib.compress(full_summary_json)
                 compressed_payload = zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+                raw_provider_json = json.dumps(tradier_snapshot, default=str, separators=(",", ":")).encode("utf-8")
+                compressed_raw_provider = zlib.compress(raw_provider_json)
                 payload_profile["sections_bytes"].update({
                     "report_hot_summary_json": len(hot_summary_json),
                     "report_compressed_full_summary": len(compressed_summary),
                     "report_compressed_full_payload": len(compressed_payload),
-                    "report_snapshot_save": len(hot_summary_json) + len(compressed_summary) + len(compressed_payload),
+                    "report_compressed_raw_provider": len(compressed_raw_provider),
+                    "report_snapshot_save": (
+                        len(hot_summary_json)
+                        + len(compressed_summary)
+                        + len(compressed_payload)
+                        + len(compressed_raw_provider)
+                    ),
                 })
             snapshot_started = perf_counter()
             snapshot_method(

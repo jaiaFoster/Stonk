@@ -94,6 +94,7 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "strategy_opportunity_db_path": config.STRATEGY_OPPORTUNITY_DB_PATH,
         "enable_runtime_profile": config.ENABLE_RUNTIME_PROFILE,
         "enable_payload_size_profile": config.ENABLE_PAYLOAD_SIZE_PROFILE,
+        "provider_payload_budget_bytes": config.PROVIDER_PAYLOAD_BUDGET_BYTES,
         "enable_storage_profile": config.ENABLE_STORAGE_PROFILE,
         "enable_dev_snapshot_endpoint": config.ENABLE_DEV_SNAPSHOT_ENDPOINT,
         "enable_dev_diagnostics_endpoints": config.ENABLE_DEV_DIAGNOSTICS_ENDPOINTS,
