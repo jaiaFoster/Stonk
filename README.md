@@ -544,6 +544,13 @@ The app intentionally skips the mini-backtest unless the calendar candidate pass
 - Provider/raw tables, full payload, and run log remain available in collapsed Monitor / Debug details.
 - Details: `docs/ui_overhaul_muted_black_terminal_v1.md`.
 
+### Patch 27C: Hot Shell Dashboard
+
+- The normal dashboard route renders a compact operational shell from the latest stored report without provider calls.
+- The shell keeps active options, the top five Daily Opportunity actions, top adds/risks, macro context, and strategy counts visible.
+- Use `?view=full` or `?detail=full` to load the existing complete report, exports, candidate sections, and Monitor / Debug.
+- `DASHBOARD_DEFAULT_VIEW`, `REPORT_DEFAULT_MAX_ROWS_PER_SECTION`, and `REPORT_SHOW_DETAIL_LOAD_BUTTONS` control presentation only; strategy scoring is unchanged.
+
 ### Open Items Cleanup Patch v1
 
 - Added purpose-specific copy/download exports for daily brief, calendar report, holdings report, potential adds, and full debug payload.

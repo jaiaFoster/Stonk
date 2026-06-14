@@ -105,6 +105,14 @@ MARKET_DATA_COVERAGE_RETENTION_DAYS = _int_env("MARKET_DATA_COVERAGE_RETENTION_D
 OPTION_CHAIN_SNAPSHOT_RETENTION_DAYS = _int_env("OPTION_CHAIN_SNAPSHOT_RETENTION_DAYS", 7)
 ACTIVE_TRADES_DEFAULT_DETAIL = os.environ.get("ACTIVE_TRADES_DEFAULT_DETAIL", "summary").strip().lower()
 
+# --- Dashboard presentation ---
+# The default route renders a compact operational shell. The existing complete
+# report remains available on demand with ?view=full or ?detail=full.
+DASHBOARD_DEFAULT_VIEW = os.environ.get("DASHBOARD_DEFAULT_VIEW", "shell").strip().lower()
+REPORT_DEFAULT_MAX_ROWS_PER_SECTION = _int_env("REPORT_DEFAULT_MAX_ROWS_PER_SECTION", 3)
+REPORT_SHOW_DETAIL_LOAD_BUTTONS = _bool_env("REPORT_SHOW_DETAIL_LOAD_BUTTONS", True)
+REPORT_SHOW_FULL_DEBUG_BY_DEFAULT = _bool_env("REPORT_SHOW_FULL_DEBUG_BY_DEFAULT", False)
+
 # --- Tradier market/options data ---
 # Required for Tradier Provider v1. Use your production token for live data,
 # or a sandbox token with TRADIER_ENV=sandbox for delayed/paper-trading tests.
