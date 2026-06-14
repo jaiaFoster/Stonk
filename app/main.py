@@ -21,6 +21,7 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
@@ -38,6 +39,7 @@ ACTIVE_TRADE_REFRESH_LOCK = threading.Lock()
 RUN_JOBS: dict[str, dict[str, Any]] = {}
 ACTIVE_JOB_ID: str | None = None
 MAX_JOB_AGE_SECONDS = 60 * 60
+APP_BOOTED_AT = datetime.now(timezone.utc).isoformat()
 
 print("Algo Stock Advisor Flask app loaded.", flush=True)
 
@@ -63,6 +65,12 @@ def _requested_run_mode() -> str:
 def _valid_run_token(token: str | None) -> bool:
     """Require RUN_TOKEN to be configured and matched by the request."""
     return bool(config.RUN_TOKEN) and token == config.RUN_TOKEN
+
+
+def _valid_dev_token(token: str | None) -> bool:
+    """Allow a separate read-only diagnostics token, falling back to RUN_TOKEN."""
+    expected = config.DEV_API_TOKEN or config.RUN_TOKEN
+    return bool(expected) and token == expected
 
 
 def run(run_mode: str = "prod") -> PipelineResult:
@@ -427,7 +435,7 @@ def health():
 def developer_snapshot():
     if not config.ENABLE_DEV_SNAPSHOT_ENDPOINT:
         abort(404)
-    if config.DEV_SNAPSHOT_REQUIRE_TOKEN and not _valid_run_token(request.args.get("token")):
+    if config.DEV_SNAPSHOT_REQUIRE_TOKEN and not _valid_dev_token(request.args.get("token")):
         abort(403)
     mode = str(request.args.get("mode") or config.DEV_SNAPSHOT_DEFAULT_MODE).strip().lower()
     if mode == "fresh":
@@ -438,6 +446,41 @@ def developer_snapshot():
         return jsonify({"status": "error", "error": "Unsupported snapshot mode."}), 400
     from app.services.developer_snapshot_service import build_developer_snapshot
     return jsonify(build_developer_snapshot(mode)), 200
+
+
+def _require_dev_diagnostics_token() -> None:
+    if not config.ENABLE_DEV_DIAGNOSTICS_ENDPOINTS:
+        abort(404)
+    if not _valid_dev_token(request.args.get("token")):
+        abort(403)
+
+
+@app.route("/api/dev/status")
+def dev_status():
+    _require_dev_diagnostics_token()
+    from app.services.app_diagnostics_service import build_dev_status
+    return jsonify(build_dev_status(RUN_JOBS, ACTIVE_JOB_ID, APP_BOOTED_AT)), 200
+
+
+@app.route("/api/dev/latest-run-manifest")
+def dev_latest_run_manifest():
+    _require_dev_diagnostics_token()
+    from app.services.app_diagnostics_service import build_latest_run_manifest
+    return jsonify(build_latest_run_manifest()), 200
+
+
+@app.route("/api/dev/latest-profiles")
+def dev_latest_profiles():
+    _require_dev_diagnostics_token()
+    from app.services.app_diagnostics_service import build_latest_profiles
+    return jsonify(build_latest_profiles()), 200
+
+
+@app.route("/api/dev/feature-health")
+def dev_feature_health():
+    _require_dev_diagnostics_token()
+    from app.services.app_diagnostics_service import build_feature_health
+    return jsonify(build_feature_health()), 200
 
 
 def _run_job(job_id: str, run_mode: str = "prod") -> None:

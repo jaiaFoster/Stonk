@@ -10,7 +10,7 @@ SENSITIVE_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "COOKIE", "SESS
 
 
 def known_secrets() -> list[str]:
-    names = ("ROBINHOOD_PASSWORD", "NEWS_API_KEY", "FINNHUB_API_KEY", "ALPHA_VANTAGE_API_KEY", "TRADIER_ACCESS_TOKEN", "RUN_TOKEN", "NTFY_TOPIC")
+    names = ("ROBINHOOD_PASSWORD", "NEWS_API_KEY", "FINNHUB_API_KEY", "ALPHA_VANTAGE_API_KEY", "TRADIER_ACCESS_TOKEN", "RUN_TOKEN", "DEV_API_TOKEN", "NTFY_TOPIC")
     return [str(getattr(config, name, "") or "") for name in names if getattr(config, name, None)]
 
 

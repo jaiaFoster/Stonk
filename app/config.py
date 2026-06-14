@@ -88,6 +88,7 @@ ENABLE_VERBOSE_RUNTIME_PROFILE = _bool_env("ENABLE_VERBOSE_RUNTIME_PROFILE", Fal
 ENABLE_PAYLOAD_SIZE_PROFILE = _bool_env("ENABLE_PAYLOAD_SIZE_PROFILE", True)
 ENABLE_STORAGE_PROFILE = _bool_env("ENABLE_STORAGE_PROFILE", True)
 ENABLE_DEV_SNAPSHOT_ENDPOINT = _bool_env("ENABLE_DEV_SNAPSHOT_ENDPOINT", os.environ.get("APP_MODE", "prod").strip().lower() == "dev")
+ENABLE_DEV_DIAGNOSTICS_ENDPOINTS = _bool_env("ENABLE_DEV_DIAGNOSTICS_ENDPOINTS", ENABLE_DEV_SNAPSHOT_ENDPOINT)
 DEV_SNAPSHOT_REQUIRE_TOKEN = _bool_env("DEV_SNAPSHOT_REQUIRE_TOKEN", True)
 DEV_SNAPSHOT_DEFAULT_MODE = os.environ.get("DEV_SNAPSHOT_DEFAULT_MODE", "latest").strip().lower()
 DEV_SNAPSHOT_ALLOW_FRESH = _bool_env("DEV_SNAPSHOT_ALLOW_FRESH", False)
@@ -382,6 +383,9 @@ CALENDAR_LIFECYCLE_STOP_LOSS_PCT = _int_env("CALENDAR_LIFECYCLE_STOP_LOSS_PCT", 
 # --- Endpoint security ---
 # A secret token to protect the /run endpoint from being triggered by anyone.
 RUN_TOKEN = os.environ.get("RUN_TOKEN")
+# Optional separate token for read-only developer diagnostics. Falls back to
+# RUN_TOKEN when unset.
+DEV_API_TOKEN = os.environ.get("DEV_API_TOKEN")
 
 # --- Optional notifications ---
 # Used by the notification provider and Robinhood login failure alerts.
