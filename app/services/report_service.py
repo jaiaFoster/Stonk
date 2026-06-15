@@ -2506,6 +2506,23 @@ def _hot_shell_profile_warning_html(tradier_snapshot: dict[str, Any]) -> str:
     return '<div class="empty-state hot-shell-warning"><strong>Operational profile:</strong> ' + escape(" ".join(warnings)) + "</div>"
 
 
+def _hot_shell_freshness_html(pipeline_status: dict[str, Any]) -> str:
+    freshness = ((pipeline_status.get("report_snapshot") or {}).get("freshness") or {})
+    if not freshness:
+        return ""
+    state = str(freshness.get("freshness_state") or "UNKNOWN")
+    quality = str(freshness.get("quality_label") or freshness.get("report_quality") or "UNKNOWN")
+    age = freshness.get("report_age_seconds")
+    age_text = "age unavailable" if age is None else f"{max(0, int(age)) // 60}m old"
+    warnings = list(freshness.get("warnings") or [])
+    warning_text = f" {' '.join(str(item) for item in warnings)}" if warnings else ""
+    return (
+        '<div class="empty-state hot-shell-freshness">'
+        f'<strong>Data status: {escape(quality)}</strong> · {escape(state)} · {escape(age_text)}'
+        f' · run {escape(str(freshness.get("canonical_run_id") or "unknown"))}.{escape(warning_text)}</div>'
+    )
+
+
 def _dashboard_view_controls_html(view: str) -> str:
     if not bool(getattr(config, "REPORT_SHOW_DETAIL_LOAD_BUTTONS", True)):
         return ""
@@ -2754,6 +2771,7 @@ def format_html(
     ])
     view_controls_html = _dashboard_view_controls_html(dashboard_view)
     profile_warning_html = _hot_shell_profile_warning_html(parsed_tradier_snapshot) if dashboard_view == "shell" else ""
+    freshness_html = _hot_shell_freshness_html(pipeline_status) if dashboard_view == "shell" else ""
     sections_html = full_sections if dashboard_view == "full" else shell_sections
     nav_html = (
         """
@@ -2794,6 +2812,7 @@ def format_html(
     <main class="report-shell" data-dashboard-view="{dashboard_view}">
         {top_summary_html}
         {quality_banner}
+        {freshness_html}
         {profile_warning_html}
         {view_controls_html}
         <nav class="quick-nav" aria-label="Report sections">
