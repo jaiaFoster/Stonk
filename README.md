@@ -673,6 +673,30 @@ RUN_MANIFEST_RETENTION_LIMIT=200
 ACTIVE_TRADES_DEFAULT_DETAIL=summary
 ```
 
+### Usage and Storage Telemetry
+
+Patch 27I adds optional, fail-safe counters for cached dashboard loads,
+snapshot/detail requests, section toggles, and copy/export actions. It also
+stores size-only snapshot profiles so storage growth can be measured before
+pruning. Telemetry stores event names, section names, small allowlisted
+metadata, timestamps, run IDs, and byte counts only. It never stores provider
+payloads, holdings, account data, credentials, or auth state, and it never
+triggers providers.
+
+```text
+USAGE_TELEMETRY_ENABLED=true
+USAGE_TELEMETRY_DB_PATH=<defaults to REPORT_SNAPSHOT_DB_PATH>
+USAGE_TELEMETRY_RETENTION_LIMIT=5000
+USAGE_TELEMETRY_SIZE_PROFILE_RETENTION_LIMIT=500
+USAGE_TELEMETRY_METADATA_MAX_CHARS=2000
+```
+
+Read-only diagnostics:
+
+```text
+/api/dev/usage-telemetry
+```
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy

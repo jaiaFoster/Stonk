@@ -100,6 +100,19 @@ class ReportSnapshotRepository:
                 "DELETE FROM report_snapshots WHERE run_id IN (SELECT run_id FROM report_snapshots ORDER BY created_at DESC LIMIT -1 OFFSET ?)",
                 (config.REPORT_SNAPSHOT_RETENTION_LIMIT,),
             )
+        try:
+            from app.services.usage_telemetry_service import record_snapshot_size_profile
+
+            payload_profile = (((summary or {}).get("report_data") or {}).get("tradier_snapshot") or {}).get("_payload_size_profile", {})
+            record_snapshot_size_profile(
+                run_id,
+                mode=mode,
+                status=status,
+                snapshot_sizes=profile,
+                section_sizes=(payload_profile or {}).get("sections_bytes", {}),
+            )
+        except Exception as exc:
+            self.log(f"UsageTelemetry snapshot profile warning: {exc}")
 
     def record_failure(self, run_id: str, mode: str, summary: dict[str, Any] | None = None) -> None:
         now = datetime.now(timezone.utc).isoformat()

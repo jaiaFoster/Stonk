@@ -1796,7 +1796,19 @@ def _dashboard_script_html() -> str:
                 return false;
             }
         }
+        function sendUsageEvent(eventType, section, metadata) {
+            const token = new URLSearchParams(window.location.search).get('token') || '';
+            if (!token) return;
+            const body = JSON.stringify({ event_type: eventType, section: section || '', metadata: metadata || {} });
+            fetch('/api/usage/event?token=' + encodeURIComponent(token), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body,
+                keepalive: true,
+            }).catch(() => {});
+        }
         function copyExport(key) {
+            sendUsageEvent('copy_export', 'exports', { export_key: key });
             return copyTextWithFallback(exportPayloads[key] || '', 'copyFallback', key === 'fullDebugPayload' ? 'Payload copied.' : 'Copied.', key === 'fullDebugPayload' ? 'Copy failed - payload available below.' : 'Clipboard failed. Fallback text area is ready to select/copy.');
         }
         function downloadExport(key, filename) {
@@ -1810,6 +1822,7 @@ def _dashboard_script_html() -> str:
             link.click();
             link.remove();
             URL.revokeObjectURL(url);
+            sendUsageEvent('download_export', 'exports', { export_key: key });
             showToast('Download started.', false);
         }
         function setDashboardView(view) {
@@ -1846,6 +1859,12 @@ def _dashboard_script_html() -> str:
                 showToast('Market refresh failed: ' + err.message, true);
             }
         }
+        document.querySelectorAll('details').forEach((detail) => {
+            detail.addEventListener('toggle', () => {
+                const section = detail.closest('.report-section')?.id || 'unscoped';
+                sendUsageEvent(detail.open ? 'section_open' : 'section_close', section, {});
+            });
+        });
     </script>"""
 
 
