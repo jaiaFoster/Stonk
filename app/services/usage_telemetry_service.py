@@ -319,7 +319,7 @@ def _size_budget_report(profile: dict[str, Any] | None) -> dict[str, Any]:
     values = {f"snapshot:{key}": value for key, value in snapshot_sizes.items()}
     values.update({f"section:{key}": value for key, value in section_sizes.items()})
     flags = [
-        {"name": name, "bytes": value, "severity": _size_severity(value, thresholds)}
+        _size_budget_row(name, value, thresholds)
         for name, value in values.items()
         if _size_severity(value, thresholds) != "ok"
     ]
@@ -333,14 +333,15 @@ def _size_budget_report(profile: dict[str, Any] | None) -> dict[str, Any]:
         "other": [],
     }
     for name, value in values.items():
-        categories[_size_category(name)].append({
-            "name": name,
-            "bytes": value,
-            "severity": _size_severity(value, thresholds),
-        })
+        categories[_size_category(name)].append(_size_budget_row(name, value, thresholds))
     return {
         "status": "ready",
         "thresholds_bytes": thresholds,
+        "policy_notes": {
+            "intentional_dormant": "Explicit raw compatibility archive; large size is expected and does not affect default reads.",
+            "compact_operational": "Compact stored/read path; monitor against operational size budgets.",
+            "operational": "Default or commonly loaded state; investigate unexpected growth.",
+        },
         "flags": flags,
         "categories": {key: sorted(rows, key=lambda row: row["bytes"], reverse=True) for key, rows in categories.items() if rows},
     }
@@ -354,6 +355,30 @@ def _size_severity(value: int, thresholds: dict[str, int]) -> str:
     if value >= thresholds["warning"]:
         return "warning"
     return "ok"
+
+
+def _size_budget_row(name: str, value: int, thresholds: dict[str, int]) -> dict[str, Any]:
+    policy = _size_policy(name)
+    return {
+        "name": name,
+        "bytes": value,
+        "severity": _size_severity(value, thresholds),
+        "policy": policy,
+        "action_required": policy != "intentional_dormant",
+    }
+
+
+def _size_policy(name: str) -> str:
+    lowered = name.lower()
+    if "compact_tradier" in lowered or "tradier_snapshot_compact" in lowered:
+        return "compact_operational"
+    if (
+        "raw_provider" in lowered
+        or "provider_raw" in lowered
+        or lowered in {"section:tradier_snapshot", "snapshot:raw_provider_snapshot_bytes"}
+    ):
+        return "intentional_dormant"
+    return "operational"
 
 
 def _size_category(name: str) -> str:
