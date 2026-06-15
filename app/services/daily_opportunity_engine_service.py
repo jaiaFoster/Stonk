@@ -14,6 +14,7 @@ from typing import Any, Callable
 
 from app import config
 from app.services.data_state_message_service import required_market_metrics_complete
+from app.services.risk_severity_service import is_actionable_risk, with_risk_severity
 
 LogFn = Callable[[str], None]
 
@@ -274,7 +275,7 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         if row.get("add_allowed_boolean") is False and _action_group(row.get("action")) == "actionable":
             row["action"] = "WATCH / RESEARCH"
         output.append(row)
-    return output + [row for row in risk_rows if not _zero_value_row(row)]
+    return output + [row for row in risk_rows if not _zero_value_row(row) and is_actionable_risk(row)]
 
 
 def _append_unique(items: list[str], value: Any) -> None:
@@ -306,7 +307,7 @@ def _action_group(action: Any) -> str:
 
 
 def _risk_action_from_item(item: dict[str, Any], source: str, action: str | None = None) -> dict[str, Any]:
-    return {
+    return with_risk_severity({
         "type": "risk",
         "ticker": item.get("ticker"),
         "priority_score": float(item.get("score") or item.get("total_score") or 58),
@@ -317,7 +318,7 @@ def _risk_action_from_item(item: dict[str, Any], source: str, action: str | None
         "quantity": item.get("quantity"),
         "market_value": item.get("market_value") if item.get("market_value") is not None else item.get("position_value"),
         "allocation_pct": item.get("allocation_pct"),
-    }
+    })
 
 def _stock_momentum_actions(strategy: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
@@ -362,8 +363,7 @@ def _portfolio_risk_actions(recommendations: list[dict[str, Any]]) -> list[dict[
             continue
         action = str(rec.get("action") or "").upper()
         if "AVOID" in action or "REDUCE" in action or float(rec.get("score") or 100) < 42:
-            out.append(
-                {
+            row = with_risk_severity({
                     "type": "risk",
                     "ticker": rec.get("ticker"),
                     "priority_score": max(55.0, 100.0 - float(rec.get("score") or 50)),
@@ -371,8 +371,12 @@ def _portfolio_risk_actions(recommendations: list[dict[str, Any]]) -> list[dict[
                     "why": "; ".join((rec.get("risks") or [])[:3]) or "Portfolio score/risk profile is weak.",
                     "next_step": rec.get("next_check") or "Review thesis before adding more capital.",
                     "source": "Portfolio Scoring v2",
-                }
-            )
+                    "market_value": rec.get("market_value") if rec.get("market_value") is not None else rec.get("position_value"),
+                    "allocation_pct": rec.get("allocation_pct"),
+                    "risks": rec.get("risks", []) or [],
+                })
+            if is_actionable_risk(row):
+                out.append(row)
     return out
 
 
