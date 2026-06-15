@@ -22,11 +22,29 @@ HEAVY_PROVIDER_KEYS = {
     "raw_provider_payload",
 }
 
+TOP_LEVEL_COMPACTORS = {
+    "_calendar_opportunity_cache",
+    "_daily_opportunity_engine",
+    "_earnings_calendar_strategy",
+    "_earnings_mini_backtest",
+    "_forward_factor_strategy",
+    "_open_options_positions",
+    "_skew_momentum_vertical_cache",
+    "_skew_momentum_vertical_strategy",
+    "_stock_momentum_strategy",
+    "_strategy_opportunity_registry",
+    "_strategy_results",
+    "_unified_calendar_trade_engine",
+}
+
 
 def compact_tradier_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Remove raw provider collections while preserving report and audit fields."""
     raw = snapshot if isinstance(snapshot, dict) else {}
-    compact = _compact_value(raw)
+    compact = {
+        str(key): _compact_top_level_section(str(key), value)
+        for key, value in raw.items()
+    }
     if not isinstance(compact, dict):
         compact = {}
     compact["_provider_payload_budget"] = build_provider_payload_budget(raw, compact=compact)
@@ -77,6 +95,145 @@ def _compact_value(value: Any, key: str | None = None) -> Any:
     if isinstance(value, list):
         return [_compact_value(item) for item in value]
     return value
+
+
+def _compact_top_level_section(key: str, value: Any) -> Any:
+    lowered = str(key).lower()
+    if lowered in TOP_LEVEL_COMPACTORS:
+        return _summary_for_section(lowered, value)
+    return _compact_value(value, lowered)
+
+
+def _summary_for_section(section: str, value: Any) -> Any:
+    if section == "_strategy_results":
+        return _compact_strategy_results(value)
+    if section == "_strategy_opportunity_registry":
+        return _compact_registry(value)
+    return _compact_section_payload(section, value)
+
+
+def _compact_strategy_results(value: Any) -> dict[str, Any]:
+    results = value if isinstance(value, dict) else {}
+    compact: dict[str, Any] = {}
+    for strategy_id, payload in results.items():
+        if not isinstance(payload, dict):
+            compact[str(strategy_id)] = _collection_summary(payload)
+            continue
+        compact[str(strategy_id)] = {
+            key: _compact_value(item, str(key).lower())
+            for key, item in payload.items()
+            if key in {
+                "strategy_id",
+                "strategy_label",
+                "enabled",
+                "ran",
+                "mode",
+                "run_mode",
+                "pass_count",
+                "watch_count",
+                "fail_count",
+                "skipped_count",
+                "summary",
+                "signal_tier_counts",
+                "selected_audit",
+            }
+        }
+        compact[str(strategy_id)]["row_summary"] = _row_collection_summary(payload)
+    return compact
+
+
+def _compact_registry(value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    output = {
+        key: _compact_value(item, str(key).lower())
+        for key, item in payload.items()
+        if key in {"write_count", "forward_factor_observation_history"}
+    }
+    if "recent" in payload:
+        output["recent_summary"] = _list_item_summary(payload.get("recent"))
+    return output
+
+
+def _compact_section_payload(section: str, value: Any) -> dict[str, Any]:
+    payload = value if isinstance(value, dict) else {}
+    output = {
+        "section": section,
+        "item_summary": _list_item_summary(_candidate_rows(payload)),
+        "keys": [str(key) for key in list(payload)[:20]] if isinstance(payload, dict) else [],
+    }
+    for key in ("summary", "enabled", "has_data", "ran", "mode", "run_mode", "source", "errors", "warnings", "provider_status"):
+        if key in payload:
+            output[key] = _compact_value(payload.get(key), key.lower())
+    if "rows" in payload or "items" in payload or "actions" in payload or "new_trade_rows" in payload or "calendars" in payload or "recent" in payload:
+        output["row_summary"] = _row_collection_summary(payload)
+    return output
+
+
+def _row_collection_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    rows = _candidate_rows(payload)
+    return {
+        "count": len(rows),
+        "sample": [_compact_row_sample(item) for item in rows[:5]],
+    }
+
+
+def _candidate_rows(payload: dict[str, Any]) -> list[Any]:
+    for key in ("rows", "items", "actions", "new_trade_rows", "calendars", "recent", "pass_items", "watch_items", "blocked_items"):
+        if isinstance(payload.get(key), list):
+            return payload.get(key) or []
+    return []
+
+
+def _compact_row_sample(item: Any) -> Any:
+    if not isinstance(item, dict):
+        return _compact_value(item)
+    keep = {}
+    for key in (
+        "ticker",
+        "symbol",
+        "strategy_id",
+        "strategy_label",
+        "verdict",
+        "final_verdict",
+        "signal_tier",
+        "action",
+        "direction",
+        "score",
+        "actionability_score",
+        "signal_score",
+        "expiration",
+        "front_expiration",
+        "back_expiration",
+        "selected_expiration",
+        "selected_pair",
+        "selected_structure",
+        "structure_status",
+        "liquidity_status",
+        "primary_blocker",
+        "main_reason",
+        "main_blocker",
+    ):
+        if key in item:
+            keep[key] = _compact_value(item.get(key), key.lower())
+    if "legs" in item and isinstance(item["legs"], list):
+        keep["legs"] = [
+            {
+                sub_key: leg.get(sub_key)
+                for sub_key in ("symbol", "option_type", "strike", "bid", "ask", "mid", "delta", "open_interest", "volume")
+                if isinstance(leg, dict) and sub_key in leg
+            }
+            for leg in item["legs"][:4]
+            if isinstance(leg, dict)
+        ]
+    return keep or {"keys": [str(key) for key in list(item)[:10]]}
+
+
+def _list_item_summary(value: Any) -> dict[str, Any]:
+    items = value if isinstance(value, list) else []
+    return {
+        "count": len(items),
+        "sample": [_compact_row_sample(item) for item in items[:5]],
+    }
 
 
 def _collection_summary(value: Any) -> dict[str, Any]:

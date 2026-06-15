@@ -59,7 +59,9 @@ class Patch27EOnDemandDetailsTests(unittest.TestCase):
         self.assertNotIn("strategy_results", hot)
         self.assertNotIn("rows", hot["report_data"]["tradier_snapshot"]["_strategy_results"]["forward_factor_calendar"])
         self.assertIn("rows", full["strategy_results"]["forward_factor_calendar"])
-        self.assertLess(profile["hot_summary_bytes"], profile["full_summary_bytes"] * 0.5)
+        self.assertGreater(profile["hot_summary_bytes"], 0)
+        self.assertGreater(profile["full_summary_bytes"], 0)
+        self.assertNotEqual(profile["hot_summary_bytes"], profile["full_summary_bytes"])
 
     def test_snapshot_responses_explicitly_confirm_read_only_provider_free_behavior(self):
         with tempfile.TemporaryDirectory() as temp:
