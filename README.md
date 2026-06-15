@@ -316,6 +316,8 @@ Optional target overrides:
 PORTFOLIO_GAP_CORE_TARGETS=AI / Semiconductors:18,Mega-cap Tech / Cloud:18,Software / Fintech:12,Energy / Utilities / Infrastructure:12,Healthcare / Biotech:10,Industrials / Defense / Robotics:10,Financials:8,Consumer / Retail:7,International / ADR:5
 PORTFOLIO_GAP_MACRO_WINNING_BUCKETS=AI / Semiconductors,Mega-cap Tech / Cloud,Energy / Utilities / Infrastructure,Industrials / Defense / Robotics,Healthcare / Biotech
 PORTFOLIO_GAP_RISK_TARGETS=Crypto / Digital Assets:5,Speculative / High Beta:12,Leveraged ETFs:4,Single-Name Max:15
+TINY_POSITION_VALUE_THRESHOLD=50
+TINY_POSITION_PORTFOLIO_PCT_THRESHOLD=0.5
 ```
 
 ### Stock momentum controls

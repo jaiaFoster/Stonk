@@ -134,6 +134,8 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_opportunity_cache_enabled": config.CALENDAR_OPPORTUNITY_CACHE_ENABLED,
         "calendar_opportunity_db_path": config.CALENDAR_OPPORTUNITY_DB_PATH,
         "stock_momentum_watchlist_market_data_max": config.STOCK_MOMENTUM_WATCHLIST_MARKET_DATA_MAX,
+        "tiny_position_value_threshold": config.TINY_POSITION_VALUE_THRESHOLD,
+        "tiny_position_portfolio_pct_threshold": config.TINY_POSITION_PORTFOLIO_PCT_THRESHOLD,
         "watchlist_name_aliases": dict(config.WATCHLIST_NAME_ALIASES),
         "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
         "robinhood_options_scan_default_account": getattr(config, "ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT", True),

@@ -13,6 +13,7 @@ from typing import Any
 
 from app import config
 from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
+from app.services.risk_severity_service import with_risk_severity
 
 
 CORE_BUCKETS = [
@@ -351,28 +352,28 @@ def _build_risk_rows(
             status = "ABOVE RISK TARGET"
         elif max_pct and current_pct > max_pct:
             status = "NEAR / SLIGHTLY ABOVE TARGET"
-        rows.append({
+        rows.append(with_risk_severity({
             "bucket": bucket,
             "current_pct": current_pct,
             "target_pct": max_pct,
             "gap_pct": max_pct - current_pct,
             "status": status,
             "guidance": _risk_guidance(bucket, status),
-        })
+        }))
 
     single_name_max = risk_targets.get("Single-Name Max", 15.0)
     largest = sorted(single_name_values.items(), key=lambda kv: kv[1], reverse=True)[:5]
     for ticker, value in largest:
         pct_value = value / total_value * 100.0
         if pct_value >= single_name_max * 0.8:
-            rows.append({
+            rows.append(with_risk_severity({
                 "bucket": f"Single-name concentration: {ticker}",
                 "current_pct": pct_value,
                 "target_pct": single_name_max,
                 "gap_pct": single_name_max - pct_value,
                 "status": "MONITOR" if pct_value <= single_name_max else "ABOVE RISK TARGET",
                 "guidance": "Large positions can stay large if they are macro winners, but additions should be deliberate.",
-            })
+            }))
     return rows
 
 

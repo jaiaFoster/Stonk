@@ -12,6 +12,7 @@ from typing import Any
 from app import config
 from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
 from app.services.report_assets import REPORT_CSS, collapsible_pre
+from app.services.risk_severity_service import classify_risk_severity, is_actionable_risk, with_risk_severity
 
 
 NewsMap = dict[str, list[dict[str, Any]]]
@@ -962,6 +963,9 @@ def _potential_add_groups(
             "source": raw.get("source") or raw.get("category_source") or source,
             "risks": raw.get("risks", []) or [],
             "market_metrics": raw.get("market_metrics", {}) or {},
+            "market_value": _get_first_present(raw, "market_value", "position_value"),
+            "allocation_pct": raw.get("allocation_pct"),
+            "risk_severity": classify_risk_severity(raw),
         }
         group = "risk" if _source_or_text_indicates_risk(raw, source) else _action_group(action)
         if group == "actionable" and not required_market_metrics_complete(normalized["market_metrics"]):
@@ -1456,13 +1460,13 @@ def _potential_adds_section_html(
 
 
 def _risk_review_section_html(groups: dict[str, list[dict[str, Any]]], recommendations: Recommendations) -> str:
-    risk_items = list(groups.get("risk", []) or [])
+    risk_items = [with_risk_severity(item) for item in (groups.get("risk", []) or [])]
     seen = {str(item.get("ticker") or "").upper().strip() for item in risk_items}
     for rec in recommendations:
         action = str(rec.get("action") or "")
         ticker = str(rec.get("ticker") or "").upper().strip()
         if ticker not in seen and (rec.get("risks") or _action_group(action) == "risk"):
-            risk_items.append({
+            risk_items.append(with_risk_severity({
                 "ticker": rec.get("ticker"),
                 "priority_score": rec.get("score"),
                 "action": action or "WATCH / REVIEW",
@@ -1470,7 +1474,9 @@ def _risk_review_section_html(groups: dict[str, list[dict[str, Any]]], recommend
                 "next_step": rec.get("next_check"),
                 "source": "holding",
                 "risks": rec.get("risks", []) or [],
-            })
+                "position_value": rec.get("position_value"),
+                "allocation_pct": rec.get("allocation_pct"),
+            }))
             seen.add(ticker)
     if not risk_items:
         body = '<p class="empty">No avoid/reduce/cut risk controls surfaced this run.</p>'
@@ -1478,16 +1484,18 @@ def _risk_review_section_html(groups: dict[str, list[dict[str, Any]]], recommend
         body = ""
         for item in risk_items[:40]:
             action = str(item.get("action") or "REVIEW")
+            severity = str(item.get("risk_severity") or classify_risk_severity(item))
             body += f"""
             <div class="decision-card add-row quiet-list" role="group">
                 <span class="ticker">{_safe_text(item.get('ticker'), 'UNKNOWN')}</span>
                 <span class="score">{number(item.get('priority_score'), 1)}</span>
-                <span>{_chip(action, None, _tone_for_text(action))}</span>
+                <span>{_chip(severity, None, 'bad' if severity == 'URGENT_RISK' else 'warn' if severity == 'MATERIAL_REVIEW' else 'neutral')}{_chip(action, None, _tone_for_text(action))}</span>
                 <span>{_safe_text(item.get('why'), 'Review risk controls')}</span>
                 <span class="chip-row">{_chip(str(item.get('source') or 'risk'), None, 'neutral')}</span>
                 <span class="muted">{_safe_text(item.get('next_step'), 'Next check pending')}</span>
             </div>"""
-    return _section("risk-review", "Risk Review", "Avoid, reduce, cut, and existing-position risk controls are separated from add ideas.", body, str(len(risk_items)))
+    actionable_count = sum(1 for item in risk_items if is_actionable_risk(item))
+    return _section("risk-review", "Risk Review", "Urgent/material risk is separated from data-incomplete, cleanup, and no-action rows. Full detail remains visible.", body, str(actionable_count))
 
 
 def _line_item(row: dict[str, Any], fields: list[str]) -> str:
@@ -2462,27 +2470,20 @@ def _hot_shell_portfolio_status_html(
 def _hot_shell_risk_state(
     groups: dict[str, list[dict[str, Any]]],
     recommendations: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], int]:
-    """Separate true risk controls from generic missing-metric WATCH rows."""
-    risk_items = list(groups.get("risk", []) or [])
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Return only urgent/material shell risks plus non-actionable severity counts."""
+    risk_items = [with_risk_severity(item) for item in (groups.get("risk", []) or [])]
     seen = {str(item.get("ticker") or "").upper().strip() for item in risk_items}
-    unavailable_count = 0
     for rec in recommendations:
         action = str(rec.get("action") or "")
         ticker = str(rec.get("ticker") or "").upper().strip()
-        risk_messages = [str(item).lower() for item in (rec.get("risks", []) or [])]
-        unavailable_phrases = ("metrics were not evaluated", "data incomplete", "data unavailable", "skipped by dev data cap")
-        unavailable_only = bool(risk_messages) and all(
-            any(phrase in message for phrase in unavailable_phrases)
-            for message in risk_messages
-        )
-        if unavailable_only and _action_group(action) != "risk":
-            unavailable_count += 1
-            continue
-        if ticker and ticker not in seen and (_action_group(action) == "risk" or (rec.get("risks") and not unavailable_only)):
-            risk_items.append(rec)
+        if ticker and ticker not in seen and (_action_group(action) == "risk" or rec.get("risks")):
+            risk_items.append(with_risk_severity(rec))
             seen.add(ticker)
-    return risk_items, unavailable_count
+    counts = {severity: 0 for severity in ("URGENT_RISK", "MATERIAL_REVIEW", "DATA_INCOMPLETE", "CLEANUP", "NO_ACTION_HOLD")}
+    for item in risk_items:
+        counts[classify_risk_severity(item)] += 1
+    return [item for item in risk_items if is_actionable_risk(item)], counts
 
 
 def _hot_shell_profile_warning_html(tradier_snapshot: dict[str, Any]) -> str:
@@ -2654,7 +2655,14 @@ def format_html(
         for rec in display_recommendations
         if rec.get("risks") or _action_group(rec.get("action")) == "risk"
     )
-    risk_count = len({ticker for ticker in risk_tickers if ticker}) + len((portfolio_gap or {}).get("risk_rows", []) or [])
+    risk_count = sum(
+        1 for item in [
+            *(potential_groups.get("risk", []) or []),
+            *display_recommendations,
+            *((portfolio_gap or {}).get("risk_rows", []) or []),
+        ]
+        if is_actionable_risk(item)
+    )
     exports = {
         "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap, skew_vertical, strategy_results.get("forward_factor_calendar", {})),
         "calendarReport": _build_calendar_report_export(active_rows, unified_calendar_engine, blocked_rows),
@@ -2727,12 +2735,14 @@ def format_html(
         strategy_registry_html=_strategy_registry_html(strategy_results, strategy_opportunities),
     )
     max_shell_rows = max(1, int(getattr(config, "REPORT_DEFAULT_MAX_ROWS_PER_SECTION", 3) or 3))
-    shell_risk_items, unavailable_metric_count = _hot_shell_risk_state(potential_groups, display_recommendations)
+    shell_risk_items, shell_risk_counts = _hot_shell_risk_state(potential_groups, display_recommendations)
     shell_risk_body = _shell_action_rows(shell_risk_items, max_shell_rows, "No urgent risk controls surfaced this run.")
-    if unavailable_metric_count:
+    if shell_risk_counts["DATA_INCOMPLETE"] or shell_risk_counts["CLEANUP"]:
         shell_risk_body += (
-            f'<p class="muted">Metrics unavailable for {unavailable_metric_count} holding(s) due to dev cap or missing shared facts. '
-            'These rows remain available in the full report and are not classified as urgent risk.</p>'
+            f'<p class="muted">Metrics unavailable for {shell_risk_counts["DATA_INCOMPLETE"]} holding(s). '
+            f'Data incomplete: {shell_risk_counts["DATA_INCOMPLETE"]}. '
+            f'Cleanup/tracking size: {shell_risk_counts["CLEANUP"]}. '
+            'These rows remain available in full detail and do not inflate urgent risk.</p>'
         )
     shell_sections = "".join([
         _hot_shell_portfolio_status_html(display_positions, display_recommendations, pipeline_status, provider_status),
