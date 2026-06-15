@@ -689,6 +689,9 @@ USAGE_TELEMETRY_DB_PATH=<defaults to REPORT_SNAPSHOT_DB_PATH>
 USAGE_TELEMETRY_RETENTION_LIMIT=5000
 USAGE_TELEMETRY_SIZE_PROFILE_RETENTION_LIMIT=500
 USAGE_TELEMETRY_METADATA_MAX_CHARS=2000
+USAGE_TELEMETRY_SIZE_WARNING_BYTES=250000
+USAGE_TELEMETRY_SIZE_LARGE_BYTES=500000
+USAGE_TELEMETRY_SIZE_CRITICAL_BYTES=1000000
 ```
 
 Read-only diagnostics:
@@ -696,6 +699,12 @@ Read-only diagnostics:
 ```text
 /api/dev/usage-telemetry
 ```
+
+Patch 27J adds a diagnostic-only size budget report to this endpoint. It
+separates hot summary, compact full summary, raw provider archive,
+strategy/cache output, and HTML report sizes; flags warning/large/critical
+sections; and reports snapshot-mode, detail, compatibility, and export usage.
+Budget flags never block reports or runs and do not prune data.
 
 ### Deploy Self-Check
 

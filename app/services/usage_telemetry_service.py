@@ -145,7 +145,7 @@ class UsageTelemetryRepository:
     def summary(self) -> dict[str, Any]:
         with self._connect() as conn:
             event_rows = conn.execute(
-                "SELECT event_type,section,source,created_at FROM usage_events ORDER BY id DESC"
+                "SELECT event_type,section,source,metadata_json,created_at FROM usage_events ORDER BY id DESC"
             ).fetchall()
             size_rows = conn.execute(
                 "SELECT run_id,mode,status,snapshot_sizes_json,section_sizes_json,created_at "
@@ -156,14 +156,40 @@ class UsageTelemetryRepository:
             row["section"] for row in event_rows
             if row["event_type"] == "detail_request" and row["section"]
         )
+        metadata_rows = [(row, _json_dict(row["metadata_json"])) for row in event_rows]
+        snapshot_modes = Counter(
+            metadata.get("request_mode") for row, metadata in metadata_rows
+            if row["event_type"] == "snapshot_request" and metadata.get("request_mode")
+        )
+        dashboard_views = Counter(
+            metadata.get("dashboard_view") for row, metadata in metadata_rows
+            if row["event_type"] == "dashboard_load" and metadata.get("dashboard_view")
+        )
+        export_actions = Counter(
+            metadata.get("export_key") for row, metadata in metadata_rows
+            if row["event_type"] in {"copy_export", "download_export"} and metadata.get("export_key")
+        )
+        compatibility_requests = {
+            "full_snapshot": snapshot_modes.get("full", 0),
+            "provider_raw_detail": detail_counts.get("provider_raw", 0),
+        }
         latest_sizes = _size_row(size_rows[0]) if size_rows else None
         return {
             "enabled": bool(config.USAGE_TELEMETRY_ENABLED),
             "event_count": len(event_rows),
             "event_counts": dict(event_counts.most_common()),
+            "usage_breakdown": {
+                "snapshot_modes": dict(snapshot_modes.most_common()),
+                "dashboard_views": dict(dashboard_views.most_common()),
+                "detail_sections": dict(detail_counts.most_common()),
+                "export_actions": dict(export_actions.most_common()),
+                "compatibility_requests": compatibility_requests,
+            },
             "most_requested_detail_sections": _counter_rows(detail_counts, reverse=True),
             "least_requested_detail_sections": _counter_rows(detail_counts, reverse=False),
+            "baseline_ready": bool(latest_sizes),
             "latest_size_profile": latest_sizes,
+            "size_budget_report": _size_budget_report(latest_sizes),
             "size_trends": [_size_row(row) for row in size_rows],
             "database_path": self.db_path,
             "database_size_bytes": Path(self.db_path).stat().st_size if Path(self.db_path).exists() else 0,
@@ -275,3 +301,79 @@ def _size_row(row: sqlite3.Row) -> dict[str, Any]:
         "snapshot_sizes": snapshots,
         "largest_sections": largest,
     }
+
+
+def _size_budget_report(profile: dict[str, Any] | None) -> dict[str, Any]:
+    thresholds = {
+        "warning": int(config.USAGE_TELEMETRY_SIZE_WARNING_BYTES),
+        "large": int(config.USAGE_TELEMETRY_SIZE_LARGE_BYTES),
+        "critical": int(config.USAGE_TELEMETRY_SIZE_CRITICAL_BYTES),
+    }
+    if not profile:
+        return {"status": "awaiting_successful_snapshot", "thresholds_bytes": thresholds, "flags": [], "categories": {}}
+    snapshot_sizes = profile.get("snapshot_sizes", {}) or {}
+    section_sizes = {
+        row["section"]: row["bytes"] for row in (profile.get("largest_sections", []) or [])
+        if isinstance(row, dict)
+    }
+    values = {f"snapshot:{key}": value for key, value in snapshot_sizes.items()}
+    values.update({f"section:{key}": value for key, value in section_sizes.items()})
+    flags = [
+        {"name": name, "bytes": value, "severity": _size_severity(value, thresholds)}
+        for name, value in values.items()
+        if _size_severity(value, thresholds) != "ok"
+    ]
+    flags.sort(key=lambda row: row["bytes"], reverse=True)
+    categories: dict[str, list[dict[str, Any]]] = {
+        "hot_summary": [],
+        "full_compact_summary": [],
+        "raw_provider_archive": [],
+        "strategy_cache_output": [],
+        "html_reports": [],
+        "other": [],
+    }
+    for name, value in values.items():
+        categories[_size_category(name)].append({
+            "name": name,
+            "bytes": value,
+            "severity": _size_severity(value, thresholds),
+        })
+    return {
+        "status": "ready",
+        "thresholds_bytes": thresholds,
+        "flags": flags,
+        "categories": {key: sorted(rows, key=lambda row: row["bytes"], reverse=True) for key, rows in categories.items() if rows},
+    }
+
+
+def _size_severity(value: int, thresholds: dict[str, int]) -> str:
+    if value >= thresholds["critical"]:
+        return "critical"
+    if value >= thresholds["large"]:
+        return "large"
+    if value >= thresholds["warning"]:
+        return "warning"
+    return "ok"
+
+
+def _size_category(name: str) -> str:
+    lowered = name.lower()
+    if "hot_summary" in lowered:
+        return "hot_summary"
+    if "full_summary" in lowered or "compact_summary" in lowered:
+        return "full_compact_summary"
+    if "raw_provider" in lowered or "tradier_snapshot" in lowered or "provider_raw" in lowered:
+        return "raw_provider_archive"
+    if any(part in lowered for part in ("strategy", "cache", "calendar", "skew", "forward_factor")):
+        return "strategy_cache_output"
+    if "html" in lowered or "payload_text" in lowered:
+        return "html_reports"
+    return "other"
+
+
+def _json_dict(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
