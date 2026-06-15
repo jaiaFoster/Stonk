@@ -207,6 +207,8 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
 
     for item in strategy.get("items", []) or []:
         action = str(item.get("action") or "")
+        if item.get("add_allowed_boolean") is False and action == "CONSIDER ADDING":
+            action = "WATCH / RESEARCH"
         group = _action_group(action)
         if group == "risk":
             risk_rows.append(_risk_action_from_item(item, "Stock Momentum Add Strategy v1"))
@@ -222,6 +224,14 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         row["priority_score"] = max(float(row.get("priority_score") or 0), score)
         row["action"] = _merge_stock_action(str(row.get("action") or ""), action)
         row["source_tags"].append("momentum")
+        if "add_allowed_boolean" in item:
+            row["add_allowed_boolean"] = bool(item.get("add_allowed_boolean"))
+        row["entry_quality"] = item.get("entry_quality")
+        row["add_blockers"] = item.get("add_blockers", []) or []
+        row["suggested_entry_type"] = item.get("suggested_entry_type")
+        row["initial_stop"] = item.get("initial_stop")
+        row["take_profit_or_trailing_exit"] = item.get("take_profit_or_trailing_exit")
+        row["max_position_size_hint"] = item.get("max_position_size_hint")
         row["market_metrics"] = item.get("market_metrics", {}) or {}
         for reason in (item.get("reasons") or [])[:3]:
             _append_unique(row["why_parts"], str(reason))
@@ -261,6 +271,8 @@ def _unified_stock_add_actions(strategy: dict[str, Any], gap: dict[str, Any]) ->
         row["why"] = "; ".join(why_parts[:5]) or "Unified stock-add engine flagged this name."
         row["next_step"] = next_parts[0] if next_parts else "Confirm trend, sizing, sector fit, and thesis before adding."
         row["source"] = "Unified Stock Add Candidate v1 (" + ", ".join(tags or ["stock"]) + ")"
+        if row.get("add_allowed_boolean") is False and _action_group(row.get("action")) == "actionable":
+            row["action"] = "WATCH / RESEARCH"
         output.append(row)
     return output + [row for row in risk_rows if not _zero_value_row(row)]
 

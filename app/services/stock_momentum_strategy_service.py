@@ -20,6 +20,7 @@ TECH_BUCKET_TICKERS = {
     "NVDA", "AMD", "AVGO", "MU", "TSM", "ASML", "CRDO", "ORCL", "MSFT", "AMZN", "GOOGL", "META", "PLTR"
 }
 SPECULATIVE_TICKERS = {"QBTS", "SMR", "SOFI", "HOOD", "BYND", "LPTH", "ONDS", "METU", "SNPW", "SNT", "BSTT", "CIBN"}
+LEVERAGED_ETFS = {"SOXL", "TQQQ", "UPRO", "LABU", "TECL", "SPXL", "FAS", "NUGT", "ERX", "YINN"}
 
 
 def build_stock_momentum_strategy(
@@ -189,7 +190,8 @@ def _score_ticker(
         score -= 4; risks.append("Speculative/high-beta name; size smaller and require stronger confirmation.")
 
     score = round(max(0.0, min(100.0, score)), 1)
-    action = _action_for(score, has_market, metrics, allocation)
+    entry = _entry_quality_gate(ticker, score, has_market, metrics, allocation, gap_suggestion)
+    action = entry["action"]
     if action == "CONSIDER ADDING":
         next_check = "Consider adding only after live price confirms trend support and position sizing fits the target bucket."
     elif action == "ADD ON PULLBACK":
@@ -198,6 +200,8 @@ def _score_ticker(
         next_check = "Keep on watchlist until trend, relative strength, or catalyst quality improves."
     else:
         next_check = "Avoid adding until the trend/risk profile improves."
+    if not entry["add_allowed_boolean"]:
+        next_check = entry["suggested_entry_type"]
 
     return {
         "ticker": ticker,
@@ -209,9 +213,135 @@ def _score_ticker(
         "required_market_data_complete": has_market,
         "market_metrics": metrics,
         "gap_suggestion": gap_suggestion or {},
+        **entry,
         "reasons": _dedupe(reasons)[:6],
-        "risks": _dedupe(risks)[:6],
+        "risks": _dedupe(risks + entry["add_blockers"])[:8],
         "next_check": next_check,
+    }
+
+
+def _entry_quality_gate(
+    ticker: str,
+    score: float,
+    has_market: bool,
+    metrics: dict[str, Any],
+    allocation: float | None,
+    gap_suggestion: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Separate strong momentum from a buyable entry."""
+    extension_50 = _num(metrics.get("price_vs_sma_50_pct"))
+    extension_200 = _num(metrics.get("price_vs_sma_200_pct"))
+    volatility = _num(metrics.get("realized_volatility_30d") or metrics.get("volatility_30d_pct"))
+    current_price = _num(metrics.get("current_price"))
+    r3 = _num(metrics.get("return_3m_pct"))
+    r6 = _num(metrics.get("return_6m_pct"))
+    relative_strength = _num(metrics.get("relative_strength_6m_pct") or metrics.get("relative_strength_vs_qqq"))
+    above50 = metrics.get("above_sma_50") is True
+    above200 = metrics.get("above_sma_200") is True
+    blockers: list[str] = []
+    max_alloc = float(getattr(config, "STOCK_MOMENTUM_MAX_SINGLE_NAME_ALLOCATION_PCT", 15) or 15)
+    max_extension = float(getattr(config, "STOCK_MOMENTUM_MAX_EXTENSION_VS_50D_PCT", 30) or 30)
+    high_vol = float(getattr(config, "STOCK_MOMENTUM_HIGH_VOLATILITY_30D_PCT", 80) or 80)
+    extreme_vol = float(getattr(config, "STOCK_MOMENTUM_EXTREME_VOLATILITY_30D_PCT", 100) or 100)
+    leveraged = ticker in LEVERAGED_ETFS
+    speculative = ticker in SPECULATIVE_TICKERS
+
+    if not has_market:
+        blockers.append("Complete market metrics required before an actionable add.")
+    if not above200:
+        blockers.append("Price must be above the 200-day trend.")
+    if not above50:
+        blockers.append("Price must be above or reclaiming the 50-day trend.")
+    if r3 is None or r3 <= 0:
+        blockers.append("Positive 3-month return required.")
+    if r6 is None or r6 <= 0:
+        blockers.append("Positive 6-month return required.")
+    if relative_strength is None or relative_strength <= 0:
+        blockers.append("Positive relative strength versus QQQ required.")
+    if allocation is not None and allocation >= max_alloc:
+        blockers.append("Single-name allocation is already at or above target.")
+    if extension_50 is None:
+        blockers.append("50-day extension unavailable.")
+    elif extension_50 > max_extension:
+        blockers.append(f"Price is {extension_50:.1f}% above the 50-day average; do not chase.")
+    if volatility is None:
+        blockers.append("30-day realized volatility unavailable.")
+    if leveraged:
+        blockers.append("Leveraged ETF is tactical only; never a normal long-term add.")
+
+    initial_stop = round(current_price * 0.92, 2) if current_price is not None else None
+    take_profit = round(current_price * 1.15, 2) if current_price is not None else None
+    if initial_stop is None or take_profit is None:
+        blockers.append("Stop and take-profit guidance unavailable.")
+
+    clean_trend = above50 and above200 and (r3 or 0) > 0 and (r6 or 0) > 0 and (relative_strength or 0) > 0
+    bucket_support = bool(gap_suggestion) or score >= 85
+    if not bucket_support:
+        blockers.append("Portfolio bucket support or clear leadership not confirmed.")
+
+    entry_quality = "NO_BUY"
+    suggested_entry_type = "Wait for trend repair and complete risk guidance."
+    max_position_size_hint = "No new position."
+    if leveraged:
+        entry_quality = "TACTICAL_ONLY"
+        suggested_entry_type = "Tactical only; wait for pullback/reclaim and use reduced size."
+        max_position_size_hint = "Tactical starter only; below normal stock sizing."
+    elif extension_50 is not None and extension_50 > max_extension:
+        entry_quality = "EXTENDED_WAIT"
+        suggested_entry_type = "Wait for pullback, consolidation, or 50-day reclaim."
+        max_position_size_hint = "No add while extended."
+    elif volatility is not None and volatility >= extreme_vol:
+        entry_quality = "TACTICAL_ONLY"
+        suggested_entry_type = "Tactical starter only after consolidation/reclaim."
+        max_position_size_hint = "At most one-quarter normal position."
+    elif volatility is not None and volatility >= high_vol:
+        entry_quality = "HIGH_BETA_STARTER_ONLY"
+        suggested_entry_type = "Starter only after support confirmation."
+        max_position_size_hint = "At most one-half normal position."
+    elif not clean_trend:
+        entry_quality = "BROKEN_WAIT"
+        suggested_entry_type = "Wait for trend repair or reclaim."
+    elif blockers:
+        entry_quality = "BUYABLE_PULLBACK" if all("unavailable" not in blocker.lower() for blocker in blockers) else "NO_BUY"
+        suggested_entry_type = "Buyable only after blockers clear."
+        max_position_size_hint = "Starter only after blockers clear."
+    else:
+        entry_quality = "BUYABLE_NOW"
+        suggested_entry_type = "Staged entry near trend support; do not chase intraday strength."
+        max_position_size_hint = "Starter position; scale only while bucket and single-name limits remain valid."
+
+    add_allowed = entry_quality == "BUYABLE_NOW" and not blockers
+    action = _action_for(score, has_market, metrics, allocation)
+    if not add_allowed:
+        if allocation is not None and allocation >= max_alloc:
+            action = "HOLD / DO NOT ADD"
+        elif entry_quality == "TACTICAL_ONLY":
+            action = "TACTICAL ONLY / DO NOT CHASE"
+        elif entry_quality == "HIGH_BETA_STARTER_ONLY":
+            action = "STARTER ONLY / WAIT FOR PULLBACK"
+        elif entry_quality in {"EXTENDED_WAIT", "BUYABLE_PULLBACK"}:
+            action = "ADD ON PULLBACK"
+        elif entry_quality == "BROKEN_WAIT":
+            action = "WATCH / CONFIRM TREND"
+        else:
+            action = "HOLD / DO NOT ADD" if allocation is not None and allocation >= max_alloc else "WATCH / RESEARCH"
+
+    return {
+        "action": action,
+        "entry_quality": entry_quality,
+        "extension_vs_50d_pct": extension_50,
+        "extension_vs_200d_pct": extension_200,
+        "realized_volatility_30d_pct": volatility,
+        "bucket_status": "SUPPORTED" if bucket_support else "NOT CONFIRMED",
+        "suggested_entry_type": suggested_entry_type,
+        "initial_stop": initial_stop,
+        "take_profit_or_trailing_exit": (
+            f"Initial take-profit review near {take_profit:.2f}; trail remainder if trend holds."
+            if take_profit is not None else None
+        ),
+        "max_position_size_hint": max_position_size_hint,
+        "add_allowed_boolean": add_allowed,
+        "add_blockers": _dedupe(blockers),
     }
 
 
