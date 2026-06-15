@@ -706,6 +706,12 @@ strategy/cache output, and HTML report sizes; flags warning/large/critical
 sections; and reports snapshot-mode, detail, compatibility, and export usage.
 Budget flags never block reports or runs and do not prune data.
 
+Patch 27P freezes the accepted post-slimming dashboard and snapshot contracts.
+Non-brittle guardrails protect the compact operational budget while preserving
+the cached shell, explicit full/detail compatibility, Forward Factor dry-run
+exclusion, and read-only provider-free diagnostics. See
+`docs/patch_27p_post_slimming_stability_checkpoint.md`.
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy
