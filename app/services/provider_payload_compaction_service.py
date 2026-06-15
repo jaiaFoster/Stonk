@@ -23,18 +23,28 @@ HEAVY_PROVIDER_KEYS = {
 }
 
 TOP_LEVEL_COMPACTORS = {
+    "_calendar_ranking",
     "_calendar_opportunity_cache",
+    "_calendar_spread_candidates",
     "_daily_opportunity_engine",
     "_earnings_calendar_strategy",
+    "_earnings_discovery_quality",
+    "_earnings_events",
     "_earnings_mini_backtest",
+    "_earnings_trade_discovery",
     "_forward_factor_strategy",
     "_open_options_positions",
+    "_pipeline_status",
+    "_portfolio_gap",
+    "_run_data_context",
     "_skew_momentum_vertical_cache",
     "_skew_momentum_vertical_strategy",
     "_stock_momentum_strategy",
     "_strategy_opportunity_registry",
     "_strategy_results",
     "_unified_calendar_trade_engine",
+    "_watchlist_candidates",
+    "_watchlist_review",
 }
 
 
@@ -124,7 +134,7 @@ def _compact_strategy_results(value: Any) -> dict[str, Any]:
             compact[str(strategy_id)] = _collection_summary(payload)
             continue
         compact[str(strategy_id)] = {
-            key: _compact_value(item, str(key).lower())
+            key: _compact_summary_value(item)
             for key, item in payload.items()
             if key in {
                 "strategy_id",
@@ -149,7 +159,7 @@ def _compact_strategy_results(value: Any) -> dict[str, Any]:
 def _compact_registry(value: Any) -> dict[str, Any]:
     payload = value if isinstance(value, dict) else {}
     output = {
-        key: _compact_value(item, str(key).lower())
+        key: _compact_summary_value(item)
         for key, item in payload.items()
         if key in {"write_count", "forward_factor_observation_history"}
     }
@@ -167,7 +177,7 @@ def _compact_section_payload(section: str, value: Any) -> dict[str, Any]:
     }
     for key in ("summary", "enabled", "has_data", "ran", "mode", "run_mode", "source", "errors", "warnings", "provider_status"):
         if key in payload:
-            output[key] = _compact_value(payload.get(key), key.lower())
+            output[key] = _compact_summary_value(payload.get(key))
     if "rows" in payload or "items" in payload or "actions" in payload or "new_trade_rows" in payload or "calendars" in payload or "recent" in payload:
         output["row_summary"] = _row_collection_summary(payload)
     return output
@@ -230,6 +240,28 @@ def _compact_row_sample(item: Any) -> Any:
             if isinstance(leg, dict)
         ]
     return keep or {"keys": [str(key) for key in list(item)[:10]]}
+
+
+def _compact_summary_value(value: Any, *, depth: int = 0) -> Any:
+    """Bound repeated diagnostic collections while preserving summary scalars."""
+    if isinstance(value, dict):
+        return {
+            str(key): _compact_summary_value(item, depth=depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        if all(not isinstance(item, (dict, list)) for item in value):
+            return value[:10]
+        if depth >= 2:
+            return {"count": len(value)}
+        return {
+            "count": len(value),
+            "sample": [
+                _compact_row_sample(item)
+                for item in value[:3]
+            ],
+        }
+    return value
 
 
 def _list_item_summary(value: Any) -> dict[str, Any]:

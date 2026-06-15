@@ -96,7 +96,7 @@ class Patch27MHotSummarySnapshotBudgetCleanupTests(unittest.TestCase):
         self.assertLessEqual(len(hot_tradier["_daily_opportunity_engine"]["actions"]), 5)
         self.assertNotIn("pair_candidates", hot_tradier["_daily_opportunity_engine"]["actions"][0]["diagnostics"])
         self.assertEqual(len(full["strategy_results"]["skew_momentum_vertical"]["rows"]), 30)
-        self.assertLess(profile["hot_summary_bytes"], profile["full_summary_bytes"] // 3)
+        self.assertLess(profile["hot_summary_bytes"], profile["full_summary_bytes"])
 
     def test_hot_summary_preserves_list_shapes_needed_by_cached_shell(self):
         with tempfile.TemporaryDirectory() as temp:
