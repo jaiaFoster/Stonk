@@ -168,6 +168,7 @@ class ReportSnapshotRepository:
             raw_provider = ReportSnapshotRepository.load_raw_provider_snapshot(snapshot)
             if raw_provider:
                 summary.setdefault("report_data", {})["tradier_snapshot"] = raw_provider
+                _restore_full_summary_compatibility(summary, raw_provider)
             return summary
         return _json(snapshot.get("summary_json"), {})
 
@@ -205,12 +206,18 @@ def build_hot_report_summary(summary: dict[str, Any]) -> dict[str, Any]:
     report = (summary or {}).get("report_data", {}) or {}
     tradier = report.get("tradier_snapshot", {}) or {}
     direct_keys = {
-        "_benchmark_metrics", "_calendar_lifecycle_checks", "_daily_opportunity_engine",
-        "_data_coverage", "_open_options_positions", "_payload_size_profile",
-        "_portfolio_gap", "_provider_status", "_runtime_profile", "_storage_profile",
-        "_stock_momentum_strategy", "_unified_calendar_trade_engine",
+        "_benchmark_metrics", "_data_coverage", "_payload_size_profile",
+        "_provider_status", "_runtime_profile", "_storage_profile",
     }
     hot_tradier = {key: tradier.get(key) for key in direct_keys if key in tradier}
+    compact_detail_keys = {
+        "_calendar_lifecycle_checks", "_daily_opportunity_engine",
+        "_open_options_positions", "_portfolio_gap", "_stock_momentum_strategy",
+        "_unified_calendar_trade_engine",
+    }
+    for key in compact_detail_keys:
+        if isinstance(tradier.get(key), dict):
+            hot_tradier[key] = _compact_hot_detail(tradier.get(key))
     if isinstance(tradier.get("_pipeline_status"), dict):
         hot_tradier["_pipeline_status"] = _compact_hot_detail(tradier.get("_pipeline_status"))
     hot_tradier["_strategy_results"] = {
@@ -220,7 +227,7 @@ def build_hot_report_summary(summary: dict[str, Any]) -> dict[str, Any]:
     }
     skew = tradier.get("_skew_momentum_vertical_strategy")
     if isinstance(skew, dict):
-        hot_tradier["_skew_momentum_vertical_strategy"] = _compact_strategy(skew, include_rows=True)
+        hot_tradier["_skew_momentum_vertical_strategy"] = _compact_strategy(skew, include_rows=False)
     output = {"report_quality": (summary or {}).get("report_quality")}
     output["report_data"] = {
         "positions": report.get("positions", []),
@@ -236,7 +243,11 @@ def build_compact_full_report_summary(summary: dict[str, Any]) -> dict[str, Any]
     """Keep full report sections but move raw provider collections to separate archive."""
     output = dict(summary or {})
     report = dict(output.get("report_data", {}) or {})
-    report["tradier_snapshot"] = compact_tradier_snapshot(report.get("tradier_snapshot"))
+    raw_tradier = report.get("tradier_snapshot") if isinstance(report.get("tradier_snapshot"), dict) else {}
+    for summary_key, provider_key in _FULL_SUMMARY_ALIASES.items():
+        if provider_key in raw_tradier:
+            output.pop(summary_key, None)
+    report["tradier_snapshot"] = compact_tradier_snapshot(raw_tradier)
     output["report_data"] = report
     return output
 
@@ -248,10 +259,12 @@ def _compact_strategy(value: dict[str, Any], *, include_rows: bool) -> dict[str,
         "pass_count", "watch_count", "fail_count", "skipped_count", "summary",
     }
     output = {key: value.get(key) for key in keep if key in value}
+    if "summary" in output:
+        output["summary"] = _compact_nested_summary(output["summary"])
     if include_rows:
         for key in ("pass_items", "watch_items", "blocked_items", "items", "rows"):
             if isinstance(value.get(key), list):
-                output[key] = value.get(key)[:row_limit]
+                output[key] = [_compact_hot_row(item) for item in value.get(key)[:row_limit]]
     return output
 
 
@@ -263,14 +276,74 @@ def _compact_hot_detail(value: dict[str, Any]) -> dict[str, Any]:
         "target_profile", "summary", "broker_summary", "config_snapshot", "errors", "warnings",
     }
     row_keys = {
-        "actions", "checks", "items", "new_trade_rows", "open_trade_rows",
-        "risk_rows", "suggestions",
+        "actions", "active_rows", "blocked_items", "calendars", "checks",
+        "fail_items", "items", "new_trade_rows", "open_options", "open_positions",
+        "open_trade_rows", "pass_items", "positions", "risk_rows", "rows",
+        "suggestions", "watch_items",
     }
     output = {key: value.get(key) for key in scalar_keys if key in value}
+    if "summary" in output:
+        output["summary"] = _compact_nested_summary(output["summary"])
     for key in row_keys:
         if isinstance(value.get(key), list):
-            output[key] = value.get(key)[:row_limit]
+            output[key] = [_compact_hot_row(item) for item in value.get(key)[:row_limit]]
     return output
+
+
+def _compact_nested_summary(value: Any) -> Any:
+    """Keep scalar summary facts while replacing embedded detail collections."""
+    if isinstance(value, dict):
+        return {
+            key: _compact_nested_summary(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        if all(not isinstance(item, (dict, list)) for item in value):
+            return value[:5]
+        return []
+    return value
+
+
+def _compact_hot_row(value: Any, *, depth: int = 0) -> Any:
+    """Preserve visible decision facts while bounding nested diagnostics."""
+    if not isinstance(value, dict):
+        return value
+    output: dict[str, Any] = {}
+    for key, item in value.items():
+        if isinstance(item, dict):
+            output[key] = _compact_hot_row(item, depth=depth + 1) if depth < 2 else {
+                nested_key: nested_value
+                for nested_key, nested_value in item.items()
+                if not isinstance(nested_value, (dict, list))
+            }
+        elif isinstance(item, list):
+            if all(not isinstance(entry, (dict, list)) for entry in item):
+                output[key] = item[:5]
+            elif depth < 1:
+                output[key] = [
+                    _compact_hot_row(entry, depth=depth + 1)
+                    for entry in item[:2]
+                    if isinstance(entry, dict)
+                ]
+        else:
+            output[key] = item
+    return output
+
+
+def _restore_full_summary_compatibility(summary: dict[str, Any], raw_provider: dict[str, Any]) -> None:
+    """Rehydrate legacy top-level aliases only for explicit full reads."""
+    for summary_key, provider_key in _FULL_SUMMARY_ALIASES.items():
+        if summary_key not in summary and provider_key in raw_provider:
+            summary[summary_key] = raw_provider.get(provider_key)
+
+
+_FULL_SUMMARY_ALIASES = {
+    "strategy_results": "_strategy_results",
+    "pipeline_status": "_pipeline_status",
+    "runtime_profile": "_runtime_profile",
+    "payload_size_profile": "_payload_size_profile",
+    "storage_profile": "_storage_profile",
+}
 
 
 def _json(raw: Any, fallback: Any) -> Any:
