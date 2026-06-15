@@ -41,10 +41,7 @@ TOP_LEVEL_COMPACTORS = {
 def compact_tradier_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any]:
     """Remove raw provider collections while preserving report and audit fields."""
     raw = snapshot if isinstance(snapshot, dict) else {}
-    compact = {
-        str(key): _compact_top_level_section(str(key), value)
-        for key, value in raw.items()
-    }
+    compact = _compact_snapshot_body(raw)
     if not isinstance(compact, dict):
         compact = {}
     compact["_provider_payload_budget"] = build_provider_payload_budget(raw, compact=compact)
@@ -63,7 +60,7 @@ def build_provider_payload_budget(
     oversized_threshold_bytes: int | None = None,
 ) -> dict[str, Any]:
     raw = snapshot if isinstance(snapshot, dict) else {}
-    compact_value = compact if isinstance(compact, dict) else _compact_value(raw)
+    compact_value = compact if isinstance(compact, dict) else _compact_snapshot_body(raw)
     threshold = int(oversized_threshold_bytes or config.PROVIDER_PAYLOAD_BUDGET_BYTES)
     raw_bytes = _json_bytes(raw)
     compact_bytes = _json_bytes(compact_value)
@@ -102,6 +99,13 @@ def _compact_top_level_section(key: str, value: Any) -> Any:
     if lowered in TOP_LEVEL_COMPACTORS:
         return _summary_for_section(lowered, value)
     return _compact_value(value, lowered)
+
+
+def _compact_snapshot_body(raw: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): _compact_top_level_section(str(key), value)
+        for key, value in (raw or {}).items()
+    }
 
 
 def _summary_for_section(section: str, value: Any) -> Any:
