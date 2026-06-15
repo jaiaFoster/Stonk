@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -79,7 +80,7 @@ class Patch27DSnapshotSlimmingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             path = str(Path(temp) / "reports.sqlite3")
             repo = ReportSnapshotRepository(path)
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 conn.execute(
                     """INSERT INTO report_snapshots
                        (run_id,mode,status,started_at,completed_at,payload_json,summary_json,data_coverage_json,
