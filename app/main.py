@@ -80,6 +80,15 @@ def _requested_dashboard_view() -> str:
     return "full" if requested in {"full", "detail"} else "shell"
 
 
+def _record_usage(event_type: str, **kwargs: Any) -> None:
+    try:
+        from app.services.usage_telemetry_service import record_usage_event
+
+        record_usage_event(event_type, **kwargs)
+    except Exception as exc:
+        print(f"UsageTelemetry route warning: {exc}", flush=True)
+
+
 def run(run_mode: str = "prod") -> PipelineResult:
     """
     Backward-compatible run function.
@@ -126,6 +135,12 @@ def home():
                     "source": "cached server snapshot",
                 }
                 print("Dashboard: rendered persistent snapshot without provider calls", flush=True)
+                _record_usage(
+                    "dashboard_load",
+                    source="cached_dashboard",
+                    run_id=snapshot.get("run_id"),
+                    metadata={"dashboard_view": dashboard_view, "route_name": "home"},
+                )
                 return format_html(
                     payload,
                     report.get("positions", []),
@@ -474,7 +489,14 @@ def developer_snapshot():
     if mode not in {"latest", "manifest_only", "summary", "full"}:
         return jsonify({"status": "error", "error": "Unsupported snapshot mode."}), 400
     from app.services.developer_snapshot_service import build_developer_snapshot
-    return jsonify(build_developer_snapshot(mode)), 200
+    result = build_developer_snapshot(mode)
+    _record_usage(
+        "snapshot_request",
+        source="developer_snapshot",
+        run_id=result.get("source_run_id"),
+        metadata={"request_mode": mode, "route_name": "developer_snapshot"},
+    )
+    return jsonify(result), 200
 
 
 @app.route("/api/dev/snapshot/detail/<section>")
@@ -488,7 +510,30 @@ def developer_snapshot_detail(section: str):
         return jsonify({"status": "error", "error": "Unsupported detail section.", "provider_calls_triggered": False, "read_only": True}), 400
     from app.services.developer_snapshot_service import build_snapshot_detail
     result = build_snapshot_detail(section, strategy_id=request.args.get("strategy_id"))
+    _record_usage(
+        "detail_request",
+        section=section,
+        source="developer_snapshot_detail",
+        run_id=result.get("source_run_id"),
+        metadata={"detail_section": section, "strategy_id": request.args.get("strategy_id"), "route_name": "developer_snapshot_detail"},
+    )
     return jsonify(result), 200 if result.get("status") != "not_found" else 404
+
+
+@app.route("/api/usage/event", methods=["POST"])
+def usage_event():
+    token = request.args.get("token")
+    if not (_valid_run_token(token) or _valid_dev_token(token)):
+        abort(403)
+    data = request.get_json(silent=True) or {}
+    _record_usage(
+        str(data.get("event_type") or ""),
+        section=data.get("section"),
+        source="dashboard",
+        run_id=data.get("run_id"),
+        metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+    )
+    return jsonify({"status": "accepted", "read_only": True, "provider_calls_triggered": False}), 202
 
 
 def _require_dev_diagnostics_token() -> None:
@@ -525,6 +570,13 @@ def dev_feature_health():
     _require_dev_diagnostics_token()
     from app.services.app_diagnostics_service import build_feature_health
     return jsonify(build_feature_health()), 200
+
+
+@app.route("/api/dev/usage-telemetry")
+def dev_usage_telemetry():
+    _require_dev_diagnostics_token()
+    from app.services.usage_telemetry_service import build_usage_telemetry_diagnostics
+    return jsonify(build_usage_telemetry_diagnostics()), 200
 
 
 def _run_job(job_id: str, run_mode: str = "prod", job_lock: threading.Lock | None = None) -> None:
