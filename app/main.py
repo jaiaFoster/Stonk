@@ -575,6 +575,25 @@ def dev_feature_health():
     return jsonify(build_feature_health()), 200
 
 
+@app.route("/api/dev/strategy-ids")
+def dev_strategy_ids():
+    _require_dev_diagnostics_token()
+    from app.services.testing_packet_service import build_strategy_catalog
+    return jsonify({
+        "status": "ok",
+        "strategies": build_strategy_catalog(),
+        "provider_calls_triggered": False,
+        "read_only": True,
+    }), 200
+
+
+@app.route("/api/dev/testing-packet")
+def dev_testing_packet():
+    _require_dev_diagnostics_token()
+    from app.services.testing_packet_service import build_testing_packet
+    return jsonify(build_testing_packet()), 200
+
+
 @app.route("/api/dev/usage-telemetry")
 def dev_usage_telemetry():
     _require_dev_diagnostics_token()

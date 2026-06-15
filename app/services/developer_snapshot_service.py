@@ -31,6 +31,7 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
         key: _strategy_summary(value, include_rows=mode == "full" and config.DEV_SNAPSHOT_INCLUDE_FULL_STRATEGY_ROWS)
         for key, value in strategies.items()
     }
+    from app.services.testing_packet_service import build_strategy_catalog
     result = {
         "snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(),
         "source_run_id": snapshot.get("run_id"), "source_status": snapshot.get("status"), "app_mode": snapshot.get("mode"),
@@ -48,7 +49,10 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
         "positions_summary": report.get("positions", []), "open_options_summary": _compact(tradier.get("_open_options_positions")),
         "calendar_lifecycle_summary": _compact(tradier.get("_calendar_lifecycle_checks")),
         "daily_opportunity": _compact(tradier.get("_daily_opportunity_engine")),
-        "strategy_summaries": compact_strategies, "portfolio_gap": _compact(tradier.get("_portfolio_gap")),
+        "strategy_summaries": compact_strategies, "strategy_ids": build_strategy_catalog({
+            "strategy_summaries": compact_strategies,
+            "source_run_id": snapshot.get("run_id"),
+        }), "portfolio_gap": _compact(tradier.get("_portfolio_gap")),
         "logs": list(report.get("log", []) or [])[-config.REPORT_SNAPSHOT_MAX_LOG_LINES:] if config.DEV_SNAPSHOT_INCLUDE_FULL_LOG else list(report.get("log", []) or [])[-25:],
         "errors": (tradier.get("_pipeline_status", {}) or {}).get("errors", []),
         "warnings": (tradier.get("_pipeline_status", {}) or {}).get("warnings", []),
@@ -99,6 +103,10 @@ def build_snapshot_detail(
     if section == "strategy":
         detail = (strategies or {}).get(str(strategy_id or ""))
         base["strategy_id"] = strategy_id
+        if detail is None:
+            from app.services.testing_packet_service import valid_strategy_ids
+            base["error"] = "Unknown strategy_id."
+            base["valid_strategy_ids"] = valid_strategy_ids()
     elif section == "provider_raw":
         detail = report_repository.load_raw_provider_snapshot(snapshot)
         base["raw_provider_payload"] = True

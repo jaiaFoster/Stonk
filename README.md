@@ -726,6 +726,8 @@ verification:
 /api/dev/latest-run-manifest
 /api/dev/latest-profiles
 /api/dev/feature-health
+/api/dev/strategy-ids
+/api/dev/testing-packet
 /api/dev/snapshot?mode=manifest_only
 /api/dev/snapshot?mode=summary
 ```

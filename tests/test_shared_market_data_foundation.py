@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -46,7 +47,7 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
             repo = MarketDataRepository(path)
             repo.put("NVDA", "quote", {"last": 100}, "tradier", 900)
             self.assertEqual(repo.get("NVDA", "quote").payload["last"], 100)
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
             self.assertIn("equity_daily_candles", names)
@@ -273,7 +274,7 @@ class SharedMarketDataFoundationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = ReportSnapshotRepository(str(Path(temp) / "reports.sqlite3"))
             repo.save_success("run-1", "dev", "payload", {}, {}, {})
-            with sqlite3.connect(repo.db_path) as conn:
+            with closing(sqlite3.connect(repo.db_path)) as conn, conn:
                 conn.execute("UPDATE report_snapshots SET schema_version=999")
             self.assertIsNone(repo.latest_success())
 

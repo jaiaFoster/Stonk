@@ -2,6 +2,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,13 +27,13 @@ class Patch27ASlimSnapshotFoundationTests(unittest.TestCase):
     def test_storage_profile_and_pruning_report_are_read_only(self):
         with tempfile.TemporaryDirectory() as temp:
             path = str(Path(temp) / "market.sqlite3")
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn, conn:
                 conn.execute("CREATE TABLE market_data_fetch_log (created_at TEXT)")
                 conn.execute("INSERT INTO market_data_fetch_log VALUES ('2000-01-01T00:00:00+00:00')")
             profile = build_storage_profile(path)
             self.assertEqual(profile["table_rows"]["market_data_fetch_log"], 1)
             self.assertEqual(profile["pruning_dry_run"]["mode"], "dry_run")
-            with sqlite3.connect(path) as conn:
+            with closing(sqlite3.connect(path)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM market_data_fetch_log").fetchone()[0], 1)
 
     def test_run_manifest_is_small_and_persistent(self):
@@ -90,7 +91,7 @@ class Patch27ASlimSnapshotFoundationTests(unittest.TestCase):
             repo = ReportSnapshotRepository(str(Path(temp) / "reports.sqlite3"))
             for index in range(3):
                 repo.save_success(f"run-{index}", "dev", "payload", {}, {}, {})
-            with sqlite3.connect(repo.db_path) as conn:
+            with closing(sqlite3.connect(repo.db_path)) as conn:
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM report_snapshots").fetchone()[0], 2)
 
     def test_active_trades_defaults_to_summary_and_full_is_explicit(self):
