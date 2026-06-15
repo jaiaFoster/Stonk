@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -22,7 +23,7 @@ def cache_skew_momentum_vertical_opportunities(rows: list[dict[str, Any]] | None
         path = str(config.SKEW_VERTICAL_OPPORTUNITY_DB_PATH)
         if os.path.dirname(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn, conn:
             conn.row_factory = sqlite3.Row
             _ensure_schema(conn)
             writes = 0
