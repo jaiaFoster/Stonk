@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -21,7 +22,7 @@ def build_storage_profile(db_path: str | None = None) -> dict[str, Any]:
     if not os.path.exists(path):
         return profile
     try:
-        with sqlite3.connect(path, timeout=5) as conn:
+        with closing(sqlite3.connect(path, timeout=5)) as conn:
             existing = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             for table in TABLES:
                 if table in existing:
