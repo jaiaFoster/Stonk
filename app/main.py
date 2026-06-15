@@ -118,6 +118,8 @@ def home():
         try:
             from app.services.report_snapshot_service import ReportSnapshotRepository
             from app.services.report_service import format_html
+            from app.services.data_freshness_service import build_data_freshness_summary
+            from app.services.run_manifest_repository import RunManifestRepository
 
             repository = ReportSnapshotRepository(log_print=lambda message: print(message, flush=True))
             dashboard_view = _requested_dashboard_view()
@@ -133,6 +135,7 @@ def home():
                     "market_data_refreshed_at": snapshot.get("completed_at"),
                     "active_trades_refreshed_at": (summary.get("active_trades_refreshed_at") or "not separately refreshed"),
                     "source": "cached server snapshot",
+                    "freshness": build_data_freshness_summary(snapshot, summary, RunManifestRepository().latest()),
                 }
                 print("Dashboard: rendered persistent snapshot without provider calls", flush=True)
                 _record_usage(

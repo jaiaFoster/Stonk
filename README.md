@@ -712,6 +712,10 @@ the cached shell, explicit full/detail compatibility, Forward Factor dry-run
 exclusion, and read-only provider-free diagnostics. See
 `docs/patch_27p_post_slimming_stability_checkpoint.md`.
 
+Patch 27Q adds provider-free freshness and run-quality metadata so stale cached
+or degraded reports cannot look like normal fresh complete data. See
+`docs/patch_27q_data_freshness_run_quality_guardrails.md`.
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy

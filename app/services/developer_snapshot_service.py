@@ -11,6 +11,7 @@ from app import config
 from app.services.redaction_service import redact
 from app.services.report_snapshot_service import ReportSnapshotRepository
 from app.services.run_manifest_repository import RunManifestRepository
+from app.services.data_freshness_service import build_data_freshness_summary
 
 
 def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnapshotRepository | None = None, manifest_repository: RunManifestRepository | None = None) -> dict[str, Any]:
@@ -41,6 +42,7 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
         "run_manifest": manifest, "runtime_profile": tradier.get("_runtime_profile"),
         "payload_size_profile": tradier.get("_payload_size_profile"), "storage_profile": tradier.get("_storage_profile"),
         "provider_payload_budget": (tradier.get("_payload_size_profile") or {}).get("provider_payload_budget"),
+        "data_freshness": build_data_freshness_summary(snapshot, summary, manifest),
         "provider_status": tradier.get("_provider_status"), "data_coverage": tradier.get("_data_coverage"),
         "portfolio_summary": {"position_count": len(report.get("positions", []) or []), "recommendation_count": len(report.get("recommendations", []) or [])},
         "positions_summary": report.get("positions", []), "open_options_summary": _compact(tradier.get("_open_options_positions")),
