@@ -1188,6 +1188,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 run_context.run_id, clean_mode, pipeline_status.get("overall_status", "complete"),
                 report_quality, runtime_profile, payload_profile, pipeline_status, normalized_strategy_results,
                 daily_opportunity_engine, provider_fetch_count=len(run_context.fetch_audit),
+                provider_status=provider_status,
             )
             RunManifestRepository().save(manifest)
             tradier_snapshot["_run_manifest"] = manifest
