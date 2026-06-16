@@ -589,10 +589,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         dev_ticker_cap=config.DEV_MAX_TICKERS if clean_mode == "dev" else None,
     )
     log_print(f"StrategyRegistry: collecting requirements for {len(strategy_requirements)} strategy plugins")
-    ff_chain_reserve = min(
-        hub.budget.remaining,
-        config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if clean_mode == "dev" else config.FF_MAX_CHAIN_TICKERS_PER_RUN,
-    )
+    chain_cap_for_mode = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if clean_mode == "dev" else config.FF_MAX_CHAIN_TICKERS_PER_RUN
+    if config.FF_CHAIN_BUDGET_RESERVED and config.FORWARD_FACTOR_STRATEGY_ENABLED:
+        ff_chain_reserve = min(chain_cap_for_mode, max(config.FF_MIN_CHAIN_SET_BUDGET, min(hub.budget.remaining, chain_cap_for_mode)))
+    else:
+        ff_chain_reserve = min(hub.budget.remaining, chain_cap_for_mode)
     requirement_plan = planner.merge(strategy_requirements, provider_budget=max(0, hub.budget.remaining - ff_chain_reserve))
     requirement_plan["forward_factor_chain_reserve"] = ff_chain_reserve
     log_print(f"DataRequirementPlanner: received {len(strategy_requirements)} strategy requirement set(s)")
@@ -600,6 +601,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log_print(f"ProviderBudget: approved {len(requirement_plan['approved'])} ticker(s); skipped {len(requirement_plan['skipped_provider_budget'])}")
     log_print("MarketDataHub: fulfilling approved requirements")
     planner.fulfill_plan(hub, strategy_requirements, requirement_plan)
+    if config.FF_CHAIN_BUDGET_RESERVED and config.FORWARD_FACTOR_STRATEGY_ENABLED:
+        ff_budget_gap = ff_chain_reserve - hub.budget.remaining
+        if ff_budget_gap > 0:
+            hub.budget.max_requests += ff_budget_gap
+            log_print(f"FF chain reserve: boosted hub budget by {ff_budget_gap} to guarantee {ff_chain_reserve} chain slot(s)")
     run_context.requirements = {item.strategy_id: asdict(item) for item in strategy_requirements}
     tradier_snapshot["_strategy_requirement_plan"] = requirement_plan
     watchlist_tickers = [item.get("ticker") for item in (watchlist_candidates or {}).get("items", []) if item.get("ticker")]

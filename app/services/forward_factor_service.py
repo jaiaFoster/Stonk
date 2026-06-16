@@ -138,7 +138,7 @@ def build_forward_factor_strategy(
         "expiration_pairs": 0, "valid_forward_variance": 0, "ff_calculated": 0,
         "source_ff_calculated": 0, "diagnostic_formula_calculated": 0, "structures": 0,
         "structure_attempts": 0, "liquidity_complete": 0, "diagnostic_only": 0,
-        "planner_blocked": 0,
+        "planner_blocked": 0, "recent_fail_skipped": 0,
         "prefilter_supported_equities": len(supported),
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
         "prefilter_volume_pass": sum(_known_volume_pass(market_metrics.get(ticker) or {}) for ticker in supported),
@@ -181,25 +181,30 @@ def build_forward_factor_strategy(
     )
     for ticker in ordered:
         if ticker not in supported:
-            rows.append(_blocked(ticker, "FAIL / UNSUPPORTED SECURITY", "Asset type is unsupported for Forward Factor.", data_state="UNSUPPORTED"))
+            rows.append(_blocked(ticker, "FAIL / UNSUPPORTED SECURITY", "Asset type is unsupported for Forward Factor.", data_state="UNSUPPORTED", ff_candidate_stage="cap_skip"))
             continue
         if ticker not in selected:
-            verdict = "SKIPPED / DEV CAP" if is_dev else "SKIPPED / STRATEGY CAP"
-            rows.append(_blocked(ticker, verdict, f"Ticker was outside the deterministic FF {cap_label} cap.", data_state="SKIPPED_DEV_CAP" if is_dev else "SKIPPED_STRATEGY_CAP"))
+            _unsel_state = (plan_by_ticker.get(ticker) or {}).get("state") if plan_by_ticker else None
+            if _unsel_state == "SKIPPED_PROVIDER_BUDGET":
+                stage["skipped_provider_budget"] += 1
+                rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget excluded ticker before FF candidate selection.", data_state=_unsel_state, ff_candidate_stage="budget_skipped"))
+            else:
+                verdict = "SKIPPED / DEV CAP" if is_dev else "SKIPPED / STRATEGY CAP"
+                rows.append(_blocked(ticker, verdict, f"Ticker was outside the deterministic FF {cap_label} cap.", data_state="SKIPPED_DEV_CAP" if is_dev else "SKIPPED_STRATEGY_CAP", ff_candidate_stage="cap_skip"))
             continue
         planned_state = (plan_by_ticker.get(ticker) or {}).get("state")
         if planned_state == "SKIPPED_DEV_CAP":
             stage["planner_blocked"] += 1
             stage["pre_eval_skipped"] += 1
             log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=global dev planner cap DEV_MAX_TICKERS={config.DEV_MAX_TICKERS}")
-            rows.append(_blocked(ticker, "SKIPPED / DEV CAP", "Shared planner did not approve required cheap facts.", data_state=planned_state))
+            rows.append(_blocked(ticker, "SKIPPED / DEV CAP", "Shared planner did not approve required cheap facts.", data_state=planned_state, ff_candidate_stage="cap_skip"))
             continue
         if planned_state == "SKIPPED_PROVIDER_BUDGET":
             stage["planner_blocked"] += 1
             stage["pre_eval_skipped"] += 1
             stage["skipped_provider_budget"] += 1
             log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=shared provider budget")
-            rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget did not approve required cheap facts.", data_state=planned_state))
+            rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget did not approve required cheap facts.", data_state=planned_state, ff_candidate_stage="budget_skipped"))
             continue
         quote = data_hub.get_quote(ticker, required=True, strategy_id="forward_factor_calendar")
         candles = data_hub.get_daily_candles(ticker, min_bars=240, required=True, strategy_id="forward_factor_calendar")
@@ -213,6 +218,17 @@ def build_forward_factor_strategy(
         stage["cheap_pass"] += 1
     chain_cap = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if is_dev else config.FF_MAX_CHAIN_TICKERS_PER_RUN
     reserve = int((requirement_plan or {}).get("forward_factor_chain_reserve", chain_cap))
+    if config.FF_SKIP_IF_ALREADY_FAILED_RECENTLY:
+        non_repeat_pass = []
+        for ticker, eligibility in cheap_pass:
+            recent_modes = (audit_by_ticker.get(ticker) or {}).get("recent_failure_modes") or {}
+            repeat_mode = next((mode for mode, count in recent_modes.items() if int(count or 0) >= 3), None)
+            if repeat_mode:
+                stage["recent_fail_skipped"] = stage.get("recent_fail_skipped", 0) + 1
+                rows.append(_blocked(ticker, "SKIPPED / RECENT REPEAT FAILURE", f"Ticker has {recent_modes[repeat_mode]} recent {repeat_mode} failures; skipped to preserve chain budget.", data_state="RECENT_FAIL_SKIP", data_eligibility=eligibility, ff_candidate_stage="recent_fail_skip"))
+            else:
+                non_repeat_pass.append((ticker, eligibility))
+        cheap_pass = non_repeat_pass
     stage["chain_approved"] = min(chain_cap, reserve, len(cheap_pass))
     cheap_pass.sort(key=lambda item: (-float((audit_by_ticker.get(item[0]) or {}).get("score") or 0), item[0]))
     for rank, (ticker, _) in enumerate(cheap_pass[:stage["chain_approved"]], start=1):
@@ -231,7 +247,7 @@ def build_forward_factor_strategy(
     log_print(f"FF expensive-data plan: chain-approved={stage['chain_approved']} chain-skipped-budget={max(0, len(cheap_pass) - chain_cap)}")
     for index, (ticker, eligibility) in enumerate(cheap_pass):
         if index >= stage["chain_approved"]:
-            rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "FF expensive-chain cap reached after cheap eligibility.", data_state="SKIPPED_PROVIDER_BUDGET", data_eligibility=eligibility))
+            rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "FF expensive-chain cap reached after cheap eligibility.", data_state="SKIPPED_PROVIDER_BUDGET", data_eligibility=eligibility, ff_candidate_stage="cheap_eligible"))
             stage["skipped_provider_budget"] += 1
             continue
         log_print(f"FF {ticker}: requesting chain set {config.FF_FRONT_DTE_MIN}-{config.FF_BACK_DTE_MAX} DTE, max_expirations={config.FF_CHAIN_EXPIRATIONS_PER_TICKER}")
@@ -243,17 +259,17 @@ def build_forward_factor_strategy(
         if not payload:
             state = _last_hub_state(data_hub, ticker, "options_chain_set")
             if state == "SKIPPED_PROVIDER_BUDGET":
-                rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget blocked required FF chain set.", data_state=state, data_eligibility=eligibility))
+                rows.append(_blocked(ticker, "SKIPPED / PROVIDER BUDGET", "Shared provider budget blocked required FF chain set.", data_state=state, data_eligibility=eligibility, ff_candidate_stage="budget_skipped"))
                 stage["skipped_provider_budget"] += 1
             else:
-                rows.append(_blocked(ticker, "FAIL / REQUIRED CHAIN DATA UNAVAILABLE", "Required multi-expiration chain set could not be acquired.", data_state=state or "MISSING_PROVIDER_FAILED", data_eligibility=eligibility))
+                rows.append(_blocked(ticker, "FAIL / REQUIRED CHAIN DATA UNAVAILABLE", "Required multi-expiration chain set could not be acquired.", data_state=state or "MISSING_PROVIDER_FAILED", data_eligibility=eligibility, ff_candidate_stage="provider_failed"))
             continue
         stage["chain_fetch"] += 1
         stage["chain_sets"] += 1
         expirations = payload.get("expirations", []) or payload.get("retained_expirations", []) or []
         chains = payload.get("chains_by_expiration") or payload.get("chains") or {}
         if not isinstance(chains, dict):
-            rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "Multi-expiration chain set did not preserve contracts by expiration.", data_eligibility=eligibility))
+            rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "Multi-expiration chain set did not preserve contracts by expiration.", data_eligibility=eligibility, ff_candidate_stage="incomplete"))
             continue
         pairs = eligible_expiration_pairs(expirations)
         front_dates = [value for value in expirations if config.FF_FRONT_DTE_MIN <= _dte(value) <= config.FF_FRONT_DTE_MAX]
@@ -262,7 +278,7 @@ def build_forward_factor_strategy(
         log_print(f"FF {ticker}: listed expirations={len(payload.get('listed_expirations', []) or expirations)} retained expirations={len(expirations)}")
         log_print(f"FF {ticker}: front-window matches={len(front_dates)} back-window matches={len(back_dates)} valid pairs={len(pairs)}")
         if not pairs:
-            rows.append(_blocked(ticker, "FAIL / NO ELIGIBLE EXPIRATION PAIR", "No listed expiration pair fits configured source-target windows.", data_eligibility=eligibility))
+            rows.append(_blocked(ticker, "FAIL / NO ELIGIBLE EXPIRATION PAIR", "No listed expiration pair fits configured source-target windows.", data_eligibility=eligibility, ff_candidate_stage="no_pair"))
             continue
         stage["expiration_coverage_pass"] += 1
         earnings_record = data_hub.get_earnings_event(
@@ -276,7 +292,7 @@ def build_forward_factor_strategy(
             stage["expiration_pairs"] += 1
             front_chain, back_chain = chains.get(front, []), chains.get(back, [])
             if not isinstance(front_chain, list) or not isinstance(back_chain, list) or not front_chain or not back_chain:
-                row = _blocked(ticker, "FAIL / CHAIN DATA QUALITY", "One or both selected expiration chains were empty or malformed.", **pair, data_eligibility=eligibility)
+                row = _blocked(ticker, "FAIL / CHAIN DATA QUALITY", "One or both selected expiration chains were empty or malformed.", **pair, data_eligibility=eligibility, ff_candidate_stage="incomplete")
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — chain data quality"))
                 continue
@@ -307,7 +323,7 @@ def build_forward_factor_strategy(
                 blocker = "Source-correct ex-earnings IV is unavailable; raw-IV FF and structure are diagnostic only."
                 if structure and structure.get("structure_status") != "COMPLETE":
                     blocker += f" Structure: {structure.get('structure_reason')}"
-                row = _blocked(ticker, verdict, blocker, **base, **structure)
+                row = _blocked(ticker, verdict, blocker, **base, **structure, ff_candidate_stage="incomplete")
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — source input unavailable"))
                 continue
@@ -320,7 +336,7 @@ def build_forward_factor_strategy(
                 log_print(f"FF {ticker} {front}/{back}: front_iv={front_ex:.4f} back_iv={back_ex:.4f} forward_variance={formula['forward_variance']:.6f} forward_iv={formula['forward_iv']:.4f} FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f}")
             except ValueError as exc:
                 verdict = "FAIL / INVALID EXPIRATION ORDER" if "INVALID_EXPIRATION_ORDER" in str(exc) else "FAIL / INVALID FORWARD VARIANCE"
-                row = _blocked(ticker, verdict, str(exc), **base)
+                row = _blocked(ticker, verdict, str(exc), **base, ff_candidate_stage="incomplete")
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — invalid variance"))
                 continue
@@ -330,17 +346,18 @@ def build_forward_factor_strategy(
                 stage["structures"] += 1
                 stage["liquidity_complete"] += 1
             if formula["forward_factor"] + 1e-12 < config.FF_MIN_FORWARD_FACTOR:
-                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure})
+                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, ff_candidate_stage="fetched")
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "selected — below threshold"))
                 continue
             if structure.get("structure_status") != "COMPLETE":
-                row = _blocked(ticker, _source_structure_verdict(structure), structure.get("structure_reason") or "Double-calendar structure unavailable.", **{**base, **formula, **structure})
+                row = _blocked(ticker, _source_structure_verdict(structure), structure.get("structure_reason") or "Double-calendar structure unavailable.", **{**base, **formula, **structure}, ff_candidate_stage="fetched")
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — structure incomplete"))
                 continue
             row = {
                 **_base(ticker), **base, **formula, **structure,
+                "ff_candidate_stage": "selected",
                 "structure_type": "double_calendar", "scenario_grid": build_scenario_grid(
                     eligibility["price"], structure["put_strike"], structure["call_strike"],
                     structure["conservative_debit"], max(back_dte - front_dte, 1), formula["forward_iv"],
@@ -352,7 +369,7 @@ def build_forward_factor_strategy(
             ticker_rows.append(row)
             pair_audit.append(_pair_audit(row, "selected candidate"))
         if not ticker_rows:
-            ticker_rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "No terminal result was produced from the evaluated chain set.", data_eligibility=eligibility))
+            ticker_rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "No terminal result was produced from the evaluated chain set.", data_eligibility=eligibility, ff_candidate_stage="incomplete"))
         ticker_rows.sort(key=_terminal_rank)
         rows.append(ticker_rows[0])
     gated_rows = []
@@ -412,20 +429,27 @@ def _eligibility_row(ticker: str, eligibility: dict[str, Any]) -> dict[str, Any]
     state = eligibility["data_state"]
     if state == "SKIPPED_DEV_CAP":
         verdict = "SKIPPED / DEV CAP"
+        stage = "cap_skip"
     elif state == "SKIPPED_PROVIDER_BUDGET":
         verdict = "SKIPPED / PROVIDER BUDGET"
+        stage = "budget_skipped"
     elif state == "STALE":
         verdict = "FAIL / DATA STALE"
+        stage = "incomplete"
     elif state == "PRICE_BELOW_MINIMUM":
         verdict = "FAIL / PRICE BELOW MINIMUM"
+        stage = "incomplete"
     elif state == "AVERAGE_VOLUME_BELOW_MINIMUM":
         verdict = "FAIL / AVERAGE VOLUME BELOW MINIMUM"
+        stage = "incomplete"
     elif state == "UNSUPPORTED":
         verdict = "SKIPPED / UNSUPPORTED SECURITY"
+        stage = "cap_skip"
     else:
         verdict = "FAIL / DATA UNAVAILABLE"
+        stage = "incomplete"
     detail = "Missing: " + ", ".join(eligibility["missing_fields"]) if eligibility["missing_fields"] else "Stale: " + ", ".join(eligibility["stale_fields"])
-    return _blocked(ticker, verdict, detail or "Required FF cheap-stage data unavailable.", data_state=state, data_eligibility=eligibility)
+    return _blocked(ticker, verdict, detail or "Required FF cheap-stage data unavailable.", data_state=state, data_eligibility=eligibility, ff_candidate_stage=stage)
 
 
 def _market_number(metrics: dict[str, Any], *keys: str) -> float | None:
@@ -521,8 +545,8 @@ def _base(ticker):
     return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "ticker": ticker, "dry_run": True, "formula_version": config.FF_FORMULA_VERSION, "source_spec_version": config.FF_SOURCE_SPEC_VERSION}
 
 
-def _blocked(ticker: str, verdict: str, blocker: str, **fields: Any) -> dict[str, Any]:
-    return {**_base(ticker), "verdict": verdict, "primary_blocker": blocker, "next_action": "MANUAL REVIEW REQUIRED — SOURCE DOES NOT SPECIFY AUTOMATIC EXIT", "actionability_score": 0, **fields}
+def _blocked(ticker: str, verdict: str, blocker: str, ff_candidate_stage: str = "", **fields: Any) -> dict[str, Any]:
+    return {**_base(ticker), "verdict": verdict, "primary_blocker": blocker, "next_action": "MANUAL REVIEW REQUIRED — SOURCE DOES NOT SPECIFY AUTOMATIC EXIT", "actionability_score": 0, "ff_candidate_stage": ff_candidate_stage, **fields}
 
 
 def _best_near_positive(rows):
