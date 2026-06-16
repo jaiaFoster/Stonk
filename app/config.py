@@ -315,6 +315,11 @@ FF_CHAIN_BUDGET_RESERVED = _bool_env("FF_CHAIN_BUDGET_RESERVED", True)
 FF_MIN_CHAIN_SET_BUDGET = _int_env("FF_MIN_CHAIN_SET_BUDGET", 4)
 FF_SKIP_IF_ALREADY_FAILED_RECENTLY = _bool_env("FF_SKIP_IF_ALREADY_FAILED_RECENTLY", True)
 FF_RECENT_FAIL_SKIP_THRESHOLD = _int_env("FF_RECENT_FAIL_SKIP_THRESHOLD", 30)
+FF_JOURNAL_ENABLED = _bool_env("FF_JOURNAL_ENABLED", True)
+FF_JOURNAL_DB_PATH = os.environ.get(
+    "FF_JOURNAL_DB_PATH",
+    "/app/data/ff_observations.db" if os.path.isdir("/app/data") else "data/ff_observations.db",
+)
 FF_FORMULA_VERSION = os.environ.get("FF_FORMULA_VERSION", "volvibes_v1")
 FF_SOURCE_SPEC_VERSION = _int_env("FF_SOURCE_SPEC_VERSION", 1)
 FF_MIN_FORWARD_FACTOR = _float_env("FF_MIN_FORWARD_FACTOR", 0.20)
