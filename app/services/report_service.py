@@ -2523,7 +2523,7 @@ def _hot_shell_freshness_html(pipeline_status: dict[str, Any]) -> str:
     latest_quality = str(freshness.get("latest_run_report_quality") or freshness.get("latest_run_quality") or "UNKNOWN")
     source = str(freshness.get("dashboard_data_source") or "canonical_complete_snapshot")
     if freshness.get("canonical_snapshot_preserved"):
-        reason = str(freshness.get("latest_run_degraded_reason") or "unknown")
+        reason = "unknown" if freshness.get("degraded_reason_code") == "UNKNOWN" else str(freshness.get("latest_run_degraded_reason") or "unknown")
         source_text = (
             f" Latest run {latest_run} ({latest_quality}) degraded; "
             f"showing canonical snapshot {canonical_run} ({canonical_quality}). Reason: {reason}."

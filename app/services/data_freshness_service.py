@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import config
+from app.services.degraded_reason_service import classify_degraded_reason
 
 
 def build_data_freshness_summary(
@@ -46,6 +47,7 @@ def build_data_freshness_summary(
         broker_state, broker_at = "UNAVAILABLE", None
     has_market = manifest.get("has_market_data")
     has_options = manifest.get("has_options_data")
+    degraded_reason = classify_degraded_reason(manifest, pipeline, provider_status)
     warnings: list[str] = []
     quality_label = report_quality
     if freshness_state == "STALE":
@@ -78,7 +80,8 @@ def build_data_freshness_summary(
         "latest_run_status": latest_status,
         "latest_run_is_degraded": latest_is_degraded,
         "latest_run_degraded": latest_is_degraded,
-        "latest_run_degraded_reason": _degraded_reason(manifest),
+        "latest_run_degraded_reason": "unknown" if degraded_reason["degraded_reason_code"] == "UNKNOWN" else degraded_reason["degraded_reason_label"],
+        **degraded_reason,
         "dashboard_data_source": dashboard_data_source,
         "dashboard_using_latest_run": using_latest_run,
         "dashboard_using_canonical_snapshot": not using_latest_run,
@@ -91,17 +94,6 @@ def build_data_freshness_summary(
         "provider_calls_triggered": False,
         "read_only": True,
     }
-
-
-def _degraded_reason(manifest: dict[str, Any]) -> str:
-    for key in ("degraded_reason", "timeout_reason", "failed_stage", "error"):
-        value = manifest.get(key)
-        if value:
-            return str(value)
-    errors = manifest.get("errors")
-    if isinstance(errors, list) and errors:
-        return str(errors[0])
-    return "unknown"
 
 
 def _broker_state(positions: list[dict[str, Any]], robinhood: dict[str, Any], generated_at: Any) -> tuple[str, Any]:

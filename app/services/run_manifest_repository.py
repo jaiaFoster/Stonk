@@ -12,6 +12,7 @@ from typing import Any
 
 from app import config
 from app.services.commit_identity_service import build_commit_identity
+from app.services.degraded_reason_service import classify_degraded_reason
 
 
 class RunManifestRepository:
@@ -71,6 +72,18 @@ def build_run_manifest(
         "git_branch": deploy_identity["git_branch"],
         "deploy_label": deploy_identity["deploy_label"],
     })
+    degraded_reason = classify_degraded_reason(
+        {
+            "status": status,
+            "report_quality": report_quality,
+            "has_broker_data": bool(pipeline_status.get("broker_summary")),
+            "has_market_data": provider_fetch_count > 0,
+            "has_options_data": bool(counts.get("earnings_calendar") or counts.get("skew_momentum_vertical") or counts.get("forward_factor_calendar")),
+            "errors": pipeline_status.get("errors", []) or [],
+        },
+        pipeline_status,
+        {},
+    )
     return {
         "run_id": run_id, "created_at": pipeline_status.get("started_at"), "completed_at": pipeline_status.get("finished_at"),
         "mode": mode, "status": status, "report_quality": report_quality,
@@ -85,5 +98,6 @@ def build_run_manifest(
         "has_broker_data": bool(pipeline_status.get("broker_summary")), "has_market_data": provider_fetch_count > 0,
         "has_options_data": bool(counts.get("earnings_calendar") or counts.get("skew_momentum_vertical") or counts.get("forward_factor_calendar")),
         "has_errors": bool(pipeline_status.get("errors")), "error_count": len(pipeline_status.get("errors", []) or []),
+        **degraded_reason,
         "redaction_version": 1, "schema_version": 1,
     }
