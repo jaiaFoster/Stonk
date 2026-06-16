@@ -12,7 +12,7 @@ from typing import Any
 
 from app import config
 from app.services.commit_identity_service import build_commit_identity
-from app.services.degraded_reason_service import classify_degraded_reason
+from app.services.degraded_reason_service import build_degraded_evidence_fields, classify_degraded_reason
 
 
 class RunManifestRepository:
@@ -58,6 +58,7 @@ def build_run_manifest(
     run_id: str, mode: str, status: str, report_quality: str, runtime_profile: dict[str, Any],
     payload_profile: dict[str, Any], pipeline_status: dict[str, Any], strategy_results: dict[str, Any],
     daily_opportunity: dict[str, Any], provider_fetch_count: int = 0,
+    provider_status: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     counts = {
         key: {
@@ -72,18 +73,24 @@ def build_run_manifest(
         "git_branch": deploy_identity["git_branch"],
         "deploy_label": deploy_identity["deploy_label"],
     })
-    degraded_reason = classify_degraded_reason(
-        {
-            "status": status,
-            "report_quality": report_quality,
-            "has_broker_data": bool(pipeline_status.get("broker_summary")),
-            "has_market_data": provider_fetch_count > 0,
-            "has_options_data": bool(counts.get("earnings_calendar") or counts.get("skew_momentum_vertical") or counts.get("forward_factor_calendar")),
-            "errors": pipeline_status.get("errors", []) or [],
-        },
-        pipeline_status,
-        {},
-    )
+    provider_status = provider_status or {}
+    broker_data_state = _broker_data_state(pipeline_status, provider_status)
+    options_data_state = _options_data_state(strategy_results, counts)
+    manifest_evidence = {
+        "status": status,
+        "report_quality": report_quality,
+        "has_broker_data": broker_data_state,
+        "has_market_data": provider_fetch_count > 0,
+        "has_options_data": options_data_state,
+        "errors": pipeline_status.get("errors", []) or [],
+        **build_degraded_evidence_fields(
+            status=status,
+            report_quality=report_quality,
+            pipeline_status=pipeline_status,
+            provider_status=provider_status,
+        ),
+    }
+    degraded_reason = classify_degraded_reason(manifest_evidence, pipeline_status, provider_status)
     return {
         "run_id": run_id, "created_at": pipeline_status.get("started_at"), "completed_at": pipeline_status.get("finished_at"),
         "mode": mode, "status": status, "report_quality": report_quality,
@@ -95,9 +102,29 @@ def build_run_manifest(
         "summary_json_bytes": (payload_profile.get("sections_bytes") or {}).get("report_summary_json", 0),
         "runtime_total_ms": runtime_profile.get("total_ms", 0), "provider_fetch_count": provider_fetch_count,
         "strategy_counts": counts, "daily_opportunity_count": len((daily_opportunity or {}).get("actions", []) or []),
-        "has_broker_data": bool(pipeline_status.get("broker_summary")), "has_market_data": provider_fetch_count > 0,
-        "has_options_data": bool(counts.get("earnings_calendar") or counts.get("skew_momentum_vertical") or counts.get("forward_factor_calendar")),
+        "has_broker_data": broker_data_state, "has_market_data": provider_fetch_count > 0,
+        "has_options_data": options_data_state,
         "has_errors": bool(pipeline_status.get("errors")), "error_count": len(pipeline_status.get("errors", []) or []),
+        **manifest_evidence,
         **degraded_reason,
         "redaction_version": 1, "schema_version": 1,
     }
+
+
+def _broker_data_state(pipeline_status: dict[str, Any], provider_status: dict[str, Any]) -> bool | None:
+    if "broker_summary" in (pipeline_status or {}):
+        return bool((pipeline_status or {}).get("broker_summary"))
+    rh = (provider_status or {}).get("robinhood") if isinstance(provider_status, dict) else None
+    if isinstance(rh, dict):
+        if rh.get("positions_available") is not None:
+            return bool(rh.get("positions_available"))
+        status = str(rh.get("status") or "").lower()
+        if status in {"auth_required", "auth_failed", "auth_timeout", "rate_limited", "positions_failed"}:
+            return False
+    return None
+
+
+def _options_data_state(strategy_results: dict[str, Any], counts: dict[str, Any]) -> bool | None:
+    if not strategy_results:
+        return None
+    return bool(counts.get("earnings_calendar") or counts.get("skew_momentum_vertical") or counts.get("forward_factor_calendar"))
