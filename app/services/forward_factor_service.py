@@ -222,7 +222,7 @@ def build_forward_factor_strategy(
         non_repeat_pass = []
         for ticker, eligibility in cheap_pass:
             recent_modes = (audit_by_ticker.get(ticker) or {}).get("recent_failure_modes") or {}
-            repeat_mode = next((mode for mode, count in recent_modes.items() if int(count or 0) >= 3), None)
+            repeat_mode = next((mode for mode, count in recent_modes.items() if int(count or 0) >= config.FF_RECENT_FAIL_SKIP_THRESHOLD), None)
             if repeat_mode:
                 stage["recent_fail_skipped"] = stage.get("recent_fail_skipped", 0) + 1
                 rows.append(_blocked(ticker, "SKIPPED / RECENT REPEAT FAILURE", f"Ticker has {recent_modes[repeat_mode]} recent {repeat_mode} failures; skipped to preserve chain budget.", data_state="RECENT_FAIL_SKIP", data_eligibility=eligibility, ff_candidate_stage="recent_fail_skip"))
@@ -390,6 +390,7 @@ def build_forward_factor_strategy(
         }
         gated = {**enriched, **evaluate_forward_factor_signal_gate(enriched)}
         gated["what_would_make_positive"] = what_would_make_positive(gated)
+        gated["ff_gates"] = _ff_gates(gated)
         gated_rows.append(gated)
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
@@ -556,6 +557,25 @@ def _best_near_positive(rows):
     return max(candidates, key=lambda row: float(row.get("signal_score") or 0)).get("ticker")
 
 
+def _ff_gates(row: dict[str, Any]) -> dict[str, Any]:
+    stage = str(row.get("ff_candidate_stage") or "")
+    cheap = stage not in {"cap_skip", "budget_skipped", "recent_fail_skip"}
+    chain = bool(row.get("selected_for_chain_eval"))
+    sq = row.get("front_ex_earnings_iv") is not None and row.get("back_ex_earnings_iv") is not None
+    dm = row.get("diagnostic_raw_iv_forward_factor") is not None
+    sb = row.get("structure_status") == "COMPLETE"
+    reason = None
+    if not cheap:
+        reason = "cheap_eligible"
+    elif not chain:
+        reason = "chain_approved"
+    elif not sb:
+        reason = "structure_built"
+    return {
+        "cheap_eligible": cheap, "chain_approved": chain,
+        "source_qualified": bool(sq), "diagnostic_model": bool(dm),
+        "structure_built": bool(sb), "gate_fail_reason": reason,
+    }
 def _pair_audit(row, disposition): return {"ticker": row.get("ticker"), "front_expiration": row.get("front_expiration"), "back_expiration": row.get("back_expiration"), "forward_factor": row.get("forward_factor"), "diagnostic_raw_iv_forward_factor": row.get("diagnostic_raw_iv_forward_factor"), "verdict": row.get("verdict"), "disposition": disposition}
 def _try_formula(front, back, front_dte, back_dte):
     try: return calculate_forward_factor(front, back, front_dte, back_dte) if front is not None and back is not None else None
