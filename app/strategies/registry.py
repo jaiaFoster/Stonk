@@ -25,10 +25,16 @@ def collect_requirements(context: Any, log_print=None) -> list[Any]:
 
 
 def normalize_strategy_results(context: Any, raw_results: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    _PASSTHROUGH_KEYS = {"ff_journal"}
     normalized: dict[str, dict[str, Any]] = {}
     for strategy in enabled_strategies():
         try:
-            normalized[strategy.strategy_id] = strategy.normalize_result(raw_results.get(strategy.strategy_id, {}), context).to_dict()
+            raw = raw_results.get(strategy.strategy_id, {})
+            result = strategy.normalize_result(raw, context).to_dict()
+            for key in _PASSTHROUGH_KEYS:
+                if key in raw:
+                    result[key] = raw[key]
+            normalized[strategy.strategy_id] = result
         except Exception as exc:
             normalized[strategy.strategy_id] = {
                 "strategy_id": strategy.strategy_id, "strategy_label": strategy.strategy_label, "version": strategy.version,

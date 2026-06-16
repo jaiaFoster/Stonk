@@ -296,6 +296,26 @@ class TestIntegrationWithBuildFF(unittest.TestCase):
             )
         self.assertNotIn("ff_journal", result)
 
+    def test_ff_journal_survives_normalize_strategy_results(self):
+        """Regression: normalize_strategy_results must not strip ff_journal from FF result."""
+        from app.strategies.registry import normalize_strategy_results
+        fake_raw = {
+            "forward_factor_calendar": {
+                "strategy_id": "forward_factor_calendar",
+                "dry_run": True,
+                "items": [],
+                "rows": [],
+                "errors": [],
+                "ff_journal": {"enabled": True, "total_observations": 5, "runs_recorded": 2,
+                               "tickers_observed": 3, "latest_structure_built": "ELF", "latest_run_date": "2026-06-16"},
+            }
+        }
+        context = type("C", (), {"analysis_tickers": [], "analysis_positions": []})()
+        result = normalize_strategy_results(context, fake_raw)
+        ff = result.get("forward_factor_calendar", {})
+        self.assertIn("ff_journal", ff, "ff_journal stripped by normalize_strategy_results")
+        self.assertEqual(ff["ff_journal"]["total_observations"], 5)
+
     def test_dry_run_true_unchanged(self):
         from app import config
         self.assertTrue(config.FORWARD_FACTOR_DRY_RUN)
