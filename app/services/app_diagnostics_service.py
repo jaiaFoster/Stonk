@@ -106,6 +106,7 @@ def build_feature_health() -> dict[str, Any]:
         "forward_factor_daily_opportunity_excluded",
         "read_only_diagnostics",
     )
+    from app.db.telemetry import telemetry_summary
     return redact({
         "status": "ok" if all(checks[key] for key in required) else "warning",
         "checked_at": _now(),
@@ -114,6 +115,7 @@ def build_feature_health() -> dict[str, Any]:
         "commit_identity": snapshot.get("commit_identity"),
         "provider_calls_triggered": False,
         "trade_execution_enabled": False,
+        "telemetry": telemetry_summary(),
     })
 
 

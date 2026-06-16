@@ -320,6 +320,11 @@ FF_JOURNAL_DB_PATH = os.environ.get(
     "FF_JOURNAL_DB_PATH",
     "/app/data/ff_observations.db" if os.path.isdir("/app/data") else "data/ff_observations.db",
 )
+TELEMETRY_ENABLED = _bool_env("TELEMETRY_ENABLED", True)
+TELEMETRY_DB_PATH = os.environ.get(
+    "TELEMETRY_DB_PATH",
+    "/app/data/telemetry.db" if os.path.isdir("/app/data") else "data/telemetry.db",
+)
 FF_FORMULA_VERSION = os.environ.get("FF_FORMULA_VERSION", "volvibes_v1")
 FF_SOURCE_SPEC_VERSION = _int_env("FF_SOURCE_SPEC_VERSION", 1)
 FF_MIN_FORWARD_FACTOR = _float_env("FF_MIN_FORWARD_FACTOR", 0.20)
