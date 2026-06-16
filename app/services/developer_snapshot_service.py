@@ -105,10 +105,12 @@ def build_snapshot_detail(
         "strategies": strategies,
     }
     if section == "strategy":
-        detail = (strategies or {}).get(str(strategy_id or ""))
-        base["strategy_id"] = strategy_id
+        from app.services.testing_packet_service import STRATEGY_ALIASES, valid_strategy_ids
+        _alias_map = {alias: sid for sid, aliases in STRATEGY_ALIASES.items() for alias in aliases}
+        _resolved_id = _alias_map.get(str(strategy_id or ""), str(strategy_id or ""))
+        detail = (strategies or {}).get(_resolved_id)
+        base["strategy_id"] = _resolved_id
         if detail is None:
-            from app.services.testing_packet_service import valid_strategy_ids
             base["error"] = "Unknown strategy_id."
             base["valid_strategy_ids"] = valid_strategy_ids()
     elif section == "provider_raw":

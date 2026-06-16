@@ -54,11 +54,21 @@ class Patch27RTestingPacketStrategyIdsTests(unittest.TestCase):
         self.assertIn("forward_factor", ids["forward_factor_calendar"]["aliases"])
         self.assertTrue(ids["forward_factor_calendar"]["dry_run"])
 
-    def test_wrong_strategy_id_returns_valid_ids(self):
+    def test_alias_resolves_to_strategy_detail(self):
+        # TKT-001/TKT-002: aliases like "forward_factor" and "calendar" must resolve to the canonical id.
         with tempfile.TemporaryDirectory() as temp:
             path = str(Path(temp) / "state.sqlite3")
             self._state(path)
             result = build_snapshot_detail("strategy", strategy_id="forward_factor", report_repository=ReportSnapshotRepository(path))
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["strategy_id"], "forward_factor_calendar")
+        self.assertFalse(result["provider_calls_triggered"])
+
+    def test_truly_unknown_strategy_id_returns_valid_ids(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = str(Path(temp) / "state.sqlite3")
+            self._state(path)
+            result = build_snapshot_detail("strategy", strategy_id="nonexistent_strategy", report_repository=ReportSnapshotRepository(path))
         self.assertEqual(result["status"], "not_found")
         self.assertEqual(result["error"], "Unknown strategy_id.")
         self.assertIn("forward_factor_calendar", result["valid_strategy_ids"])
