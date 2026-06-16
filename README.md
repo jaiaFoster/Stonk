@@ -725,6 +725,11 @@ Patch 27R adds explicit commit-identity diagnostics. If app/build/run manifest
 commit metadata disagree, diagnostics label the mismatch without treating it as
 an app failure. See `docs/patch_27r_commit_identity_reconciliation.md`.
 
+Patch 27S clarifies deploy commit checks after a fresh release. A mismatch is
+expected immediately after deploy when the latest stored run manifest predates
+the current app/build commit; a fresh explicit run should normally refresh the
+manifest commit. See `docs/patch_27s_fresh_run_commit_identity_refresh.md`.
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy

@@ -27,15 +27,55 @@ class Patch27RCommitIdentityReconciliationTests(unittest.TestCase):
         )
         self.assertTrue(identity["commit_identity_mismatch"])
         self.assertEqual(identity["app_git_commit"], "app-commit")
-        self.assertEqual(identity["build_git_commit"], "app-commit")
+        self.assertEqual(identity["build_git_commit"], "build-commit")
         self.assertEqual(identity["run_manifest_git_commit"], "run-commit")
         self.assertEqual(identity["source_of_truth"], "run-commit")
+        self.assertTrue(identity["app_build_identity_mismatch"])
+        self.assertTrue(identity["mismatch_requires_attention"])
+
+    def test_stale_run_manifest_after_deploy_is_expected_not_failure(self):
+        identity = build_commit_identity(
+            {"git_commit": "old-run"},
+            env={"RAILWAY_GIT_COMMIT_SHA": "new-deploy", "GIT_COMMIT": "new-deploy"},
+        )
+        self.assertTrue(identity["commit_identity_mismatch"])
+        self.assertFalse(identity["app_build_identity_mismatch"])
+        self.assertTrue(identity["latest_run_manifest_stale_after_deploy"])
+        self.assertTrue(identity["latest_run_predates_current_deploy"])
+        self.assertTrue(identity["mismatch_expected_due_to_stale_run"])
+        self.assertTrue(identity["fresh_run_needed_to_refresh_manifest"])
+        self.assertEqual(identity["fresh_run_expected_manifest_commit"], "new-deploy")
+        self.assertEqual(identity["commit_identity_status"], "stale_run_manifest_after_deploy")
+        self.assertFalse(identity["mismatch_requires_attention"])
+
+    def test_fresh_run_alignment_clears_expected_mismatch(self):
+        identity = build_commit_identity(
+            {"git_commit": "new-deploy"},
+            env={"RAILWAY_GIT_COMMIT_SHA": "new-deploy", "GIT_COMMIT": "new-deploy"},
+        )
+        self.assertFalse(identity["commit_identity_mismatch"])
+        self.assertFalse(identity["latest_run_manifest_stale_after_deploy"])
+        self.assertFalse(identity["fresh_run_needed_to_refresh_manifest"])
+        self.assertTrue(identity["fresh_run_identity_aligned"])
+        self.assertEqual(identity["commit_identity_status"], "fresh_run_identity_aligned")
+
+    def test_app_build_mismatch_is_distinct_from_stale_run_manifest(self):
+        identity = build_commit_identity(
+            {"git_commit": "run-commit"},
+            env={"RAILWAY_GIT_COMMIT_SHA": "app-commit", "GIT_COMMIT": "build-commit"},
+        )
+        self.assertTrue(identity["app_build_identity_mismatch"])
+        self.assertFalse(identity["latest_run_manifest_stale_after_deploy"])
+        self.assertFalse(identity["mismatch_expected_due_to_stale_run"])
+        self.assertTrue(identity["mismatch_requires_attention"])
+        self.assertEqual(identity["commit_identity_status"], "app_build_identity_mismatch")
 
     def test_missing_commit_metadata_degrades_to_unknown(self):
         identity = build_commit_identity({}, env={})
         self.assertEqual(identity["source_of_truth"], "unknown")
         self.assertEqual(identity["app_git_commit"], "unknown")
         self.assertFalse(identity["commit_identity_mismatch"])
+        self.assertEqual(identity["commit_identity_status"], "unknown_commit_identity")
         self.assertFalse(identity["provider_calls_triggered"])
         self.assertTrue(identity["read_only"])
 
@@ -51,6 +91,7 @@ class Patch27RCommitIdentityReconciliationTests(unittest.TestCase):
         self.assertTrue(status["commit_identity_mismatch"])
         self.assertEqual(status["commit_identity"]["app_git_commit"], "old")
         self.assertEqual(status["commit_identity"]["run_manifest_git_commit"], "new")
+        self.assertTrue(status["commit_identity"]["app_build_identity_mismatch"])
         self.assertFalse(status["provider_calls_triggered"])
 
     def test_manifest_and_snapshot_include_commit_identity(self):
@@ -79,4 +120,3 @@ class Patch27RCommitIdentityReconciliationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

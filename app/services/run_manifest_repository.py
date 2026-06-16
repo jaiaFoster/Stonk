@@ -64,7 +64,13 @@ def build_run_manifest(
             "fail": value.get("fail_count", 0), "skipped": value.get("skipped_count", 0),
         } for key, value in (strategy_results or {}).items()
     }
-    commit_identity = build_commit_identity()
+    deploy_identity = build_commit_identity()
+    manifest_commit = deploy_identity["current_deploy_git_commit"] if deploy_identity["current_deploy_git_commit"] != "unknown" else deploy_identity["source_of_truth"]
+    commit_identity = build_commit_identity({
+        "git_commit": manifest_commit,
+        "git_branch": deploy_identity["git_branch"],
+        "deploy_label": deploy_identity["deploy_label"],
+    })
     return {
         "run_id": run_id, "created_at": pipeline_status.get("started_at"), "completed_at": pipeline_status.get("finished_at"),
         "mode": mode, "status": status, "report_quality": report_quality,
