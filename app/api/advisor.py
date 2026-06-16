@@ -69,6 +69,15 @@ def _action_shape(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _log_event(endpoint: str, token: str | None, run_id: str | None) -> None:
+    """Fire-and-forget telemetry write. Never raises."""
+    try:
+        from app.db.telemetry import log_event
+        log_event(endpoint, token, run_id)
+    except Exception:
+        pass
+
+
 @advisor_bp.route("/daily")
 def daily():
     auth_error = _require_auth()
@@ -86,11 +95,14 @@ def daily():
 
     actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
     run_date = str(snapshot.get("completed_at") or "")[:10]
+    run_id = snapshot.get("run_id")
+
+    _log_event("/api/advisor/daily", _token_from_request(), run_id)
 
     return jsonify({
         "status": "ok",
         "provider_calls_triggered": False,
-        "run_id": snapshot.get("run_id"),
+        "run_id": run_id,
         "run_date": run_date,
         "run_quality": pipeline.get("report_quality") or pipeline.get("overall_status"),
         "generated_at": snapshot.get("completed_at"),
@@ -125,6 +137,9 @@ def positions():
         })
 
     accounts = [{"account_type": acct, "positions": rows} for acct, rows in by_account.items()]
+    run_id = snapshot.get("run_id")
+
+    _log_event("/api/advisor/positions", _token_from_request(), run_id)
 
     return jsonify({
         "status": "ok",
@@ -136,7 +151,7 @@ def positions():
 
 @advisor_bp.route("/status")
 def status():
-    # No auth required — lightweight health check.
+    # No auth required — lightweight health check. Not logged (too noisy).
     try:
         snapshot, summary, report = _load_snapshot()
     except Exception:
@@ -158,3 +173,40 @@ def status():
         "daily_opportunity_count": len(daily_opp.get("actions") or []),
         "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
     }), 200
+
+
+_VALID_ACTIONS = {"bought", "watched", "ignored", "rejected"}
+_VALID_OUTCOMES = {"positive", "negative", "neutral", "pending", "null"}
+
+
+@advisor_bp.route("/feedback", methods=["POST"])
+def feedback():
+    if not config.TELEMETRY_ENABLED:
+        return jsonify({"status": "disabled"}), 200
+
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    body = request.get_json(silent=True) or {}
+    ticker = str(body.get("ticker") or "").strip().upper()
+    if not ticker:
+        return jsonify({"status": "error", "error": "ticker is required."}), 400
+
+    run_id = str(body.get("run_id") or "").strip() or None
+    action_taken = str(body.get("action_taken") or "").strip().lower() or None
+    outcome = str(body.get("outcome") or "").strip().lower() or None
+    notes = str(body.get("notes") or "").strip() or None
+
+    if action_taken and action_taken not in _VALID_ACTIONS:
+        return jsonify({"status": "error", "error": f"Invalid action_taken. Valid: {sorted(_VALID_ACTIONS)}"}), 400
+    if outcome and outcome not in _VALID_OUTCOMES:
+        return jsonify({"status": "error", "error": f"Invalid outcome. Valid: {sorted(_VALID_OUTCOMES)}"}), 400
+
+    try:
+        from app.db.telemetry import record_feedback
+        record_feedback(ticker, run_id, action_taken, outcome, notes)
+    except Exception:
+        pass
+
+    return jsonify({"status": "ok", "message": "Feedback recorded"}), 200
