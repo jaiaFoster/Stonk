@@ -735,6 +735,10 @@ degrades and the canonical complete snapshot is preserved, diagnostics and the
 cached shell now show both run IDs/qualities and the safe degraded reason. See
 `docs/patch_27t_degraded_run_explainability.md`.
 
+Patch 27U classifies degraded reasons from stored metadata when available,
+while preserving `unknown` when evidence is insufficient. See
+`docs/patch_27u_degraded_reason_classification.md`.
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy
