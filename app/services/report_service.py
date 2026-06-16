@@ -2517,10 +2517,23 @@ def _hot_shell_freshness_html(pipeline_status: dict[str, Any]) -> str:
     age_text = "age unavailable" if age is None else f"{max(0, int(age)) // 60}m old"
     warnings = list(freshness.get("warnings") or [])
     warning_text = f" {' '.join(str(item) for item in warnings)}" if warnings else ""
+    canonical_run = str(freshness.get("canonical_snapshot_run_id") or freshness.get("canonical_run_id") or "unknown")
+    latest_run = str(freshness.get("latest_run_id") or canonical_run)
+    canonical_quality = str(freshness.get("canonical_snapshot_quality") or freshness.get("report_quality") or "UNKNOWN")
+    latest_quality = str(freshness.get("latest_run_report_quality") or freshness.get("latest_run_quality") or "UNKNOWN")
+    source = str(freshness.get("dashboard_data_source") or "canonical_complete_snapshot")
+    if freshness.get("canonical_snapshot_preserved"):
+        reason = str(freshness.get("latest_run_degraded_reason") or "unknown")
+        source_text = (
+            f" Latest run {latest_run} ({latest_quality}) degraded; "
+            f"showing canonical snapshot {canonical_run} ({canonical_quality}). Reason: {reason}."
+        )
+    else:
+        source_text = f" Dashboard source: {source}; latest run {latest_run} ({latest_quality}); canonical {canonical_run} ({canonical_quality})."
     return (
         '<div class="empty-state hot-shell-freshness">'
         f'<strong>Data status: {escape(quality)}</strong> · {escape(state)} · {escape(age_text)}'
-        f' · run {escape(str(freshness.get("canonical_run_id") or "unknown"))}.{escape(warning_text)}</div>'
+        f' · run {escape(canonical_run)}.{escape(source_text)}{escape(warning_text)}</div>'
     )
 
 

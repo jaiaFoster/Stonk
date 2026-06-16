@@ -730,6 +730,11 @@ expected immediately after deploy when the latest stored run manifest predates
 the current app/build commit; a fresh explicit run should normally refresh the
 manifest commit. See `docs/patch_27s_fresh_run_commit_identity_refresh.md`.
 
+Patch 27T makes degraded-run dashboard state explicit. When a fresh run
+degrades and the canonical complete snapshot is preserved, diagnostics and the
+cached shell now show both run IDs/qualities and the safe degraded reason. See
+`docs/patch_27t_degraded_run_explainability.md`.
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy
