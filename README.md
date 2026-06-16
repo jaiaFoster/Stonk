@@ -721,6 +721,10 @@ Patch 27Q adds provider-free freshness and run-quality metadata so stale cached
 or degraded reports cannot look like normal fresh complete data. See
 `docs/patch_27q_data_freshness_run_quality_guardrails.md`.
 
+Patch 27R adds explicit commit-identity diagnostics. If app/build/run manifest
+commit metadata disagree, diagnostics label the mismatch without treating it as
+an app failure. See `docs/patch_27r_commit_identity_reconciliation.md`.
+
 ### Deploy Self-Check
 
 Patch 27B adds token-protected, provider-free JSON endpoints for post-deploy

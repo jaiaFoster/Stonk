@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import config
+from app.services.commit_identity_service import build_commit_identity
 from app.services.developer_snapshot_service import build_developer_snapshot
 from app.services.redaction_service import redact
 from app.services.run_manifest_repository import RunManifestRepository
@@ -21,15 +22,18 @@ def build_dev_status(
     jobs = jobs or {}
     active = jobs.get(active_job_id or "", {}) if active_job_id else {}
     latest = RunManifestRepository().latest()
+    commit_identity = build_commit_identity(latest)
     return redact({
         "status": "ok",
         "app_booted": True,
         "booted_at": booted_at,
         "checked_at": _now(),
         "app_mode": config.APP_MODE,
-        "git_commit": _git_commit(),
-        "git_branch": _git_branch(),
-        "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+        "git_commit": commit_identity["source_of_truth"],
+        "git_branch": commit_identity["git_branch"],
+        "deploy_label": commit_identity["deploy_label"],
+        "commit_identity": commit_identity,
+        "commit_identity_mismatch": commit_identity["commit_identity_mismatch"],
         "active_run": _job_summary(active_job_id, active) if active else None,
         "run_lock": run_lock or {},
         "tracked_job_count": len(jobs),
@@ -39,10 +43,12 @@ def build_dev_status(
 
 
 def build_latest_run_manifest() -> dict[str, Any]:
+    manifest = RunManifestRepository().latest()
     return redact({
         "status": "ok",
         "checked_at": _now(),
-        "run_manifest": RunManifestRepository().latest(),
+        "run_manifest": manifest,
+        "commit_identity": build_commit_identity(manifest),
         "provider_calls_triggered": False,
     })
 
@@ -61,6 +67,7 @@ def build_latest_profiles() -> dict[str, Any]:
         "payload_size_profile": payload,
         "storage_profile": storage,
         "data_freshness": snapshot.get("data_freshness"),
+        "commit_identity": snapshot.get("commit_identity"),
         "report_snapshot_profile": snapshot.get("report_snapshot_profile"),
         "provider_payload_budget": snapshot.get("provider_payload_budget"),
         "slowest_runtime_phase": _slowest_phase(runtime),
@@ -104,6 +111,7 @@ def build_feature_health() -> dict[str, Any]:
         "checked_at": _now(),
         "source_run_id": snapshot.get("source_run_id"),
         "checks": checks,
+        "commit_identity": snapshot.get("commit_identity"),
         "provider_calls_triggered": False,
         "trade_execution_enabled": False,
     })
@@ -147,14 +155,6 @@ def _largest_section(profile: Any) -> dict[str, Any] | None:
         return None
     key = max(sections, key=lambda item: sections.get(item) or 0)
     return {"section": key, "bytes": sections[key]}
-
-
-def _git_commit() -> str | None:
-    return os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT")
-
-
-def _git_branch() -> str | None:
-    return os.environ.get("RAILWAY_GIT_BRANCH") or os.environ.get("GIT_BRANCH")
 
 
 def _now() -> str:
