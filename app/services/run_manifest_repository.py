@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from app import config
+from app.services.commit_identity_service import build_commit_identity
 
 
 class RunManifestRepository:
@@ -63,12 +64,14 @@ def build_run_manifest(
             "fail": value.get("fail_count", 0), "skipped": value.get("skipped_count", 0),
         } for key, value in (strategy_results or {}).items()
     }
+    commit_identity = build_commit_identity()
     return {
         "run_id": run_id, "created_at": pipeline_status.get("started_at"), "completed_at": pipeline_status.get("finished_at"),
         "mode": mode, "status": status, "report_quality": report_quality,
-        "git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT"),
-        "git_branch": os.environ.get("RAILWAY_GIT_BRANCH") or os.environ.get("GIT_BRANCH"),
-        "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+        "git_commit": commit_identity["source_of_truth"],
+        "git_branch": commit_identity["git_branch"],
+        "deploy_label": commit_identity["deploy_label"],
+        "commit_identity": commit_identity,
         "payload_chars": (payload_profile.get("sections_bytes") or {}).get("payload_text", 0),
         "summary_json_bytes": (payload_profile.get("sections_bytes") or {}).get("report_summary_json", 0),
         "runtime_total_ms": runtime_profile.get("total_ms", 0), "provider_fetch_count": provider_fetch_count,

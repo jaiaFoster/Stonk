@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import config
+from app.services.commit_identity_service import build_commit_identity
 from app.services.redaction_service import redact
 from app.services.report_snapshot_service import ReportSnapshotRepository
 from app.services.run_manifest_repository import RunManifestRepository
@@ -18,11 +19,12 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     report_repository = report_repository or ReportSnapshotRepository()
     manifest_repository = manifest_repository or RunManifestRepository()
     manifest = manifest_repository.latest()
+    manifest_commit_identity = build_commit_identity(manifest)
     if mode == "manifest_only":
-        return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "run_manifest": manifest}))
+        return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "run_manifest": manifest, "commit_identity": manifest_commit_identity, "git_commit": manifest_commit_identity["source_of_truth"]}))
     snapshot = report_repository.latest_success(include_full=mode == "full")
     if not snapshot:
-        return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "source_status": "unavailable", "run_manifest": manifest}))
+        return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "source_status": "unavailable", "run_manifest": manifest, "commit_identity": manifest_commit_identity, "git_commit": manifest_commit_identity["source_of_truth"]}))
     summary = report_repository.load_summary(snapshot, full=mode == "full")
     report = summary.get("report_data", {}) or {}
     tradier = report.get("tradier_snapshot", {}) or {}
@@ -31,14 +33,16 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
         key: _strategy_summary(value, include_rows=mode == "full" and config.DEV_SNAPSHOT_INCLUDE_FULL_STRATEGY_ROWS)
         for key, value in strategies.items()
     }
+    commit_identity = manifest_commit_identity
     from app.services.testing_packet_service import build_strategy_catalog
     result = {
         "snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(),
         "source_run_id": snapshot.get("run_id"), "source_status": snapshot.get("status"), "app_mode": snapshot.get("mode"),
         "available_detail_sections": ["daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "provider_raw", "strategies", "strategy"],
-        "git_commit": os.environ.get("RAILWAY_GIT_COMMIT_SHA") or os.environ.get("GIT_COMMIT"),
-        "git_branch": os.environ.get("RAILWAY_GIT_BRANCH") or os.environ.get("GIT_BRANCH"),
-        "deploy_label": os.environ.get("RAILWAY_DEPLOYMENT_ID"),
+        "git_commit": commit_identity["source_of_truth"],
+        "git_branch": commit_identity["git_branch"],
+        "deploy_label": commit_identity["deploy_label"],
+        "commit_identity": commit_identity,
         "report_snapshot_profile": report_repository.snapshot_profile(snapshot),
         "run_manifest": manifest, "runtime_profile": tradier.get("_runtime_profile"),
         "payload_size_profile": tradier.get("_payload_size_profile"), "storage_profile": tradier.get("_storage_profile"),
