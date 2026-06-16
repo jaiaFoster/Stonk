@@ -1039,6 +1039,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             log_print=log_print,
             requirement_plan=requirement_plan,
             observation_history=prior_ff_history,
+            run_id=run_context.run_id,
+            run_date=str(run_context.created_at or "")[:10],
         ),
         {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": True, "dry_run": True, "items": [], "rows": [], "errors": []},
         lambda result: f"Forward Factor produced {len((result or {}).get('items', []) or [])} dry-run decision row(s).",

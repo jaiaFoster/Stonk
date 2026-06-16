@@ -108,6 +108,7 @@ def build_forward_factor_strategy(
     universe: list[str], market_metrics: dict[str, dict[str, Any]], data_hub: Any,
     run_mode: str = "prod", log_print=None, requirement_plan: dict[str, Any] | None = None,
     observation_history: dict[str, dict[str, Any]] | None = None,
+    run_id: str | None = None, run_date: str | None = None,
 ) -> dict[str, Any]:
     log_print = log_print or (lambda message: None)
     if not config.FORWARD_FACTOR_STRATEGY_ENABLED:
@@ -396,6 +397,13 @@ def build_forward_factor_strategy(
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
     log_print(f"FF chain reconciliation: cheap_pass={stage['cheap_pass']} chain_approved={stage['chain_approved']} chain_skipped_budget={max(0, stage['cheap_pass'] - stage['chain_approved'])} chain_sets={stage['chain_sets']}")
+    if config.FF_JOURNAL_ENABLED and config.FORWARD_FACTOR_DRY_RUN:
+        from app.db.ff_journal import write_run, journal_summary
+        _journal_run_id = run_id or "unknown"
+        _journal_run_date = run_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        written = write_run(_journal_run_id, _journal_run_date, gated_rows)
+        log_print(f"FF journal: wrote {written} candidate row(s) for run {_journal_run_id}")
+        result["ff_journal"] = journal_summary()
     return result
 
 
