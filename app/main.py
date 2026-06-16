@@ -33,6 +33,9 @@ from app.utils.log_safety import install_werkzeug_redaction_filter
 app = Flask(__name__)
 install_werkzeug_redaction_filter()
 
+from app.api.advisor import advisor_bp
+app.register_blueprint(advisor_bp)
+
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()
 RUN_STATE_LOCK = threading.Lock()
