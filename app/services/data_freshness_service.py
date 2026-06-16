@@ -33,6 +33,14 @@ def build_data_freshness_summary(
         or ("SUCCESS_COMPLETE" if snapshot.get("status") == "complete" else snapshot.get("status") or "UNKNOWN")
     ).upper()
     latest_quality = str(manifest.get("report_quality") or manifest.get("status") or report_quality).upper()
+    canonical_run_id = snapshot.get("run_id")
+    latest_run_id = manifest.get("run_id") or canonical_run_id
+    latest_status = manifest.get("status") or snapshot.get("status")
+    latest_is_degraded = latest_quality in {"SUCCESS_DEGRADED", "DEGRADED", "FAILED", "ERROR"}
+    using_latest_run = bool(latest_run_id and canonical_run_id and str(latest_run_id) == str(canonical_run_id) and not latest_is_degraded)
+    dashboard_data_source = "latest_complete_run" if using_latest_run else (
+        "canonical_complete_snapshot_preserved" if latest_is_degraded else "canonical_complete_snapshot"
+    )
     broker_state, broker_at = _broker_state(report.get("positions", []) or [], robinhood, generated_at)
     if manifest.get("has_broker_data") is False:
         broker_state, broker_at = "UNAVAILABLE", None
@@ -43,7 +51,7 @@ def build_data_freshness_summary(
     if freshness_state == "STALE":
         quality_label = "STALE_CACHED_REPORT"
         warnings.append("Cached report exceeds the configured stale-age threshold.")
-    if latest_quality in {"SUCCESS_DEGRADED", "DEGRADED", "FAILED", "ERROR"}:
+    if latest_is_degraded:
         quality_label = "LATEST_RUN_DEGRADED"
         warnings.append("Latest attempted run was degraded or failed; showing the latest usable complete report.")
     if broker_state == "STALE_FALLBACK":
@@ -58,12 +66,23 @@ def build_data_freshness_summary(
         "quality_label": quality_label,
         "report_quality": report_quality,
         "latest_run_quality": latest_quality,
+        "latest_run_report_quality": latest_quality,
         "freshness_state": freshness_state,
         "generated_at": generated_at,
         "report_age_seconds": age_seconds,
-        "canonical_run_id": snapshot.get("run_id"),
-        "latest_run_id": manifest.get("run_id") or snapshot.get("run_id"),
-        "latest_run_status": manifest.get("status") or snapshot.get("status"),
+        "canonical_run_id": canonical_run_id,
+        "canonical_snapshot_run_id": canonical_run_id,
+        "canonical_snapshot_status": snapshot.get("status"),
+        "canonical_snapshot_quality": report_quality,
+        "latest_run_id": latest_run_id,
+        "latest_run_status": latest_status,
+        "latest_run_is_degraded": latest_is_degraded,
+        "latest_run_degraded": latest_is_degraded,
+        "latest_run_degraded_reason": _degraded_reason(manifest),
+        "dashboard_data_source": dashboard_data_source,
+        "dashboard_using_latest_run": using_latest_run,
+        "dashboard_using_canonical_snapshot": not using_latest_run,
+        "canonical_snapshot_preserved": bool(latest_is_degraded and latest_run_id and canonical_run_id and str(latest_run_id) != str(canonical_run_id)),
         "broker_data": _fact(broker_state, broker_at, current, "broker_snapshot" if broker_at != generated_at else "report_snapshot_proxy"),
         "market_data": _fact("AVAILABLE" if has_market is not False else "UNAVAILABLE", generated_at, current, "report_snapshot_proxy"),
         "options_data": _fact("AVAILABLE" if has_options is not False else "UNAVAILABLE", generated_at, current, "report_snapshot_proxy"),
@@ -72,6 +91,17 @@ def build_data_freshness_summary(
         "provider_calls_triggered": False,
         "read_only": True,
     }
+
+
+def _degraded_reason(manifest: dict[str, Any]) -> str:
+    for key in ("degraded_reason", "timeout_reason", "failed_stage", "error"):
+        value = manifest.get(key)
+        if value:
+            return str(value)
+    errors = manifest.get("errors")
+    if isinstance(errors, list) and errors:
+        return str(errors[0])
+    return "unknown"
 
 
 def _broker_state(positions: list[dict[str, Any]], robinhood: dict[str, Any], generated_at: Any) -> tuple[str, Any]:
