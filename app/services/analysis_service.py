@@ -13,15 +13,16 @@ The pipeline internals are now cleaner and more explicit:
 from __future__ import annotations
 
 import json
+import threading
 import traceback
 from dataclasses import asdict
+from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any, Callable
 
 from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
-from app.services.calendar_opportunity_cache_service import cache_calendar_opportunities
 from app.services.calendar_ranking_service import build_calendar_ranking
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.daily_opportunity_engine_service import build_daily_opportunity_engine
@@ -213,6 +214,29 @@ EMPTY_CALENDAR_OPPORTUNITY_CACHE = {
     "errors": [],
     "summary": {"write_count": 0, "recent_count": 0},
 }
+
+# Background calendar scan state — persists across pipeline runs in this worker process.
+# Gunicorn config: 1 worker, 2 threads — module-level state is shared across threads safely.
+_CALENDAR_SCAN_LOCK = threading.Lock()
+_CALENDAR_SCAN_STATE: dict[str, Any] = {
+    "status": "never_run",
+    "candidates": [],
+    "completed_at": None,
+}
+
+
+def _run_calendar_scan_bg(scan_fn: Callable[[], list[dict[str, Any]]]) -> None:
+    """Background thread: run calendar scan and update shared state."""
+    try:
+        result = scan_fn()
+    except Exception:
+        result = []
+    with _CALENDAR_SCAN_LOCK:
+        _CALENDAR_SCAN_STATE.update({
+            "status": "complete",
+            "candidates": result,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        })
 
 
 def _enrich_open_options_with_underlying_prices(
@@ -738,13 +762,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             allowed_tickers=discovery_tickers,
         )
 
-    calendar_candidates = run_optional_step(
-        "calendar_spread_scan",
-        "Running Calendar Spread Screener v1 for earnings-discovery universe...",
-        run_calendar_scan,
-        [],
-        lambda result: f"Calendar scanner produced {len(result or [])} earnings-discovery candidate(s).",
-    )
+    # Calendar scan deferred to background thread — main pipeline does not block.
+    # Results from the previous run's background scan are used immediately.
+    with _CALENDAR_SCAN_LOCK:
+        calendar_candidates = list(_CALENDAR_SCAN_STATE["candidates"])
+        _scan_prior_status = _CALENDAR_SCAN_STATE["status"]
+        _scan_completed_at = _CALENDAR_SCAN_STATE["completed_at"]
+    _calendar_scan_status = "pending" if _scan_prior_status == "never_run" else "stale"
+    begin_step(pipeline_status, "calendar_spread_scan", "Calendar spread scan deferred to background thread...")
+    log_print(f"Calendar scan: background mode; prior status={_scan_prior_status}, candidates={len(calendar_candidates)}. Launching new scan.")
+    skip_step(pipeline_status, "calendar_spread_scan", f"Deferred to background; prior_status={_scan_prior_status}; candidates_available={len(calendar_candidates)}")
+    _bg = threading.Thread(target=_run_calendar_scan_bg, args=(run_calendar_scan,), daemon=True)
+    _bg.start()
     candle_status = run_optional_step(
         "calendar_candle_rescue",
         "Running Calendar Candidate Candle Rescue...",
@@ -759,11 +788,13 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "ticker_count": len(candle_status),
         "selected_providers": sorted({str(item.get("provider")) for item in candle_status.values() if isinstance(item, dict) and item.get("provider")}),
     }
+    tradier_snapshot["calendar_scan_status"] = _calendar_scan_status
     tradier_snapshot["_calendar_spread_candidates"] = {
         "items": calendar_candidates,
         "has_data": bool(calendar_candidates),
         "source": "tradier",
         "universe_source": "earnings_discovery_v1",
+        "scan_completed_at": _scan_completed_at,
     }
     tradier_snapshot["_candle_status"] = candle_status
 
@@ -880,8 +911,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         EMPTY_CALENDAR_RANKING,
         lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
     )
-    tradier_snapshot["_calendar_ranking"] = calendar_ranking
-
     unified_calendar_engine = run_optional_step(
         "unified_calendar_engine",
         "Running Unified Calendar Trade Engine v1...",
@@ -899,20 +928,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         EMPTY_UNIFIED_CALENDAR,
         lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
     )
-    tradier_snapshot["_unified_calendar_trade_engine"] = unified_calendar_engine
-
-    calendar_opportunity_cache = run_optional_step(
-        "calendar_opportunity_cache",
-        "Updating Calendar Opportunity Cache v1...",
-        lambda: cache_calendar_opportunities(
-            (unified_calendar_engine or {}).get("new_trade_rows", []) or [],
-            log_print=log_print,
-        ),
-        EMPTY_CALENDAR_OPPORTUNITY_CACHE,
-        lambda result: f"Calendar opportunity cache wrote {((result or {}).get('summary', {}) or {}).get('write_count', 0)} row(s).",
-    )
-    tradier_snapshot["_calendar_opportunity_cache"] = calendar_opportunity_cache
-
     earnings_mini_backtest = run_optional_step(
         "earnings_mini_backtest",
         "Running Earnings Mini-Backtest v1...",

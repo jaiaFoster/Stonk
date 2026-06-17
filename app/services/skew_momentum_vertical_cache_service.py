@@ -32,6 +32,11 @@ def cache_skew_momentum_vertical_opportunities(rows: list[dict[str, Any]] | None
                     continue
                 _upsert(conn, row)
                 writes += 1
+            # FIFO prune — keep at most 50 rows by recency to cap DB growth.
+            conn.execute(
+                "DELETE FROM skew_vertical_opportunities WHERE id NOT IN "
+                "(SELECT id FROM skew_vertical_opportunities ORDER BY last_seen_at DESC LIMIT 50)"
+            )
             recent = [dict(item) for item in conn.execute(
                 "SELECT strategy_id, ticker, direction, expiration, long_strike, short_strike, option_type, final_verdict, display_state, score, main_blocker, primary_reason, first_seen_at, last_seen_at, seen_count, payload_json FROM skew_vertical_opportunities ORDER BY last_seen_at DESC LIMIT ?",
                 (max(1, int(config.SKEW_VERTICAL_OPPORTUNITY_CACHE_RECENT_LIMIT)),),
