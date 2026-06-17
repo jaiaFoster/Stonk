@@ -788,7 +788,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "ticker_count": len(candle_status),
         "selected_providers": sorted({str(item.get("provider")) for item in candle_status.values() if isinstance(item, dict) and item.get("provider")}),
     }
-    tradier_snapshot["calendar_scan_status"] = _calendar_scan_status
+    tradier_snapshot["_calendar_scan_status"] = _calendar_scan_status
     tradier_snapshot["_calendar_spread_candidates"] = {
         "items": calendar_candidates,
         "has_data": bool(calendar_candidates),
