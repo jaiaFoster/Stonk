@@ -81,10 +81,17 @@ def scan_calendar_spreads_for_positions(
 
             expirations = provider.get_expirations(ticker)
             earnings_event = _event_for_ticker(positions, ticker)
-            pairs = _select_expiration_pairs(expirations, earnings_event=earnings_event)
+            pair_diagnostics: dict[str, Any] = {}
+            pairs = _select_expiration_pairs(expirations, earnings_event=earnings_event, diagnostics=pair_diagnostics)
             if not pairs:
                 if earnings_event:
-                    logger(f"Calendar {ticker}: no front/back expiration pair captured earnings timing settings.")
+                    tried = pair_diagnostics.get("tried_front_expirations", [])
+                    reason = pair_diagnostics.get("no_valid_pair_reason", "NO_VALID_EXPIRATION_PAIR")
+                    logger(
+                        f"Calendar {ticker}: {reason}; "
+                        f"earnings_date={pair_diagnostics.get('event_date')}; "
+                        f"tried_front_expirations={tried}"
+                    )
                 else:
                     logger(f"Calendar {ticker}: no front/back expiration pair matched scanner settings.")
                 continue
@@ -388,7 +395,11 @@ def _next_check(action: str) -> str:
     return "Avoid for now; liquidity, spread, debit, or structure does not pass v1 filters."
 
 
-def _select_expiration_pairs(expirations: list[str], earnings_event: dict[str, Any] | None = None) -> list[tuple[str, str]]:
+def _select_expiration_pairs(
+    expirations: list[str],
+    earnings_event: dict[str, Any] | None = None,
+    diagnostics: dict[str, Any] | None = None,
+) -> list[tuple[str, str]]:
     today = date.today()
     parsed: list[tuple[int, str]] = []
     for raw in expirations:
@@ -398,7 +409,9 @@ def _select_expiration_pairs(expirations: list[str], earnings_event: dict[str, A
     parsed.sort(key=lambda item: item[0])
 
     if bool(getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True)) and earnings_event:
-        event_pairs = _select_earnings_expiration_pairs(parsed, earnings_event, today)
+        event_pairs, _diag = _select_earnings_expiration_pairs(parsed, earnings_event, today)
+        if diagnostics is not None:
+            diagnostics.update(_diag)
         if event_pairs:
             return event_pairs
 
@@ -409,10 +422,11 @@ def _select_earnings_expiration_pairs(
     parsed: list[tuple[int, str]],
     earnings_event: dict[str, Any],
     today: date,
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], dict[str, Any]]:
+    """Return (pairs, diagnostics). TKT-028: step through all expirations before earnings."""
     event_date = _parse_date(earnings_event.get("earnings_date") or earnings_event.get("date"))
     if not event_date:
-        return []
+        return [], {"no_valid_pair_reason": "no_event_date"}
 
     session = str(earnings_event.get("session_label") or earnings_event.get("time_of_day") or earnings_event.get("hour") or "").lower()
     same_day_ok = "after" in session or "amc" in session
@@ -424,30 +438,57 @@ def _select_earnings_expiration_pairs(
     back_min_after_event = int(getattr(config, "CALENDAR_EARNINGS_BACK_MIN_DTE_AFTER_EVENT", 14) or 14)
     back_max = int(getattr(config, "CALENDAR_EARNINGS_BACK_MAX_DTE", config.CALENDAR_BACK_MAX_DTE) or config.CALENDAR_BACK_MAX_DTE)
 
-    front_candidates: list[tuple[int, str]] = []
+    # All expirations before earnings — candidates for front leg regardless of DTE cap.
+    all_before_event: list[tuple[int, str]] = []
     for dte, exp in parsed:
         exp_date = _parse_date(exp)
         if not exp_date:
             continue
-        expires_before_event = exp_date < event_date or (same_day_ok and exp_date == event_date)
-        if expires_before_event and front_min <= dte <= front_max:
-            front_candidates.append((dte, exp))
+        if exp_date < event_date or (same_day_ok and exp_date == event_date):
+            all_before_event.append((dte, exp))
 
-    scored_pairs: list[tuple[float, str, str]] = []
-    for front_dte, front_exp in front_candidates:
-        for back_dte, back_exp in parsed:
-            back_date = _parse_date(back_exp)
-            if not back_date or back_date <= event_date:
-                continue
-            gap = back_dte - front_dte
-            if gap < min_gap or back_dte > back_max or back_dte < event_dte + back_min_after_event:
-                continue
-            score = abs(gap - target_gap) + abs((event_dte - front_dte) - 1) * 0.35
-            scored_pairs.append((score, front_exp, back_exp))
+    def _score_fronts(fronts: list[tuple[int, str]]) -> list[tuple[float, str, str]]:
+        scored: list[tuple[float, str, str]] = []
+        for front_dte, front_exp in fronts:
+            for back_dte, back_exp in parsed:
+                back_date = _parse_date(back_exp)
+                if not back_date or back_date <= event_date:
+                    continue
+                gap = back_dte - front_dte
+                if gap < min_gap or back_dte > back_max or back_dte < event_dte + back_min_after_event:
+                    continue
+                score = abs(gap - target_gap) + abs((event_dte - front_dte) - 1) * 0.35
+                scored.append((score, front_exp, back_exp))
+        return scored
+
+    # First pass: respect configured DTE window.
+    front_candidates = [(dte, exp) for dte, exp in all_before_event if front_min <= dte <= front_max]
+    scored_pairs = _score_fronts(front_candidates)
+
+    widened = False
+    if not scored_pairs and all_before_event:
+        # TKT-028: widen — try all expirations before event, drop the DTE max cap.
+        wider_candidates = [(dte, exp) for dte, exp in all_before_event if dte >= front_min]
+        scored_pairs = _score_fronts(wider_candidates)
+        widened = True
+
+    diagnostics: dict[str, Any] = {
+        "tried_front_expirations": [exp for _, exp in all_before_event],
+        "front_candidates_in_dte_window": [exp for _, exp in front_candidates],
+        "pairs_scored": len(scored_pairs),
+        "search_widened": widened,
+        "event_date": event_date.isoformat(),
+        "event_dte": event_dte,
+        "front_max_dte_config": front_max,
+    }
+
+    if not scored_pairs:
+        diagnostics["no_valid_pair_reason"] = "NO_VALID_EXPIRATION_PAIR"
+        return [], diagnostics
 
     scored_pairs.sort(key=lambda item: item[0])
     limit = max(1, int(config.CALENDAR_MAX_EXPIRATION_PAIRS_PER_TICKER or 1))
-    return [(front, back) for _, front, back in scored_pairs[:limit]]
+    return [(front, back) for _, front, back in scored_pairs[:limit]], diagnostics
 
 
 def _select_generic_expiration_pairs(parsed: list[tuple[int, str]]) -> list[tuple[str, str]]:
