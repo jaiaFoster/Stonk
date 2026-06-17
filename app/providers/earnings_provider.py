@@ -442,7 +442,35 @@ def _merge_dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     existing[field] = event.get(field)
             existing["secondary_sources"] = [s for s in sources if s != str(existing.get("source") or "unknown")]
 
-    return sorted(merged.values(), key=lambda item: (str(item.get("earnings_date") or "9999-99-99"), str(item.get("ticker") or "")))
+    result = list(merged.values())
+
+    # TKT-025: require ≥2 source agreement to confirm timestamp.
+    if getattr(config, "EARNINGS_CONFIRM_REQUIRE_MULTI_SOURCE", True):
+        for ev in result:
+            if len(ev.get("sources_seen") or []) < 2:
+                ev["is_timestamp_confirmed"] = False
+                ev["is_timestamp_single_source"] = True
+
+    # TKT-025: flag cross-source date disagreements within threshold.
+    conflict_threshold = int(getattr(config, "EARNINGS_DATE_CONFLICT_THRESHOLD_DAYS", 2) or 2)
+    by_ticker: dict[str, list[dict[str, Any]]] = {}
+    for ev in result:
+        t = str(ev.get("ticker") or "").upper().strip()
+        by_ticker.setdefault(t, []).append(ev)
+    for ticker_events in by_ticker.values():
+        if len(ticker_events) < 2:
+            continue
+        dated = [(ev, _parse_date(ev.get("earnings_date") or ev.get("date"))) for ev in ticker_events]
+        dated = [(ev, d) for ev, d in dated if d is not None]
+        dated.sort(key=lambda pair: pair[1])
+        for i in range(len(dated) - 1):
+            ev_a, d_a = dated[i]
+            ev_b, d_b = dated[i + 1]
+            if (d_b - d_a).days <= conflict_threshold:
+                ev_a["earnings_source_conflict"] = True
+                ev_b["earnings_source_conflict"] = True
+
+    return sorted(result, key=lambda item: (str(item.get("earnings_date") or "9999-99-99"), str(item.get("ticker") or "")))
 
 
 def _safe_alpha_horizon(value: str | None) -> str:

@@ -702,6 +702,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Earnings discovery found {len((result or {}).get('items', []) or [])} raw event row(s).",
     )
 
+    # TKT-022: surface effective discovery window in pipeline diagnostics.
+    pipeline_status["earnings_discovery_window_effective"] = {
+        "window_start": (earnings_trade_discovery or {}).get("window_start"),
+        "window_end": (earnings_trade_discovery or {}).get("window_end"),
+        "window_start_days": int(config.EARNINGS_DISCOVERY_START_DAYS or 2),
+        "window_end_days": int(config.EARNINGS_DISCOVERY_END_DAYS or 21),
+        "provider": (earnings_trade_discovery or {}).get("provider"),
+        "event_count": len((earnings_trade_discovery or {}).get("items", []) or []),
+    }
+
     earnings_discovery_quality = run_optional_step(
         "earnings_quality_filter",
         "Running Earnings Discovery Quality Filter v1...",

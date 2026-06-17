@@ -198,6 +198,10 @@ EARNINGS_PROVIDER_ORDER = [
     if provider.strip()
 ]
 EARNINGS_MERGE_PROVIDER_EVENTS = _bool_env("EARNINGS_MERGE_PROVIDER_EVENTS", True)
+# Require ≥2 sources to confirm earnings timestamp (TKT-025/026).
+EARNINGS_CONFIRM_REQUIRE_MULTI_SOURCE = _bool_env("EARNINGS_CONFIRM_REQUIRE_MULTI_SOURCE", True)
+# Dates from different sources within this many days flag earnings_source_conflict (TKT-025).
+EARNINGS_DATE_CONFLICT_THRESHOLD_DAYS = _int_env("EARNINGS_DATE_CONFLICT_THRESHOLD_DAYS", 2)
 ALPHA_VANTAGE_EARNINGS_HORIZON = os.environ.get("ALPHA_VANTAGE_EARNINGS_HORIZON", "3month").strip().lower()
 EARNINGS_LOOKAHEAD_DAYS = _int_env("EARNINGS_LOOKAHEAD_DAYS", 45)
 EARNINGS_LOOKBACK_DAYS = _int_env("EARNINGS_LOOKBACK_DAYS", 7)
