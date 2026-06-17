@@ -429,6 +429,37 @@ def _attach_strategy_actionability(result: dict[str, Any], *keys: str) -> dict[s
     return result
 
 
+def _write_local_vault(run_id: str, run_mode: str, positions: list[dict[str, Any]], tradier_snapshot: dict[str, Any], snapshot_summary: dict[str, Any], pipeline_status: dict[str, Any], log_print: Any) -> None:
+    vault_path = getattr(config, "LOCAL_VAULT_OUTPUT_PATH", None)
+    if not vault_path:
+        return
+    try:
+        from app.services.advisor_data_service import build_advisor_snapshot_payload
+        report_data = snapshot_summary.get("report_data") or {}
+        fake_snapshot = {
+            "run_id": run_id,
+            "completed_at": None,
+            "status": "success",
+            "mode": run_mode,
+        }
+        payload = build_advisor_snapshot_payload(fake_snapshot, snapshot_summary, report_data)
+        vault_data = {
+            "vault_schema_version": 1,
+            "run_id": run_id,
+            "run_mode": run_mode,
+            "snapshot": payload,
+        }
+        import os
+        vault_dir = os.path.dirname(vault_path)
+        if vault_dir:
+            os.makedirs(vault_dir, exist_ok=True)
+        with open(vault_path, "w", encoding="utf-8") as fh:
+            json.dump(vault_data, fh, default=str, indent=2)
+        log_print(f"LocalVault: wrote compact snapshot to {vault_path}")
+    except Exception as exc:
+        log_print(f"LocalVault: write failed (non-fatal): {exc}")
+
+
 def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log: list[str] = []
     news: dict[str, list[dict[str, Any]]] = {}
@@ -1206,6 +1237,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             runtime_profile.setdefault("phases_ms", {})["report_snapshot_save"] = snapshot_save_ms
             runtime_profile["total_ms"] = int(runtime_profile.get("total_ms", 0)) + snapshot_save_ms
             log_print(f"RuntimeProfile: report_snapshot_save={snapshot_save_ms}ms")
+            _write_local_vault(run_context.run_id, clean_mode, positions, tradier_snapshot, snapshot_summary, pipeline_status, log_print)
             from app.services.run_manifest_repository import RunManifestRepository, build_run_manifest
             manifest = build_run_manifest(
                 run_context.run_id, clean_mode, pipeline_status.get("overall_status", "complete"),
