@@ -53,12 +53,12 @@ class TestCalendarPayloadAxed(unittest.TestCase):
             _CALENDAR_SCAN_STATE as _STATE,
         )
         with _LOCK:
-            snapshot["calendar_scan_status"] = "pending" if _STATE["status"] == "never_run" else "stale"
+            snapshot["_calendar_scan_status"] = "pending" if _STATE["status"] == "never_run" else "stale"
         return snapshot
 
     def test_calendar_scan_status_present(self):
         snap = self._build_tradier_snapshot()
-        self.assertIn("calendar_scan_status", snap)
+        self.assertIn("_calendar_scan_status", snap)
 
     def test_calendar_scan_status_pending_on_first_run(self):
         from app.services.analysis_service import _CALENDAR_SCAN_LOCK, _CALENDAR_SCAN_STATE
