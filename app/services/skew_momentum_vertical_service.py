@@ -198,6 +198,10 @@ def construct_vertical_candidates(
     option_type = "call" if direction.get("direction") == "bullish" else "put"
     options = [row for row in chain or [] if str(row.get("option_type") or "").lower() == option_type and _usable_quote(row)]
     options.sort(key=lambda row: float(row.get("strike") or 0))
+    raw_skew_score = _compute_chain_skew(options)
+    options, lottery_calls_stripped_count = _apply_lottery_filter(options)
+    adjusted_skew_score = _compute_chain_skew(options)
+    skew_filter_applied = lottery_calls_stripped_count > 0
     dte = _dte(expiration)
     out: list[dict[str, Any]] = []
     for long_leg in options:
@@ -216,7 +220,7 @@ def construct_vertical_candidates(
             short_delta_ok, short_delta_approximated = _delta_eligible(short_leg, underlying_price, "short")
             if not short_delta_ok:
                 continue
-            row = _candidate_row(ticker, direction, underlying_price, expiration, dte, option_type, long_leg, short_leg, metrics or {}, earnings_event or {}, account_context or {})
+            row = _candidate_row(ticker, direction, underlying_price, expiration, dte, option_type, long_leg, short_leg, metrics or {}, earnings_event or {}, account_context or {}, raw_skew_score=raw_skew_score, adjusted_skew_score=adjusted_skew_score, lottery_calls_stripped_count=lottery_calls_stripped_count, skew_filter_applied=skew_filter_applied)
             row["delta_approximated"] = bool(long_delta_approximated or short_delta_approximated)
             if row["delta_approximated"]:
                 row["provider_notes"].append("Delta unavailable for one or more legs; strike moneyness approximation used.")
@@ -226,7 +230,7 @@ def construct_vertical_candidates(
     return out
 
 
-def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, long_leg, short_leg, metrics, earnings_event, account_context):
+def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, long_leg, short_leg, metrics, earnings_event, account_context, *, raw_skew_score=0.0, adjusted_skew_score=0.0, lottery_calls_stripped_count=0, skew_filter_applied=False):
     width = abs(float(short_leg["strike"]) - float(long_leg["strike"]))
     conservative_debit = float(long_leg["ask"]) - float(short_leg["bid"])
     mid_debit = float(long_leg["mid"]) - float(short_leg["mid"])
@@ -283,6 +287,11 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         "skew_reason": f"Short {option_type} IV edge {iv_edge:.3f}; financing {financing:.1f}% of long premium.",
         "short_iv_edge": round(iv_edge, 4),
         "short_premium_financing_pct": round(financing, 1),
+        "raw_skew_score": raw_skew_score,
+        "adjusted_skew_score": adjusted_skew_score,
+        "lottery_calls_stripped_count": lottery_calls_stripped_count,
+        "skew_filter_applied": skew_filter_applied,
+        "skew_gap_to_pass": round(float(getattr(config, "SKEW_RICHNESS_THRESHOLD", 12.5)) - adjusted_skew_score, 2) if getattr(config, "SKEW_DIAGNOSTIC_MODE", False) else None,
         "possible_spread": spread,
         "dte": dte,
         "underlying_price": underlying,
@@ -309,6 +318,36 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         "account_risk_pct": round(account_risk_pct, 2) if account_risk_pct is not None else None,
         "payload": {"long_leg": long_leg, "short_leg": short_leg, "market_metrics": metrics},
     }
+
+
+def _apply_lottery_filter(options: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    if not getattr(config, "SKEW_LOTTERY_CALL_FILTER_ENABLED", True):
+        return options, 0
+    delta_threshold = float(getattr(config, "SKEW_LOTTERY_CALL_DELTA_THRESHOLD", 0.15) or 0.15)
+    premium_threshold = float(getattr(config, "SKEW_LOTTERY_CALL_PREMIUM_THRESHOLD", 0.10) or 0.10)
+    kept = []
+    stripped = 0
+    for row in options:
+        delta_abs = abs(_first_num(row.get("delta")) or 1.0)
+        mid = _first_num(row.get("mid")) or 0.0
+        volume = int(row.get("volume") or 0)
+        is_lottery = delta_abs < delta_threshold and mid < premium_threshold and volume > 0
+        if is_lottery:
+            stripped += 1
+        else:
+            kept.append(row)
+    return kept, stripped
+
+
+def _compute_chain_skew(options: list[dict[str, Any]]) -> float:
+    otm_ivs = [float(o.get("iv") or 0) for o in options if (o.get("iv") or 0) > 0 and abs(_first_num(o.get("delta")) or 0) < 0.30]
+    atm_ivs = [float(o.get("iv") or 0) for o in options if (o.get("iv") or 0) > 0 and 0.30 <= abs(_first_num(o.get("delta")) or 0) <= 0.55]
+    if not atm_ivs:
+        return 0.0
+    avg_otm = sum(otm_ivs) / len(otm_ivs) if otm_ivs else 0.0
+    avg_atm = sum(atm_ivs) / len(atm_ivs)
+    ratio = avg_otm / max(avg_atm, 0.001)
+    return round(min(25.0, max(0.0, (ratio - 1.0) * 50)), 1)
 
 
 def _finalize(result):
