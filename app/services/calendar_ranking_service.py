@@ -26,6 +26,7 @@ def build_calendar_ranking(
     calendar_candidates: list[dict[str, Any]] | None,
     earnings_calendar_strategy: dict[str, Any] | None,
     log_print: LogFn | None = None,
+    account_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     logger = log_print or (lambda msg: print(msg, flush=True))
     candidates = [c for c in (calendar_candidates or []) if isinstance(c, dict)]
@@ -46,7 +47,7 @@ def build_calendar_ranking(
     for candidate in candidates:
         ticker = str(candidate.get("ticker") or "").upper().strip()
         strategy = strategy_by_ticker.get(ticker, {})
-        rows.append(_rank_candidate(candidate, strategy))
+        rows.append(_rank_candidate(candidate, strategy, account_context=account_context))
 
     rows.sort(key=lambda row: float(row.get("rank_score") or 0), reverse=True)
     eligible = [row for row in rows if row.get("passes_all_criteria") and row.get("backtest_eligible")]
@@ -61,7 +62,7 @@ def build_calendar_ranking(
         "ideal_entry_count": sum(1 for row in rows if row.get("entry_timing") == "IDEAL"),
         "late_count": sum(1 for row in rows if row.get("entry_timing") == "LATE"),
     }
-    attach_final_verdicts_to_ranking(result)
+    attach_final_verdicts_to_ranking(result, account_context=account_context)
 
     logger(
         "Calendar Ranking v2 ranked "
@@ -76,7 +77,7 @@ def build_calendar_ranking(
     return result
 
 
-def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any]) -> dict[str, Any]:
+def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any], account_context: dict[str, Any] | None = None) -> dict[str, Any]:
     ticker = str(candidate.get("ticker") or strategy.get("ticker") or "UNKNOWN").upper().strip()
     score = float(strategy.get("score") if strategy.get("score") is not None else candidate.get("score") or 0)
     reasons: list[str] = []
@@ -107,9 +108,21 @@ def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any]) -> dict
     vol_ok = min_vol is not None and min_vol >= float(config.CALENDAR_MIN_VOLUME)
     criteria.append(_criterion("Same-day volume", vol_ok, _threshold_detail("Min volume", min_vol, float(config.CALENDAR_MIN_VOLUME), "min", "", "preferred minimum") if min_vol is not None else "Volume unavailable.", status="PASS" if vol_ok else "WARN"))
 
+    # TKT-012: tiered debit cap — sizing gate only, does not hard-fail signal.
+    tier_result = candidate.get("debit_cap_tier_result") if isinstance(candidate.get("debit_cap_tier_result"), dict) else {}
     debit_pct = _float(candidate.get("debit_pct_underlying"))
-    debit_ok = debit_pct is not None and debit_pct <= float(config.CALENDAR_MAX_DEBIT_PCT_UNDERLYING)
-    criteria.append(_criterion("Debit size", debit_ok, f"Debit {debit_pct:.1f}% of underlying <= {config.CALENDAR_MAX_DEBIT_PCT_UNDERLYING}%" if debit_pct is not None else "Debit percent unavailable."))
+    if tier_result:
+        debit_ok = bool(tier_result.get("passes"))
+        cap_pct = tier_result.get("cap_pct") or float(config.CALENDAR_MAX_DEBIT_PCT_UNDERLYING)
+        tier_label = tier_result.get("tier", "")
+        debit_detail = (
+            f"Debit {debit_pct:.1f}% of underlying; cap={cap_pct:.0f}% ({tier_label}); {'passes' if debit_ok else 'exceeds cap'}."
+            if debit_pct is not None else "Debit percent unavailable."
+        )
+    else:
+        debit_ok = debit_pct is not None and debit_pct <= float(config.CALENDAR_MAX_DEBIT_PCT_UNDERLYING)
+        debit_detail = f"Debit {debit_pct:.1f}% of underlying <= {config.CALENDAR_MAX_DEBIT_PCT_UNDERLYING}%" if debit_pct is not None else "Debit percent unavailable."
+    criteria.append(_criterion("Debit size", debit_ok, debit_detail, status="PASS" if debit_ok else "WARN"))
 
     iv_edge = _float(candidate.get("iv_edge"))
     iv_ok = iv_edge is not None and iv_edge >= 0

@@ -389,6 +389,42 @@ def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
     return round(total, 2) if total > 0 else None
 
 
+def _apply_price_freshness_gate(
+    calendar_candidates: list[dict[str, Any]],
+    tradier_snapshot: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """TKT-027: flag candidates where price drifted beyond threshold since scan."""
+    threshold = float(getattr(config, "CALENDAR_PRICE_FRESHNESS_THRESHOLD", 0.015) or 0.015)
+    updated = []
+    for candidate in calendar_candidates or []:
+        if not isinstance(candidate, dict):
+            updated.append(candidate)
+            continue
+        candidate = dict(candidate)
+        ticker = str(candidate.get("ticker") or "").upper().strip()
+        structure_price = _safe_float(candidate.get("underlying_price"))
+        current_price = None
+        snap = tradier_snapshot.get(ticker)
+        if isinstance(snap, dict):
+            current_price = _safe_float(
+                (snap.get("quote") or {}).get("last")
+                or (snap.get("quote") or {}).get("close")
+                or snap.get("last")
+            )
+        if structure_price and current_price and structure_price > 0:
+            drift = abs(current_price - structure_price) / structure_price
+            candidate["price_drift_pct"] = round(drift * 100, 2)
+            candidate["price_stale"] = drift > threshold
+            candidate["price_freshness_check"] = "checked"
+            candidate["price_freshness_current"] = current_price
+        else:
+            candidate["price_drift_pct"] = None
+            candidate["price_stale"] = False
+            candidate["price_freshness_check"] = "quote_unavailable"
+        updated.append(candidate)
+    return updated
+
+
 def _attach_candidate_candle_quality(
     calendar_candidates: list[dict[str, Any]],
     log_print: Callable[[str], None],
@@ -779,6 +815,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         _scan_prior_status = _CALENDAR_SCAN_STATE["status"]
         _scan_completed_at = _CALENDAR_SCAN_STATE["completed_at"]
     _calendar_scan_status = "pending" if _scan_prior_status == "never_run" else "stale"
+    # TKT-027: apply price freshness gate using current quotes from tradier_snapshot.
+    calendar_candidates = _apply_price_freshness_gate(calendar_candidates, tradier_snapshot)
     begin_step(pipeline_status, "calendar_spread_scan", "Calendar spread scan deferred to background thread...")
     log_print(f"Calendar scan: background mode; prior status={_scan_prior_status}, candidates={len(calendar_candidates)}. Launching new scan.")
     skip_step(pipeline_status, "calendar_spread_scan", f"Deferred to background; prior_status={_scan_prior_status}; candidates_available={len(calendar_candidates)}")
@@ -917,6 +955,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             calendar_candidates=calendar_candidates,
             earnings_calendar_strategy=earnings_calendar_strategy,
             log_print=log_print,
+            account_context=account_context,
         ),
         EMPTY_CALENDAR_RANKING,
         lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
