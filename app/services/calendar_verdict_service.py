@@ -270,8 +270,16 @@ def evaluate_account_risk(candidate: dict[str, Any], account_context: dict[str, 
     if debit is None:
         per_spread = _num(candidate.get("conservative_debit") or candidate.get("mid_debit"))
         debit = per_spread * 100.0 if per_spread is not None else None
-    account_value = _num((account_context or {}).get("account_value_estimate"))
+
+    # TKT-024: check override first, then estimate from positions.
+    override = getattr(config, "CALENDAR_ACCOUNT_VALUE_OVERRIDE", None)
+    if override:
+        account_value = float(override)
+    else:
+        account_value = _num((account_context or {}).get("account_value_estimate"))
+
     pct_of_account = (debit / account_value * 100.0) if debit is not None and account_value and account_value > 0 else None
+    max_debit_pct_of_account = float(getattr(config, "CALENDAR_MAX_DEBIT_PCT_OF_ACCOUNT", 0.02) or 0.02) * 100.0
 
     status = "OK"
     warning = ""
@@ -280,7 +288,7 @@ def evaluate_account_risk(candidate: dict[str, Any], account_context: dict[str, 
     elif account_value is None:
         status = "UNKNOWN ACCOUNT VALUE"
         warning = "Account value unavailable; debit sizing cannot be fully checked."
-    elif debit is not None and (debit > float(config.CALENDAR_MAX_DEBIT_DOLLARS) or (pct_of_account or 0) > float(config.CALENDAR_MAX_ACCOUNT_RISK_PCT)):
+    elif debit is not None and (debit > float(config.CALENDAR_MAX_DEBIT_DOLLARS) or (pct_of_account or 0) > max_debit_pct_of_account):
         status = "TOO LARGE"
         warning = "Debit is too large for configured account guardrails."
     elif debit is not None and (debit > float(config.CALENDAR_WARN_DEBIT_DOLLARS) or (pct_of_account or 0) > float(config.CALENDAR_EXPERIMENTAL_MAX_ACCOUNT_RISK_PCT)):

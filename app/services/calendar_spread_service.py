@@ -238,6 +238,25 @@ def _score_candidate(
     if strike is not None and underlying_price > 0:
         atm_distance_pct = abs(strike - underlying_price) / underlying_price * 100.0
 
+    # TKT-012: tiered debit cap (sizing gate, does not affect signal score).
+    tiered_cap_pct = _tiered_debit_cap_pct(underlying_price)
+    tiered_debit_cap_result: dict[str, Any] | None = None
+    if debit_for_scoring is not None and underlying_price > 0:
+        debit_pct_raw = debit_for_scoring / underlying_price
+        tier = (
+            "tier_3" if underlying_price >= float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_2_MAX_PRICE", 500.0) or 500.0)
+            else "tier_2" if underlying_price >= float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_1_MAX_PRICE", 100.0) or 100.0)
+            else "tier_1"
+        )
+        tiered_debit_cap_result = {
+            "underlying_price": underlying_price,
+            "debit": round(debit_for_scoring, 2),
+            "debit_pct_underlying": round(debit_pct_raw * 100, 2),
+            "cap_pct": round(tiered_cap_pct * 100, 2),
+            "passes": debit_pct_raw <= tiered_cap_pct,
+            "tier": tier,
+        }
+
     score, reasons, risks = _calendar_score(
         conservative_debit=conservative_debit,
         mid_debit=mid_debit,
@@ -271,6 +290,7 @@ def _score_candidate(
         "conservative_debit": conservative_debit,
         "mid_debit": mid_debit,
         "debit_pct_underlying": debit_pct_underlying,
+        "debit_cap_tier_result": tiered_debit_cap_result,
         "front_iv": front_iv,
         "back_iv": back_iv,
         "iv_edge": iv_edge,
@@ -286,6 +306,17 @@ def _score_candidate(
         "earnings_timing": _earnings_timing_payload(earnings_event, front_expiration, back_expiration),
         "next_check": _next_check(action),
     }
+
+
+def _tiered_debit_cap_pct(underlying_price: float) -> float:
+    """Return the applicable debit cap as a fraction of underlying (TKT-012)."""
+    t1_max = float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_1_MAX_PRICE", 100.0) or 100.0)
+    t2_max = float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_2_MAX_PRICE", 500.0) or 500.0)
+    if underlying_price < t1_max:
+        return float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_1_PCT", 0.08) or 0.08)
+    if underlying_price < t2_max:
+        return float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_2_PCT", 0.10) or 0.10)
+    return float(getattr(config, "CALENDAR_DEBIT_CAP_TIER_3_PCT", 0.12) or 0.12)
 
 
 def _calendar_score(
