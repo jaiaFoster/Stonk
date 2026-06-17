@@ -78,6 +78,24 @@ def _log_event(endpoint: str, token: str | None, run_id: str | None) -> None:
         pass
 
 
+@advisor_bp.route("/snapshot")
+def snapshot():
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    snapshot_row, summary, report = _load_snapshot()
+    if snapshot_row is None:
+        return jsonify({"status": "no_data", "error": "No completed run available.", "provider_calls_triggered": False}), 404
+
+    from app.services.advisor_data_service import build_advisor_snapshot_payload
+    result = build_advisor_snapshot_payload(snapshot_row, summary, report)
+
+    _log_event("/api/advisor/snapshot", _token_from_request(), result.get("run_id"))
+
+    return jsonify({"status": "ok", **result}), 200
+
+
 @advisor_bp.route("/daily")
 def daily():
     auth_error = _require_auth()

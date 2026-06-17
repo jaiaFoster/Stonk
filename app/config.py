@@ -330,6 +330,7 @@ FF_JOURNAL_DB_PATH = os.environ.get(
     "/app/data/ff_observations.db" if os.path.isdir("/app/data") else "data/ff_observations.db",
 )
 TELEMETRY_ENABLED = _bool_env("TELEMETRY_ENABLED", True)
+LOCAL_VAULT_OUTPUT_PATH: str | None = os.environ.get("LOCAL_VAULT_OUTPUT_PATH") or None
 TELEMETRY_DB_PATH = os.environ.get(
     "TELEMETRY_DB_PATH",
     "/app/data/telemetry.db" if os.path.isdir("/app/data") else "data/telemetry.db",
