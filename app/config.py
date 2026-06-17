@@ -331,6 +331,13 @@ FF_JOURNAL_DB_PATH = os.environ.get(
 )
 TELEMETRY_ENABLED = _bool_env("TELEMETRY_ENABLED", True)
 LOCAL_VAULT_OUTPUT_PATH: str | None = os.environ.get("LOCAL_VAULT_OUTPUT_PATH") or None
+VAULT_ENABLED = _bool_env("VAULT_ENABLED", False)
+VAULT_DB_PATH = os.environ.get(
+    "VAULT_DB_PATH",
+    "/app/data/vault.db" if os.path.isdir("/app/data") else "data/vault.db",
+)
+VAULT_MAX_ENTRIES: int = int(os.environ.get("VAULT_MAX_ENTRIES") or 30)
+VAULT_SCHEMA_VERSION: int = int(os.environ.get("VAULT_SCHEMA_VERSION") or 1)
 TELEMETRY_DB_PATH = os.environ.get(
     "TELEMETRY_DB_PATH",
     "/app/data/telemetry.db" if os.path.isdir("/app/data") else "data/telemetry.db",

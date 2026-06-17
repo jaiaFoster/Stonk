@@ -382,7 +382,10 @@ def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
         value = _safe_float(pos.get("market_value") or pos.get("equity") or pos.get("current_value"))
         if value is None:
             qty = _safe_float(pos.get("quantity") or pos.get("shares"))
-            price = _safe_float(pos.get("current_price") or pos.get("price") or pos.get("last_price"))
+            price = _safe_float(
+                pos.get("current_price") or pos.get("price") or pos.get("last_price")
+                or pos.get("avg_buy_price") or pos.get("average_buy_price")
+            )
             value = qty * price if qty is not None and price is not None else None
         if value is not None and value > 0:
             total += value
@@ -991,6 +994,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         EMPTY_CALENDAR_RANKING,
         lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
     )
+    tradier_snapshot["_calendar_ranking"] = calendar_ranking
     unified_calendar_engine = run_optional_step(
         "unified_calendar_engine",
         "Running Unified Calendar Trade Engine v1...",

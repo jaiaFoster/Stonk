@@ -193,6 +193,17 @@ def status():
     }), 200
 
 
+@advisor_bp.route("/vault/status")
+def vault_status():
+    auth_error = _require_auth()
+    if auth_error:
+        return auth_error
+
+    from app.db.vault import vault_status as _vault_status
+    result = _vault_status()
+    return jsonify({"status": "ok", **result}), 200
+
+
 _VALID_ACTIONS = {"bought", "watched", "ignored", "rejected"}
 _VALID_OUTCOMES = {"positive", "negative", "neutral", "pending", "null"}
 

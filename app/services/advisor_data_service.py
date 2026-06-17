@@ -43,7 +43,10 @@ def build_advisor_snapshot_payload(snapshot: dict[str, Any], summary: dict[str, 
     strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
 
     daily_opp = tradier.get("_daily_opportunity_engine") or {}
-    actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
+    raw_actions = daily_opp.get("actions") or []
+    if isinstance(raw_actions, dict):
+        raw_actions = raw_actions.get("sample") or []
+    actions = [_action_shape(a) for a in raw_actions if isinstance(a, dict)]
 
     ff_strategy = tradier.get("_forward_factor_strategy") or {}
     ff_journal = ff_strategy.get("ff_journal") or {}
@@ -75,10 +78,10 @@ def build_advisor_snapshot_payload(snapshot: dict[str, Any], summary: dict[str, 
         "strategy_summary": _strategy_summary(strategies),
         "positions_summary": positions_summary,
         "ff_journal_summary": {
-            "total_observations": ff_journal.get("total") or 0,
-            "distinct_tickers": ff_journal.get("tickers") or 0,
-            "distinct_runs": ff_journal.get("runs") or 0,
-            "latest_date": ff_journal.get("latest_date"),
+            "total_observations": ff_journal.get("total_observations") or 0,
+            "distinct_tickers": ff_journal.get("tickers_observed") or 0,
+            "distinct_runs": ff_journal.get("runs_recorded") or 0,
+            "latest_date": ff_journal.get("latest_run_date"),
         },
         "calendar_candidates": calendar_items,
         "skew_candidates": skew_items,
