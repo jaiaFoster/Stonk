@@ -89,6 +89,29 @@ def require_auth(f):
     return decorated
 
 
+def require_dev(f):
+    """Decorator: require_auth + (is_dev=1 OR is_admin=1). For /api/dev/* endpoints."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token = _token_from_request()
+        if token and _is_legacy_token(token):
+            g.current_user = _synthetic_admin_user()
+            return f(*args, **kwargs)
+        if not token:
+            return jsonify({"status": "error", "error": "Unauthorized.", "provider_calls_triggered": False}), 401
+        try:
+            user = _resolve_user(token)
+        except Exception:
+            user = None
+        if not user or not user.get("is_active"):
+            return jsonify({"status": "error", "error": "Unauthorized.", "provider_calls_triggered": False}), 401
+        if not user.get("is_dev") and not user.get("is_admin"):
+            return jsonify({"status": "error", "error": "Forbidden.", "provider_calls_triggered": False}), 403
+        g.current_user = user
+        return f(*args, **kwargs)
+    return decorated
+
+
 def require_admin(f):
     """Decorator: require_auth + is_admin=1."""
     @wraps(f)

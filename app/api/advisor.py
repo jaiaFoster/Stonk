@@ -142,6 +142,14 @@ def _get_personal_user_id() -> int | None:
         return None
 
 
+def _pnl_dollars(net_debit: float | None, current_value: float | None, qty: float | None) -> float | None:
+    if net_debit is not None and current_value is not None:
+        per_spread = (current_value - net_debit) * 100.0
+        contracts = float(qty or 1)
+        return round(per_spread * contracts, 2)
+    return None
+
+
 def _log_event(endpoint: str, token: str | None, run_id: str | None) -> None:
     """Fire-and-forget telemetry write. Never raises."""
     try:
@@ -295,6 +303,45 @@ def positions():
                         "asset_type": "stock",
                     })
                 accounts_list = [{"account_type": acct, "positions": rows} for acct, rows in by_account.items()]
+
+                # TKT-035: options positions in spec format
+                options_positions = []
+                try:
+                    from app.db.users import get_user_positions as _get_all_positions
+                    import json as _json
+                    from app import config as _cfg
+                    exit_target = float(getattr(_cfg, "SKEW_PROFIT_TARGET_PCT", 50.0))
+                    all_positions = _get_all_positions(user_id, run_id=user_run.get("run_id"))
+                    for p in all_positions:
+                        if p.get("position_type") != "options":
+                            continue
+                        details = {}
+                        try:
+                            details = _json.loads(p.get("option_details") or "{}")
+                        except Exception:
+                            pass
+                        options_positions.append({
+                            "ticker": p.get("ticker"),
+                            "strategy_type": details.get("strategy_type") or "unknown",
+                            "option_type": details.get("option_type"),
+                            "legs": details.get("legs") or [],
+                            "net_debit": details.get("net_debit"),
+                            "current_value": details.get("current_value"),
+                            "unrealized_pnl": _pnl_dollars(details.get("net_debit"), details.get("current_value"), p.get("quantity")),
+                            "unrealized_pnl_pct": p.get("unrealized_pnl_pct"),
+                            "max_profit": details.get("max_profit"),
+                            "max_loss": details.get("max_loss"),
+                            "pct_of_max_profit": details.get("pct_of_max_profit"),
+                            "exit_target_pct": exit_target,
+                            "exit_signal": details.get("exit_signal"),
+                            "exit_reason": details.get("exit_reason"),
+                        })
+                except Exception:
+                    pass
+
+                has_open_verticals = any(p.get("strategy_type") == "skew_vertical" for p in options_positions)
+                has_open_calendars = any(p.get("strategy_type") == "earnings_calendar" for p in options_positions)
+
                 return jsonify({
                     "status": "ok",
                     "provider_calls_triggered": False,
@@ -302,6 +349,10 @@ def positions():
                     "as_of": user_run.get("completed_at"),
                     "user_run_id": user_run.get("run_id"),
                     "accounts": accounts_list,
+                    "options_positions": options_positions,
+                    "options_count": len(options_positions),
+                    "has_open_verticals": has_open_verticals,
+                    "has_open_calendars": has_open_calendars,
                 }), 200
         except Exception:
             pass  # Fall through

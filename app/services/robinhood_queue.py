@@ -75,3 +75,40 @@ def fetch_with_lock(user_id: int, rh_username: str, rh_password: str) -> list[di
             raise
     finally:
         _rh_lock.release()
+
+
+def fetch_all_with_lock(
+    user_id: int, rh_username: str, rh_password: str
+) -> tuple[list[dict[Any, Any]], list[dict[Any, Any]]]:
+    """
+    Like fetch_with_lock but also fetches raw option positions in the same session.
+    Returns (stock_positions, raw_option_positions).
+    One login, one logout — no second Robinhood session.
+    Raises RobinhoodQueueTimeout, RobinhoodDeviceApprovalRequired, or RuntimeError.
+    NEVER logs rh_password.
+    """
+    timeout = int(getattr(config, "RH_QUEUE_TIMEOUT_SECONDS", 120))
+    acquired = _rh_lock.acquire(timeout=timeout)
+    if not acquired:
+        raise RobinhoodQueueTimeout(
+            "Robinhood fetch queue busy. Try again in 60 seconds."
+        )
+    try:
+        from app.services.broker_provider import BrokerCredentialProvider
+        provider = BrokerCredentialProvider.get_provider("robinhood")
+        try:
+            return provider.fetch_positions_with_options(rh_username, rh_password, user_id)
+        except RuntimeError as exc:
+            low = str(exc).lower()
+            if (
+                "device_approval" in low
+                or "verification" in low
+                or "challenge" in low
+                or "approval" in low
+                or "approve" in low
+                or "device approval" in low
+            ):
+                raise RobinhoodDeviceApprovalRequired(str(exc)) from exc
+            raise
+    finally:
+        _rh_lock.release()

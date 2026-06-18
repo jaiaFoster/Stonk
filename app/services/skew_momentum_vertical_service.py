@@ -14,6 +14,27 @@ from app.utils.log_safety import sanitize_for_log
 LogFn = Callable[[str], None]
 
 
+def _compute_exit_signal(position: dict[str, Any]) -> tuple[str, str | None]:
+    """
+    TKT-035: Advisory exit signal for open vertical spread.
+    Returns (signal, reason). Never triggers any order or broker action.
+    """
+    pct_of_max = _first_num(position.get("pct_of_max_profit")) or 0.0
+    dte = position.get("dte")
+    pnl_pct = _first_num(position.get("unrealized_pnl_pct")) or 0.0
+    profit_target = float(getattr(config, "SKEW_PROFIT_TARGET_PCT", 50.0))
+    stop_loss = float(getattr(config, "SKEW_STOP_LOSS_PCT", 50.0))
+    exit_dte = int(getattr(config, "SKEW_EXIT_DTE_THRESHOLD", 5))
+
+    if pct_of_max >= profit_target:
+        return "EXIT_TARGET", f"Profit target reached ({pct_of_max:.1f}% of max profit)"
+    if pnl_pct <= -stop_loss:
+        return "EXIT_STOP", f"Stop loss triggered ({pnl_pct:.1f}% loss)"
+    if isinstance(dte, int) and dte <= exit_dte:
+        return "EXIT_EXPIRY", f"Near expiration ({dte} DTE)"
+    return "HOLD", None
+
+
 def build_skew_momentum_vertical_strategy(
     positions: list[dict[str, Any]] | None,
     watchlist_candidates: dict[str, Any] | None,
@@ -25,6 +46,7 @@ def build_skew_momentum_vertical_strategy(
     log_print: LogFn | None = None,
     provider: TradierProvider | None = None,
     data_hub: Any | None = None,
+    open_options: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     logger = log_print or (lambda msg: None)
     result = {
@@ -46,6 +68,22 @@ def build_skew_momentum_vertical_strategy(
         "configured_max_tickers": int(config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN),
         "runtime_ticker_cap": int(config.SKEW_VERTICAL_DEV_MAX_TICKERS_PER_RUN if str(run_mode).lower() == "dev" else config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN),
     }
+    # TKT-035: populate active_rows from detected open verticals (advisory, read-only)
+    if open_options:
+        verticals = open_options.get("verticals") or []
+        active_rows = []
+        for v in verticals:
+            exit_signal, exit_reason = _compute_exit_signal(v)
+            row = dict(v)
+            row["exit_signal"] = exit_signal
+            row["exit_reason"] = exit_reason
+            active_rows.append(row)
+        if active_rows:
+            result["active_items"] = active_rows
+            result["active_rows"] = active_rows
+            result["lifecycle_status"] = "active"
+            logger(f"Strategy 2: {len(active_rows)} active vertical(s) detected from open options.")
+
     if not result["enabled"]:
         result["errors"].append("SKEW_VERTICAL_STRATEGY_ENABLED=false")
         return _finalize(result)
@@ -361,7 +399,8 @@ def _finalize(result):
     result["pass_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("PASS")]
     result["watch_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("WATCH")]
     result["blocked_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("FAIL")]
-    result["has_data"] = bool(result["items"])
+    result.setdefault("active_rows", result.get("active_items") or [])
+    result["has_data"] = bool(result["items"] or result.get("active_rows"))
     result["summary"] = {
         "candidate_count": len(result["items"]),
         "pass_count": len(result["pass_items"]),

@@ -56,6 +56,7 @@ def status():
         "status": "ok",
         "username": user.get("username"),
         "is_admin": bool(user.get("is_admin")),
+        "is_dev": bool(user.get("is_dev")),
         "api_key_prefix": prefix,
         "account_active": bool(user.get("is_active")),
         "last_login_at": user.get("last_login_at"),
@@ -99,20 +100,14 @@ def trigger_run():
     Synchronous — returns when complete or failed (gunicorn timeout 300s, queue 120s).
     """
     user = g.current_user or {}
-    user_id = user.get("id")
-    if not user_id:
-        return jsonify({
-            "status": "error",
-            "error": "Cannot run personalization for legacy token.",
-            "provider_calls_triggered": False,
-        }), 400
+    user_id = user.get("id") or 0
 
-    # 28E: rate limiting — max runs per rolling 60-minute window
+    # 28E/TKT-033: rate limiting at absolute top — before any other gate
     from app import config as _cfg
     rate_limit = int(getattr(_cfg, "USER_RUN_RATE_LIMIT_PER_HOUR", 3))
     from app.db.users import get_runs_in_last_hour, record_rate_limited_run
     import secrets as _secrets
-    recent_runs = get_runs_in_last_hour(user_id)
+    recent_runs = get_runs_in_last_hour(user_id) if user_id else []
     if len(recent_runs) >= rate_limit:
         rate_limited_run_id = "rl_" + _secrets.token_hex(8)
         try:
@@ -140,6 +135,23 @@ def trigger_run():
             "limit": rate_limit,
             "provider_calls_triggered": False,
         }), 429
+
+    # Legacy token cannot run personalization
+    if not user_id:
+        return jsonify({
+            "status": "error",
+            "error": "Cannot run personalization for legacy token.",
+            "provider_calls_triggered": False,
+        }), 400
+
+    # TKT-036: admin accounts cannot run personalization (use is_dev=1 member instead)
+    if user.get("is_admin") and not user.get("is_dev"):
+        return jsonify({
+            "status": "error",
+            "error": "admin_cannot_run_personalization",
+            "message": "Admin accounts cannot run personalization. Use a member account with is_dev=1.",
+            "provider_calls_triggered": False,
+        }), 403
 
     # Reload full user row to get encrypted Robinhood creds
     from app.db.users import get_user_by_id

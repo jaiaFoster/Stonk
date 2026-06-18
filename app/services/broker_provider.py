@@ -45,6 +45,18 @@ class BrokerCredentialProvider:
         """
         raise NotImplementedError
 
+    def fetch_positions_with_options(
+        self, username: str, password_decrypted: str, user_id: int
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Log in once, fetch stock positions AND raw option positions, log out.
+        Returns (stock_positions, raw_option_positions).
+        Options fetch uses the same authenticated session — no second login.
+        Raises RuntimeError on auth failure.
+        NEVER log password_decrypted.
+        """
+        raise NotImplementedError
+
     def broker_type(self) -> str:
         raise NotImplementedError
 
@@ -215,6 +227,105 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                 flush=True,
             )
             return positions
+
+        finally:
+            try:
+                r.logout()
+            except Exception:
+                pass
+
+    def fetch_positions_with_options(
+        self, username: str, password_decrypted: str, user_id: int
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """
+        Log in once, fetch stock positions AND raw Robinhood option positions, log out.
+        r.logout() is guaranteed in finally — no second session opened.
+        NEVER logs password_decrypted.
+        """
+        import robin_stocks.robinhood as r
+
+        data_dir = str(getattr(config, "DATA_DIR", "data"))
+        pickle_name = os.path.join(data_dir, f"rh_user_{user_id}")
+
+        try:
+            r.login(
+                username=username,
+                password=password_decrypted,
+                store_session=True,
+                pickle_name=pickle_name,
+            )
+        except Exception as exc:
+            err = str(exc).replace(password_decrypted, "[REDACTED]")
+            raise RuntimeError(f"Robinhood login failed: {err}") from None
+
+        try:
+            # --- Stock positions ---
+            stock_positions: list[dict[str, Any]] = []
+            try:
+                raw_stocks = r.account.get_open_stock_positions() or []
+            except Exception as exc:
+                err = str(exc).replace(password_decrypted, "[REDACTED]")
+                print(f"[broker_provider] get_open_stock_positions failed: {err}", flush=True)
+                raw_stocks = []
+
+            for pos in raw_stocks:
+                try:
+                    qty = float(pos.get("quantity") or 0)
+                    if qty <= 0:
+                        continue
+                    ticker = pos.get("symbol") or ""
+                    if not ticker:
+                        url = pos.get("instrument") or ""
+                        if url:
+                            try:
+                                ticker = r.get_symbol_by_url(url) or ""
+                            except Exception:
+                                pass
+                    if not ticker:
+                        continue
+                    avg_cost = float(pos.get("average_buy_price") or 0)
+                    current_price: float | None = None
+                    try:
+                        quotes = r.stocks.get_latest_price(ticker)
+                        if quotes and quotes[0] is not None:
+                            current_price = float(quotes[0])
+                    except Exception:
+                        pass
+                    market_value = current_price * qty if current_price is not None else None
+                    pnl_pct: float | None = None
+                    if current_price is not None and avg_cost and avg_cost > 0:
+                        pnl_pct = round((current_price - avg_cost) / avg_cost * 100, 3)
+                    stock_positions.append({
+                        "ticker": str(ticker).upper(),
+                        "quantity": qty,
+                        "avg_cost": avg_cost,
+                        "current_price": current_price,
+                        "market_value": market_value,
+                        "unrealized_pnl_pct": pnl_pct,
+                        "account_type": pos.get("account_number") or "default",
+                    })
+                except Exception:
+                    traceback.print_exc()
+                    continue
+
+            print(
+                f"[broker_provider] user_id={user_id} fetched {len(stock_positions)} stock position(s).",
+                flush=True,
+            )
+
+            # --- Raw option positions (same session, no second login) ---
+            raw_option_positions: list[dict[str, Any]] = []
+            try:
+                raw_option_positions = r.options.get_open_option_positions() or []
+                print(
+                    f"[broker_provider] user_id={user_id} fetched {len(raw_option_positions)} raw option position(s).",
+                    flush=True,
+                )
+            except Exception as exc:
+                err = str(exc).replace(password_decrypted, "[REDACTED]")
+                print(f"[broker_provider] get_open_option_positions failed (non-fatal): {err}", flush=True)
+
+            return stock_positions, raw_option_positions
 
         finally:
             try:
