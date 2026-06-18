@@ -59,6 +59,7 @@ def list_users():
             "username": u.get("username"),
             "is_active": bool(u.get("is_active")),
             "is_admin": bool(u.get("is_admin")),
+            "is_dev": bool(u.get("is_dev")),
             "broker_type": u.get("broker_type") or "robinhood",
             "credentials_validated": bool(u.get("credentials_validated_at")),
             "credentials_validated_at": u.get("credentials_validated_at"),

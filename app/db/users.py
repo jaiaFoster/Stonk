@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS users (
     robinhood_password_encrypted TEXT,
     is_admin INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1,
+    is_dev INTEGER DEFAULT 0,
     created_at TEXT DEFAULT (datetime('now')),
     last_login_at TEXT
 );
@@ -97,6 +98,26 @@ CREATE TABLE IF NOT EXISTS user_daily_opportunity (
     notes TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS user_option_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    underlying TEXT NOT NULL,
+    strategy TEXT,
+    option_type TEXT,
+    strike REAL,
+    front_expiration TEXT,
+    back_expiration TEXT,
+    front_dte INTEGER,
+    back_dte INTEGER,
+    quantity REAL,
+    side_inferred INTEGER DEFAULT 0,
+    exit_signal TEXT,
+    action TEXT,
+    calendar_json TEXT,
+    fetched_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -122,8 +143,10 @@ def _connect():
 def get_encryption_key_status() -> bool:
     """Return True if ROBINHOOD_ENCRYPTION_KEY is set and is a valid Fernet key."""
     try:
+        import os
         from cryptography.fernet import Fernet  # type: ignore
-        key = config.ROBINHOOD_ENCRYPTION_KEY
+        # TKT-034: read directly from env to avoid config-level whitespace issues
+        key = os.environ.get("ROBINHOOD_ENCRYPTION_KEY", "").strip()
         if not key:
             return False
         Fernet(key.encode() if isinstance(key, str) else key)
@@ -145,11 +168,71 @@ def _migrate_28c(conn: sqlite3.Connection) -> None:
             pass  # column already exists — safe to ignore
 
 
+def _migrate_29a(conn: sqlite3.Connection) -> None:
+    """Add 29A columns. Idempotent."""
+    for sql in (
+        "ALTER TABLE users ADD COLUMN is_dev INTEGER DEFAULT 0",
+        "ALTER TABLE user_positions ADD COLUMN position_type TEXT DEFAULT 'stock'",
+        "ALTER TABLE user_positions ADD COLUMN option_details TEXT",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+
+
 def init_db() -> None:
     """Create tables if they don't exist, run schema migrations."""
     with _connect() as conn:
         conn.executescript(SCHEMA)
         _migrate_28c(conn)
+        _migrate_29a(conn)
+
+
+def seed_sysadmin() -> None:
+    """
+    TKT-036: Ensure asa_admin sysadmin exists. Demote ASA_ADMIN_USERNAME account to member + is_dev=1.
+    Safe to call repeatedly — all operations are idempotent.
+    Never logs passwords.
+    """
+    sysadmin_username = config.ASA_SYSADMIN_USERNAME or "asa_admin"
+    sysadmin_password = config.ASA_SYSADMIN_PASSWORD or ""
+    if not sysadmin_password:
+        import secrets as _sec
+        sysadmin_password = _sec.token_urlsafe(32)
+        print(
+            f"[seed_sysadmin] ASA_SYSADMIN_PASSWORD not set — generated random password for {sysadmin_username}. "
+            "Set ASA_SYSADMIN_PASSWORD env var to persist it across restarts.",
+            flush=True,
+        )
+
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT id FROM users WHERE username=? AND is_admin=1", (sysadmin_username,)
+        ).fetchone()
+        if not row:
+            pw_hash = hash_password(sysadmin_password)
+            api_key = generate_api_key()
+            conn.execute(
+                "INSERT OR IGNORE INTO users (username, password_hash, api_key, is_admin, is_active, is_dev) "
+                "VALUES (?,?,?,1,1,1)",
+                (sysadmin_username, pw_hash, api_key),
+            )
+            new_row = conn.execute("SELECT api_key FROM users WHERE username=?", (sysadmin_username,)).fetchone()
+            if new_row:
+                print(f"[seed_sysadmin] Created {sysadmin_username} sysadmin account.", flush=True)
+                print(f"[seed_sysadmin] {sysadmin_username} API key (save this): {new_row[0]}", flush=True)
+
+        # Demote ASA_ADMIN_USERNAME account (jaia) to member + set is_dev=1
+        demote_username = config.ASA_ADMIN_USERNAME or "jaia"
+        demote_row = conn.execute(
+            "SELECT id FROM users WHERE username=?", (demote_username,)
+        ).fetchone()
+        if demote_row:
+            conn.execute(
+                "UPDATE users SET is_admin=0, is_dev=1 WHERE username=?", (demote_username,)
+            )
+            print(f"[seed_sysadmin] Demoted {demote_username} to member with is_dev=1.", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -486,6 +569,59 @@ def get_user_positions(user_id: int, run_id: str | None = None) -> list[dict[str
     return [dict(r) for r in rows]
 
 
+def save_user_option_positions_to_positions(
+    user_id: int, run_id: str, options_positions: list[dict[str, Any]]
+) -> None:
+    """
+    TKT-035: Write normalized option positions to user_positions with position_type='options'.
+    option_details stores strategy_type, strike, expiration, legs, etc. as JSON.
+    """
+    import json as _json
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for opt in options_positions:
+        if not isinstance(opt, dict):
+            continue
+        ticker = str(opt.get("ticker") or opt.get("underlying") or "").upper().strip()
+        if not ticker:
+            continue
+        details = {
+            "strategy_type": opt.get("strategy_type"),
+            "option_type": opt.get("option_type"),
+            "strike": opt.get("strike"),
+            "expiration": opt.get("expiration"),
+            "legs": opt.get("legs") or [],
+            "net_debit": opt.get("net_debit"),
+            "current_value": opt.get("current_value"),
+            "max_profit": opt.get("max_profit"),
+            "max_loss": opt.get("max_loss"),
+            "pct_of_max_profit": opt.get("pct_of_max_profit"),
+            "exit_signal": opt.get("exit_signal"),
+            "exit_reason": opt.get("exit_reason"),
+        }
+        rows.append((
+            user_id, run_id, ticker,
+            opt.get("quantity"),
+            opt.get("net_debit"),
+            opt.get("current_value"),
+            opt.get("current_value"),
+            opt.get("unrealized_pnl_pct"),
+            opt.get("account_type") or "options",
+            now,
+            "options",
+            _json.dumps(details),
+        ))
+    if not rows:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT INTO user_positions (user_id, run_id, ticker, quantity, avg_cost, current_price, "
+            "market_value, unrealized_pnl_pct, account_type, fetched_at, position_type, option_details) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+
+
 def save_user_daily_opportunity(user_id: int, run_id: str, actions: list[dict[str, Any]]) -> None:
     rows = [
         (
@@ -580,6 +716,7 @@ def get_all_users_with_run_status() -> list[dict[str, Any]]:
                 u.username,
                 u.is_active,
                 u.is_admin,
+                u.is_dev,
                 u.broker_type,
                 u.credentials_validated_at,
                 u.credentials_last_error,
@@ -777,3 +914,78 @@ def seed_admin_if_needed() -> None:
         print(f"28A: Admin API key (save this): {api_key}", flush=True)
     except Exception as exc:
         print(f"28A: Admin seed failed (non-fatal): {exc}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# 29A: User option positions (TKT-035)
+# ---------------------------------------------------------------------------
+
+def save_user_option_positions(user_id: int, run_id: str, calendars: list[dict[str, Any]]) -> None:
+    """Persist detected calendar spreads from a personalization run."""
+    import json as _json
+    now = datetime.now(timezone.utc).isoformat()
+    rows = []
+    for cal in calendars:
+        if not isinstance(cal, dict):
+            continue
+        underlying = str(cal.get("underlying") or cal.get("ticker") or "").upper().strip()
+        if not underlying:
+            continue
+        rows.append((
+            user_id, run_id, underlying,
+            str(cal.get("strategy") or "Long Calendar Spread"),
+            str(cal.get("option_type") or ""),
+            cal.get("strike"),
+            cal.get("front_expiration"),
+            cal.get("back_expiration"),
+            cal.get("front_dte"),
+            cal.get("back_dte"),
+            cal.get("quantity"),
+            1 if cal.get("side_inferred") else 0,
+            _exit_signal_for_calendar(cal),
+            str(cal.get("action") or "MONITOR"),
+            _json.dumps(cal),
+            now,
+        ))
+    if not rows:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT INTO user_option_positions "
+            "(user_id, run_id, underlying, strategy, option_type, strike, "
+            "front_expiration, back_expiration, front_dte, back_dte, quantity, "
+            "side_inferred, exit_signal, action, calendar_json, fetched_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+
+
+def _exit_signal_for_calendar(cal: dict[str, Any]) -> str | None:
+    front_dte = cal.get("front_dte")
+    if isinstance(front_dte, int):
+        if front_dte <= 1:
+            return "immediate"
+        if front_dte <= 3:
+            return "assignment_risk"
+        if front_dte <= 7:
+            return "check_exit"
+    return None
+
+
+def get_user_option_positions(user_id: int, run_id: str | None = None) -> list[dict[str, Any]]:
+    """Return stored calendar spreads for the latest (or specified) completed run."""
+    with _connect() as conn:
+        if run_id:
+            rows = conn.execute(
+                "SELECT * FROM user_option_positions WHERE user_id=? AND run_id=? ORDER BY underlying",
+                (user_id, run_id),
+            ).fetchall()
+        else:
+            latest = get_latest_complete_user_run(user_id)
+            if not latest:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM user_option_positions WHERE user_id=? AND run_id=? ORDER BY underlying",
+                (user_id, latest["run_id"]),
+            ).fetchall()
+    return [dict(r) for r in rows]

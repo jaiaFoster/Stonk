@@ -613,3 +613,13 @@ USER_RUN_STALE_RUNNING_SECONDS = _int_env("USER_RUN_STALE_RUNNING_SECONDS", 180)
 USER_RUN_RATE_LIMIT_PER_HOUR = _int_env("USER_RUN_RATE_LIMIT_PER_HOUR", 3)
 # Comma-separated username prefixes treated as test users in admin list view.
 ADMIN_TEST_USER_PATTERNS = os.environ.get("ADMIN_TEST_USER_PATTERNS", "testuser,smoke,rh_test,rh28b")
+
+# --- 29A: Sysadmin seed (TKT-036) ---
+# Separate sysadmin account from member dev account (jaia).
+ASA_SYSADMIN_USERNAME = os.environ.get("ASA_SYSADMIN_USERNAME", "asa_admin").strip()
+ASA_SYSADMIN_PASSWORD = os.environ.get("ASA_SYSADMIN_PASSWORD", "").strip()
+
+# --- 29A: Skew vertical exit signal thresholds (TKT-035) ---
+SKEW_PROFIT_TARGET_PCT = _float_env("SKEW_PROFIT_TARGET_PCT", 50.0)   # % of max profit → EXIT_TARGET
+SKEW_STOP_LOSS_PCT = _float_env("SKEW_STOP_LOSS_PCT", 50.0)           # % loss of debit → EXIT_STOP
+SKEW_EXIT_DTE_THRESHOLD = _int_env("SKEW_EXIT_DTE_THRESHOLD", 5)      # DTE <= this → EXIT_EXPIRY

@@ -164,6 +164,79 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
     return _finalize_result(result)
 
 
+def detect_from_robinhood_raw_positions(
+    raw_positions: list[dict[str, Any]],
+    log_print: LogFn | None = None,
+) -> dict[str, Any]:
+    """
+    Process already-fetched raw Robinhood option positions without opening a new session.
+    Takes the raw API response from r.options.get_open_option_positions() and runs it
+    through the same normalization + calendar detection pipeline.
+
+    Use this when the Robinhood session is already open (personalization run) to avoid
+    opening a second authenticated session.
+    """
+    from app.providers.robinhood_provider import _normalize_option_position  # type: ignore[attr-defined]
+
+    logger = log_print or (lambda msg: print(msg, flush=True))
+
+    result: dict[str, Any] = {
+        "source": "robinhood_session_reuse",
+        "sources": [{"source": "robinhood", "configured": True}],
+        "has_data": False,
+        "enabled": True,
+        "configured": True,
+        "account_ids": [],
+        "positions": [],
+        "option_legs": [],
+        "calendars": [],
+        "errors": [],
+        "summary": {},
+    }
+
+    if not raw_positions:
+        return _finalize_result(result)
+
+    seen_positions: set[str] = set()
+    option_legs: list[dict[str, Any]] = []
+    raw_normalized: list[dict[str, Any]] = []
+
+    for raw in raw_positions:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            dedupe_key = str(raw.get("id") or raw.get("url") or raw.get("option") or id(raw))
+            if dedupe_key in seen_positions:
+                continue
+            seen_positions.add(dedupe_key)
+
+            normalized = _normalize_option_position(raw, None, "robinhood_default")
+            if not normalized:
+                continue
+            raw_normalized.append(normalized)
+            leg = _robinhood_position_to_option_leg(normalized)
+            if leg:
+                option_legs.append(leg)
+        except Exception as exc:
+            result["errors"].append(f"normalize_failed: {exc}")
+
+    result["positions"] = raw_normalized
+    result["option_legs"] = option_legs
+
+    calendars = _detect_calendar_spreads(option_legs)
+    verticals = _detect_vertical_spreads(option_legs)
+    result["calendars"] = calendars
+    result["verticals"] = verticals
+    result["has_data"] = bool(raw_normalized or option_legs or calendars or verticals)
+
+    logger(
+        f"detect_from_robinhood_raw_positions: "
+        f"{len(raw_normalized)} normalized, {len(option_legs)} legs, "
+        f"{len(calendars)} calendar(s), {len(verticals)} vertical(s)."
+    )
+    return _finalize_result(result)
+
+
 def _configured_robinhood_option_accounts() -> list[str] | None:
     raw = str(getattr(config, "ROBINHOOD_OPTIONS_ACCOUNT_NUMBERS", "") or "").strip()
     if not raw:
@@ -484,6 +557,101 @@ def _detect_calendar_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
     result.sort(key=lambda item: (item.get("underlying") or "", item.get("strike") or 0, item.get("front_expiration") or ""))
     return result
 
+def _detect_vertical_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    Detect vertical spreads: same ticker, same option_type, same expiration, different strikes.
+    Returns list of vertical spread summaries.
+    """
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for leg in option_legs:
+        key = (
+            str(leg.get("underlying") or "").upper(),
+            str(leg.get("option_type") or "").lower(),
+            str(leg.get("expiration") or ""),
+        )
+        if key[0] and key[1] in {"call", "put"} and key[2]:
+            groups.setdefault(key, []).append(leg)
+
+    verticals: list[dict[str, Any]] = []
+    for (underlying, option_type, expiration), legs in groups.items():
+        if len(legs) < 2:
+            continue
+        longs = [leg for leg in legs if leg.get("side") == "long"]
+        shorts = [leg for leg in legs if leg.get("side") == "short"]
+        if not longs or not shorts:
+            continue
+        for long_leg in longs:
+            for short_leg in shorts:
+                long_strike = _float_or_none(long_leg.get("strike"))
+                short_strike = _float_or_none(short_leg.get("strike"))
+                if long_strike is None or short_strike is None or long_strike == short_strike:
+                    continue
+                qty = min(float(long_leg.get("abs_quantity") or 0), float(short_leg.get("abs_quantity") or 0))
+                if qty <= 0:
+                    continue
+                width = abs(long_strike - short_strike)
+                long_entry = _entry_price_per_share(long_leg)
+                short_entry = _entry_price_per_share(short_leg)
+                net_debit = None
+                if long_entry is not None and short_entry is not None:
+                    net_debit = long_entry - short_entry
+                long_mid = _float_or_none(long_leg.get("mid"))
+                short_mid = _float_or_none(short_leg.get("mid"))
+                current_value = None
+                if long_mid is not None and short_mid is not None:
+                    current_value = long_mid - short_mid
+                max_profit = (width - net_debit) * 100.0 if net_debit is not None else None
+                max_loss = net_debit * 100.0 if net_debit is not None else None
+                pct_of_max_profit = None
+                if current_value is not None and net_debit is not None and width > 0:
+                    pct_of_max_profit = round(current_value / width * 100.0, 2)
+                dte = long_leg.get("dte")
+                verticals.append({
+                    "strategy": "Debit Vertical Spread",
+                    "strategy_type": "skew_vertical",
+                    "underlying": underlying,
+                    "ticker": underlying,
+                    "option_type": option_type,
+                    "expiration": expiration,
+                    "dte": dte,
+                    "quantity": qty,
+                    "long_strike": long_strike,
+                    "short_strike": short_strike,
+                    "width": width,
+                    "long_leg": long_leg,
+                    "short_leg": short_leg,
+                    "legs": [
+                        {
+                            "strike": long_strike,
+                            "expiration": expiration,
+                            "dte": dte,
+                            "position": "long",
+                            "quantity": long_leg.get("abs_quantity"),
+                            "average_price": long_leg.get("avg_cost_per_share"),
+                            "current_price": long_leg.get("mid"),
+                        },
+                        {
+                            "strike": short_strike,
+                            "expiration": expiration,
+                            "dte": dte,
+                            "position": "short",
+                            "quantity": short_leg.get("abs_quantity"),
+                            "average_price": short_leg.get("avg_cost_per_share"),
+                            "current_price": short_leg.get("mid"),
+                        },
+                    ],
+                    "net_debit": net_debit,
+                    "current_value": current_value,
+                    "max_profit": max_profit,
+                    "max_loss": max_loss,
+                    "pct_of_max_profit": pct_of_max_profit,
+                    "source": str(long_leg.get("broker") or long_leg.get("source") or "robinhood"),
+                    "broker": str(long_leg.get("broker") or long_leg.get("source") or "robinhood"),
+                })
+
+    return verticals
+
+
 def _build_calendar_summary(
     underlying: str,
     option_type: str,
@@ -692,17 +860,21 @@ def _next_check_for_calendar(short_leg: dict[str, Any]) -> str:
 def _finalize_result(result: dict[str, Any]) -> dict[str, Any]:
     option_legs = result.get("option_legs") or []
     calendars = result.get("calendars") or []
+    verticals = result.get("verticals") or []
     brokers = sorted({str((leg or {}).get("broker") or (leg or {}).get("source") or "unknown") for leg in option_legs if isinstance(leg, dict)})
     inferred_calendar_count = sum(1 for cal in calendars if isinstance(cal, dict) and cal.get("side_inferred"))
+    result.setdefault("verticals", verticals)
     result["summary"] = {
         "account_count": len(result.get("account_ids") or []),
         "total_positions": len(result.get("positions") or []),
         "option_leg_count": len(option_legs),
         "calendar_count": len(calendars),
+        "vertical_count": len(verticals),
         "inferred_calendar_count": inferred_calendar_count,
         "brokers": brokers,
         "has_open_options": bool(option_legs),
         "has_open_calendars": bool(calendars),
+        "has_open_verticals": bool(verticals),
     }
     return result
 

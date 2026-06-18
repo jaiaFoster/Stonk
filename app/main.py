@@ -50,6 +50,13 @@ try:
 except Exception as _seed_exc:
     print(f"28A seed: {_seed_exc}", flush=True)
 
+# 29A: TKT-036 sysadmin seed + jaia demotion
+try:
+    from app.db.users import seed_sysadmin
+    seed_sysadmin()
+except Exception as _seed29_exc:
+    print(f"29A seed_sysadmin: {_seed29_exc}", flush=True)
+
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()
 RUN_STATE_LOCK = threading.Lock()
@@ -86,20 +93,23 @@ def _valid_run_token(token: str | None) -> bool:
 
 
 def _valid_dev_token(token: str | None) -> bool:
-    """Allow legacy DEV_API_TOKEN/RUN_TOKEN or any active admin user key/session (28A)."""
+    """Allow legacy token, any active admin, or any is_dev=1 user (TKT-036)."""
     if not token:
         return False
     # Legacy: DEV_API_TOKEN / RUN_TOKEN
     expected = config.DEV_API_TOKEN or config.RUN_TOKEN
     if expected and token == expected:
         return True
-    # 28A: user must be admin
+    # TKT-036: is_admin=1 OR is_dev=1 grants dev endpoint access
     try:
         from app.auth import _resolve_user, _is_legacy_token
         if _is_legacy_token(token):
             return True
         user = _resolve_user(token)
-        return bool(user and user.get("is_active") and user.get("is_admin"))
+        return bool(
+            user and user.get("is_active")
+            and (user.get("is_admin") or user.get("is_dev"))
+        )
     except Exception:
         return False
 
