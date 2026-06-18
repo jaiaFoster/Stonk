@@ -275,8 +275,10 @@ def check_password(plain: str, hashed: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _fernet():
+    import os
     from cryptography.fernet import Fernet  # type: ignore
-    key = config.ROBINHOOD_ENCRYPTION_KEY
+    # Read directly from env (not config module) to avoid cached/whitespace issues.
+    key = os.environ.get("ROBINHOOD_ENCRYPTION_KEY", "").strip()
     if not key:
         raise RuntimeError("ROBINHOOD_ENCRYPTION_KEY not set")
     return Fernet(key.encode() if isinstance(key, str) else key)

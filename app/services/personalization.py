@@ -322,8 +322,15 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
     rh_username = str(user.get("robinhood_username") or "").strip()
     rh_password_enc = str(user.get("robinhood_password_encrypted") or "").strip()
 
-    # Q5: no creds → shared output, no error
+    # Q5: no creds — write a run row first so it counts toward the rate limit window,
+    # then return the shared-signal response.
     if not rh_username or not rh_password_enc:
+        _no_creds_run_id = generate_run_id()
+        try:
+            create_user_run(user_id, _no_creds_run_id)
+            fail_user_run(_no_creds_run_id, "no_robinhood_credentials")
+        except Exception:
+            pass
         return {
             "status": "ok",
             "personalized": False,

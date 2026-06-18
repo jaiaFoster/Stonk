@@ -357,7 +357,7 @@ def positions():
         except Exception:
             pass  # Fall through
 
-        # No run yet
+        # No run yet — include empty options fields so callers don't need to guard on MISSING keys
         return jsonify({
             "status": "ok",
             "provider_calls_triggered": False,
@@ -365,6 +365,10 @@ def positions():
             "reason": "no_run_yet",
             "message": "No personalization run yet. POST /api/user/run to fetch your positions.",
             "accounts": [],
+            "options_positions": [],
+            "options_count": 0,
+            "has_open_verticals": False,
+            "has_open_calendars": False,
         }), 200
 
     # Admin / legacy token: shared positions from core run snapshot
