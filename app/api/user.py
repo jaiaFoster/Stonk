@@ -144,14 +144,14 @@ def trigger_run():
             "provider_calls_triggered": False,
         }), 400
 
-    # TKT-036: admin accounts cannot run personalization (use is_dev=1 member instead)
-    if user.get("is_admin") and not user.get("is_dev"):
+    # TKT-036: all admin accounts are blocked from running personalization
+    if user.get("is_admin"):
         return jsonify({
             "status": "error",
-            "error": "admin_cannot_run_personalization",
-            "message": "Admin accounts cannot run personalization. Use a member account with is_dev=1.",
+            "error": "admin_no_personalization",
+            "message": "Admin accounts cannot run personalization. Use a member account.",
             "provider_calls_triggered": False,
-        }), 403
+        }), 400
 
     # Reload full user row to get encrypted Robinhood creds
     from app.db.users import get_user_by_id

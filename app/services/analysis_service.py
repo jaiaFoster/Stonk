@@ -1097,7 +1097,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             data_hub=hub,
             open_options=tradier_snapshot.get("_open_options_positions"),
         ),
-        {"source": "skew_momentum_vertical_strategy_v1", "enabled": True, "has_data": False, "items": [], "pass_items": [], "watch_items": [], "blocked_items": [], "active_items": [], "errors": [], "summary": {}},
+        {"source": "skew_momentum_vertical_strategy_v1", "enabled": True, "has_data": False, "items": [], "pass_items": [], "watch_items": [], "blocked_items": [], "active_items": [], "active_rows": [], "active_count": 0, "lifecycle_status": "deferred", "errors": [], "summary": {}},
         lambda result: f"Skew momentum vertical strategy produced {len((result or {}).get('items', []) or [])} decision row(s).",
     )
     tradier_snapshot["_skew_momentum_vertical_strategy"] = skew_momentum_vertical_strategy
