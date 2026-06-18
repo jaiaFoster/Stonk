@@ -80,12 +80,15 @@ def build_user_daily_opportunity(
     Forward-factor actions are excluded (dry-run, never in Daily Opportunity).
     """
     # Build ticker → position map and total account value
+    # 28D: only sum positions with valid (> 0) market_value — skip null-price positions
     held: dict[str, dict[str, Any]] = {}
     total_account_value = 0.0
     for pos in positions:
         ticker = str(pos.get("ticker") or "").upper()
-        mv = float(pos.get("market_value") or 0)
-        total_account_value += mv
+        mv_raw = pos.get("market_value")
+        mv = float(mv_raw) if mv_raw is not None else 0.0
+        if mv > 0:
+            total_account_value += mv
         if ticker:
             # Keep the position with the largest market value if ticker appears
             # in multiple accounts (unlikely but safe)
@@ -186,8 +189,14 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         save_user_positions,
         save_user_daily_opportunity,
         decrypt_robinhood_password,
+        get_active_user_run,
     )
-    from app.services.robinhood_queue import RobinhoodQueueTimeout, fetch_with_lock
+    from app.services.robinhood_queue import (
+        RobinhoodQueueTimeout,
+        RobinhoodDeviceApprovalRequired,
+        fetch_with_lock,
+        session_cache_available,
+    )
 
     rh_username = str(user.get("robinhood_username") or "").strip()
     rh_password_enc = str(user.get("robinhood_password_encrypted") or "").strip()
@@ -201,6 +210,21 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
             "message": "No Robinhood credentials on file. Showing shared market signals.",
             "provider_calls_triggered": False,
         }
+
+    # 28D: Run deduplication — return active run if already in progress
+    stale_secs = int(getattr(config, "USER_RUN_STALE_RUNNING_SECONDS", 180))
+    active = get_active_user_run(user_id, stale_seconds=stale_secs)
+    if active:
+        return {
+            "status": "already_running",
+            "run_id": active.get("run_id"),
+            "started_at": active.get("started_at"),
+            "message": "A personalization run is already in progress. Wait for it to complete.",
+            "provider_calls_triggered": False,
+        }
+
+    # 28D: Session cache check
+    cache_available = session_cache_available(user_id)
 
     # Load latest core run (non-blocking — proceed even if stale)
     snapshot, report = _load_latest_core_run()
@@ -236,7 +260,7 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         # Serialized Robinhood fetch
         try:
             positions = fetch_with_lock(user_id, rh_username, rh_password)
-            # 28C: mark creds as validated on successful fetch
+            # Mark creds validated on successful fetch
             try:
                 from app.db.users import set_credentials_validated
                 set_credentials_validated(user_id)
@@ -248,12 +272,30 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
                 "status": "error",
                 "error": "queue_timeout",
                 "message": "Robinhood fetch queue busy. Try again in 60 seconds.",
+                "retry_after_seconds": 60,
+                "provider_calls_triggered": True,
+            }
+        except RobinhoodDeviceApprovalRequired as exc:
+            err = str(exc).replace(rh_password, "[REDACTED]")
+            fail_user_run(run_id, "device_approval_required")
+            try:
+                from app.db.users import set_credentials_error
+                set_credentials_error(user_id, "device_approval_required")
+            except Exception:
+                pass
+            return {
+                "status": "error",
+                "error": "device_approval_required",
+                "message": (
+                    "Robinhood requires device approval. "
+                    "Check your Robinhood app/email and approve, then retry."
+                ),
+                "session_cache_available": cache_available,
                 "provider_calls_triggered": True,
             }
         except Exception as exc:
             err = str(exc).replace(rh_password, "[REDACTED]")
             fail_user_run(run_id, err[:500])
-            # 28C: record credential error on user record
             try:
                 from app.db.users import set_credentials_error
                 set_credentials_error(user_id, err[:200])
@@ -271,7 +313,26 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         if rh_password is not None:
             del rh_password
 
-    # Persist positions
+    # 28D: Position fetch validation
+    # Warn on zero positions (not a failure — might be empty account)
+    if not positions:
+        print(
+            f"[personalization] user_id={user_id} run_id={run_id}: "
+            "0 positions fetched — empty account or fetch returned no data.",
+            flush=True,
+        )
+
+    # Filter out positions with null price for account value computation
+    null_price_count = sum(1 for p in positions if p.get("market_value") is None)
+    if null_price_count:
+        print(
+            f"[personalization] user_id={user_id}: "
+            f"{null_price_count} position(s) have null market_value — "
+            "excluded from account value sum.",
+            flush=True,
+        )
+
+    # Persist positions (all — including null-price ones; they're still valid holdings)
     save_user_positions(user_id, run_id, positions)
 
     # Build personalized Daily Opportunity
@@ -298,6 +359,7 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         "core_run_id_used": core_run_id,
         "core_run_freshness_hours": round(freshness_hours, 2),
         "core_run_stale": core_run_stale,
+        "session_cache_available": cache_available,
         "personalized": True,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "provider_calls_triggered": True,
