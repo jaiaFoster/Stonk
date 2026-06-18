@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
-from flask import Flask, abort, jsonify, request
+from flask import Flask, abort, g, jsonify, redirect, render_template_string, request, url_for
 
 from app import config
 from app.utils.log_safety import install_werkzeug_redaction_filter
@@ -35,6 +35,20 @@ install_werkzeug_redaction_filter()
 
 from app.api.advisor import advisor_bp
 app.register_blueprint(advisor_bp)
+
+from app.api.admin import admin_bp
+app.register_blueprint(admin_bp)
+
+from app.api.user import user_bp
+app.register_blueprint(user_bp)
+
+# 28A: set secret key for signed cookies and seed admin user on first boot
+app.secret_key = config.SESSION_SECRET_KEY or os.urandom(32)
+try:
+    from app.db.users import seed_admin_if_needed
+    seed_admin_if_needed()
+except Exception as _seed_exc:
+    print(f"28A seed: {_seed_exc}", flush=True)
 
 # Prevent overlapping /run calls from colliding with Robinhood login/session state.
 RUN_LOCK = threading.Lock()
@@ -72,9 +86,22 @@ def _valid_run_token(token: str | None) -> bool:
 
 
 def _valid_dev_token(token: str | None) -> bool:
-    """Allow a separate read-only diagnostics token, falling back to RUN_TOKEN."""
+    """Allow legacy DEV_API_TOKEN/RUN_TOKEN or any active admin user key/session (28A)."""
+    if not token:
+        return False
+    # Legacy: DEV_API_TOKEN / RUN_TOKEN
     expected = config.DEV_API_TOKEN or config.RUN_TOKEN
-    return bool(expected) and token == expected
+    if expected and token == expected:
+        return True
+    # 28A: user must be admin
+    try:
+        from app.auth import _resolve_user, _is_legacy_token
+        if _is_legacy_token(token):
+            return True
+        user = _resolve_user(token)
+        return bool(user and user.get("is_active") and user.get("is_admin"))
+    except Exception:
+        return False
 
 
 def _requested_dashboard_view() -> str:
@@ -478,6 +505,221 @@ def refresh_active_trades():
 @app.route("/health")
 def health():
     return "OK", 200
+
+
+# ---------------------------------------------------------------------------
+# 28A: Signup / Login / Dashboard / Logout
+# ---------------------------------------------------------------------------
+
+_AUTH_CSS = """
+body{font-family:monospace;background:#0f0f0f;color:#e0e0e0;display:flex;
+  align-items:center;justify-content:center;min-height:100vh;margin:0}
+.card{background:#1a1a1a;border:1px solid #00ff8844;border-radius:10px;
+  padding:2rem;width:100%;max-width:440px}
+h1{color:#00ff88;margin-top:0;font-size:1.3rem}
+label{display:block;margin:.8rem 0 .25rem;color:#aaa;font-size:.85rem}
+input{width:100%;box-sizing:border-box;background:#111;border:1px solid #333;
+  border-radius:4px;color:#e0e0e0;padding:.55rem .7rem;font-family:monospace}
+input:focus{outline:none;border-color:#00ff88}
+button,input[type=submit]{background:#00ff88;color:#000;border:none;
+  border-radius:4px;padding:.6rem 1.2rem;font-weight:bold;cursor:pointer;
+  margin-top:1rem;font-family:monospace}
+.err{color:#ff6b6b;margin-top:.7rem;font-size:.88rem}
+.muted{color:#666;font-size:.82rem;margin-top:.6rem}
+a{color:#00ff88}
+.key-box{background:#111;border:1px solid #00ff8855;border-radius:4px;
+  padding:.6rem;word-break:break-all;margin:.5rem 0;font-size:.9rem}
+"""
+
+_SIGNUP_HTML = """<!DOCTYPE html><html><head><title>ASA — Sign Up</title>
+<style>{css}</style></head><body><div class="card">
+<h1>Sign Up — Algo Stock Advisor</h1>
+<form method="POST">
+  <label>Username (3–20 chars, a-z A-Z 0-9 _)</label>
+  <input name="username" value="{username}" required autofocus>
+  <label>Password (8+ chars)</label>
+  <input type="password" name="password" required>
+  <label>Confirm Password</label>
+  <input type="password" name="confirm_password" required>
+  <label>Invite Code</label>
+  <input name="invite_code" value="{invite_code}" required>
+  <label>Robinhood Username</label>
+  <input name="robinhood_username" value="{robinhood_username}" required>
+  <label>Robinhood Password</label>
+  <input type="password" name="robinhood_password" required>
+  <button type="submit">Create Account</button>
+</form>
+{error}
+<p class="muted"><a href="/login">Already have an account? Log in</a></p>
+</div></body></html>"""
+
+_LOGIN_HTML = """<!DOCTYPE html><html><head><title>ASA — Login</title>
+<style>{css}</style></head><body><div class="card">
+<h1>Log In — Algo Stock Advisor</h1>
+<form method="POST">
+  <label>Username</label>
+  <input name="username" autofocus required>
+  <label>Password</label>
+  <input type="password" name="password" required>
+  <button type="submit">Log In</button>
+</form>
+{error}
+<p class="muted"><a href="/signup">Need an account? Sign up</a></p>
+</div></body></html>"""
+
+_DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
+<style>{css}
+.pill{{background:#00ff8822;border:1px solid #00ff8844;border-radius:4px;
+  padding:.3rem .6rem;font-size:.82rem;display:inline-block;margin:.2rem}}
+</style></head><body><div class="card">
+<h1>Welcome, {username}</h1>
+<p><span class="pill">{role}</span></p>
+<p>Your API key (first 12 chars shown):</p>
+<div class="key-box">{key_prefix}</div>
+<p class="muted">Use full key in Authorization: Bearer header or ?token= param.</p>
+<p class="muted">Last login: {last_login}</p>
+<p><a href="/api/user/status?token={api_key}">View full status (JSON)</a></p>
+<form method="POST" action="/logout" style="margin-top:1.5rem">
+  <button type="submit" style="background:#ff4444">Log Out</button>
+</form>
+</div></body></html>"""
+
+
+def _get_session_user():
+    """Return user dict from session cookie, or None."""
+    from flask import session
+    token = session.get("session_token")
+    if not token:
+        return None
+    try:
+        from app.db.users import get_user_by_session_token
+        return get_user_by_session_token(token)
+    except Exception:
+        return None
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    import re
+    error = ""
+    username = ""
+    invite_code = ""
+    robinhood_username = ""
+
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm_password", "")
+        invite_code = request.form.get("invite_code", "").strip()
+        robinhood_username = request.form.get("robinhood_username", "").strip()
+        robinhood_password = request.form.get("robinhood_password", "")
+
+        # Validation
+        if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
+            error = "Username must be 3–20 chars, letters/numbers/underscore only."
+        elif len(password) < 8:
+            error = "Password must be at least 8 characters."
+        elif password != confirm:
+            error = "Passwords do not match."
+        elif not invite_code:
+            error = "Invite code required."
+        elif not robinhood_username or not robinhood_password:
+            error = "Robinhood credentials required."
+        else:
+            try:
+                from app.db.users import (
+                    create_user, create_session, get_invite_code,
+                    consume_invite_code, get_user_by_username, update_last_login
+                )
+                invite = get_invite_code(invite_code)
+                if not invite or invite.get("is_used"):
+                    error = "Invalid or already-used invite code."
+                else:
+                    # Check username not taken
+                    if get_user_by_username(username):
+                        error = "Username already taken."
+                    else:
+                        user = create_user(
+                            username, password,
+                            robinhood_username=robinhood_username,
+                            robinhood_password_plain=robinhood_password,
+                        )
+                        user_id = user.get("id")
+                        consume_invite_code(invite_code, user_id)
+                        token = create_session(user_id)
+                        update_last_login(user_id)
+                        from flask import session as flask_session
+                        flask_session["session_token"] = token
+                        return redirect("/dashboard")
+            except Exception as exc:
+                error = f"Signup failed: {exc}"
+
+    err_html = f'<p class="err">{escape(error)}</p>' if error else ""
+    return render_template_string(
+        _SIGNUP_HTML.format(css=_AUTH_CSS, username=escape(username),
+                            invite_code=escape(invite_code),
+                            robinhood_username=escape(robinhood_username),
+                            error=err_html)
+    )
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        try:
+            from app.db.users import (
+                get_user_by_username, check_password, create_session, update_last_login
+            )
+            user = get_user_by_username(username)
+            if user and user.get("is_active") and check_password(password, user.get("password_hash", "")):
+                token = create_session(user["id"])
+                update_last_login(user["id"])
+                from flask import session as flask_session
+                flask_session["session_token"] = token
+                return redirect("/dashboard")
+            else:
+                error = "Invalid username or password."
+        except Exception:
+            error = "Invalid username or password."
+
+    err_html = f'<p class="err">{escape(error)}</p>' if error else ""
+    return render_template_string(_LOGIN_HTML.format(css=_AUTH_CSS, error=err_html))
+
+
+@app.route("/dashboard")
+def dashboard():
+    user = _get_session_user()
+    if not user:
+        return redirect("/login")
+    api_key = user.get("api_key", "")
+    key_prefix = (api_key[:12] + "...") if len(api_key) > 12 else api_key
+    is_admin = bool(user.get("is_admin"))
+    last_login = user.get("last_login_at") or "—"
+    html = _DASHBOARD_HTML.format(
+        css=_AUTH_CSS,
+        username=escape(str(user.get("username", ""))),
+        role="Admin" if is_admin else "User",
+        key_prefix=escape(key_prefix),
+        api_key=escape(api_key),
+        last_login=escape(str(last_login)),
+    )
+    return html
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    from flask import session as flask_session
+    token = flask_session.pop("session_token", None)
+    if token:
+        try:
+            from app.db.users import delete_session
+            delete_session(token)
+        except Exception:
+            pass
+    return redirect("/login")
 
 
 @app.route("/api/dev/snapshot")

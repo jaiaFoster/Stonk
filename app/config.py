@@ -576,3 +576,16 @@ TRADE_MEMORY_DB_PATH = os.environ.get(
 TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT = _int_env("TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT", 50)
 TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT = _int_env("TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT", -35)
 TRADE_MEMORY_DEFAULT_STATUS = os.environ.get("TRADE_MEMORY_DEFAULT_STATUS", "open").strip().lower()
+
+# --- 28A: User auth / multi-user foundation ---
+ASA_ADMIN_USERNAME = os.environ.get("ASA_ADMIN_USERNAME", "jaia").strip()
+ASA_ADMIN_PASSWORD = os.environ.get("ASA_ADMIN_PASSWORD", "").strip()
+SESSION_SECRET_KEY = os.environ.get("SESSION_SECRET_KEY", "")
+SESSION_EXPIRY_HOURS = _int_env("SESSION_EXPIRY_HOURS", 168)  # 7 days
+ROBINHOOD_ENCRYPTION_KEY = os.environ.get("ROBINHOOD_ENCRYPTION_KEY", "")
+USERS_DB_PATH = os.environ.get(
+    "USERS_DB_PATH",
+    os.path.join(DATA_DIR, "users.db"),
+).strip()
+# Legacy dev token bypass — set False to fully enforce user auth
+LEGACY_DEV_TOKEN_ENABLED = _bool_env("LEGACY_DEV_TOKEN_ENABLED", True)
