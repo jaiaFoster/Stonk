@@ -1,10 +1,11 @@
 """
-app/api/user.py — User endpoints (28A + 28B).
+app/api/user.py — User endpoints (28A + 28B + 28C).
 
 GET  /api/user/status         — return user info (no credentials).
 POST /api/user/rotate-key     — generate new API key, invalidate old.
 POST /api/user/run            — trigger personalization run (28B).
 GET  /api/user/run/status     — return latest run status (28B).
+PUT  /api/user/credentials    — update Robinhood credentials with validation (28C).
 """
 
 from __future__ import annotations
@@ -22,9 +23,19 @@ user_bp = Blueprint("user", __name__, url_prefix="/api/user")
 @require_auth
 def status():
     user = g.current_user or {}
+    # Reload full row to get 28C credential fields if not already present
+    user_id = user.get("id")
+    if user_id and user_id != 0:
+        try:
+            from app.db.users import get_user_by_id
+            full = get_user_by_id(user_id)
+            if full:
+                user = full
+        except Exception:
+            pass
     api_key = user.get("api_key") or ""
-    # Show prefix only: "asa_XXXX..." — first 8 chars after "asa_"
     prefix = api_key[:12] + "..." if len(api_key) > 12 else api_key
+    validated_at = user.get("credentials_validated_at")
     return jsonify({
         "status": "ok",
         "username": user.get("username"),
@@ -33,6 +44,10 @@ def status():
         "account_active": bool(user.get("is_active")),
         "last_login_at": user.get("last_login_at"),
         "created_at": user.get("created_at"),
+        "broker_type": user.get("broker_type") or "robinhood",
+        "credentials_validated": bool(validated_at),
+        "credentials_validated_at": validated_at,
+        "credentials_last_error": user.get("credentials_last_error"),
         "provider_calls_triggered": False,
     }), 200
 
@@ -129,4 +144,81 @@ def run_status():
             "error_message": latest.get("error_message"),
         },
         "provider_calls_triggered": False,
+    }), 200
+
+
+@user_bp.route("/credentials", methods=["PUT"])
+@require_auth
+def update_credentials():
+    """
+    28C: Update and validate Robinhood credentials.
+    Validates via live login before storing encrypted.
+    NEVER returns or logs the password.
+    """
+    user = g.current_user or {}
+    user_id = user.get("id")
+    if not user_id or user_id == 0:
+        return jsonify({
+            "status": "error",
+            "error": "not_supported",
+            "message": "Cannot update credentials for legacy token.",
+            "provider_calls_triggered": False,
+        }), 400
+
+    # Check encryption key available
+    from app.db.users import get_encryption_key_status
+    if not get_encryption_key_status():
+        return jsonify({
+            "status": "error",
+            "error": "service_unavailable",
+            "message": "Credential storage unavailable. Contact administrator.",
+            "provider_calls_triggered": False,
+        }), 503
+
+    body = request.get_json(silent=True) or {}
+    rh_username = str(body.get("robinhood_username") or "").strip()
+    rh_password = str(body.get("robinhood_password") or "")
+
+    if not rh_username or not rh_password:
+        return jsonify({
+            "status": "error",
+            "error": "missing_fields",
+            "message": "robinhood_username and robinhood_password required.",
+            "provider_calls_triggered": False,
+        }), 400
+
+    # Validate via live login
+    from app.services.broker_provider import BrokerCredentialProvider
+    provider = BrokerCredentialProvider.get_provider("robinhood")
+    valid, err_key = provider.validate_credentials(rh_username, rh_password)
+
+    if not valid:
+        _error_messages = {
+            "validation_timeout": "Robinhood validation timed out. Try again shortly.",
+            "device_approval_required": (
+                "Robinhood requires device approval. "
+                "Check your email/SMS and approve, then retry."
+            ),
+            "rate_limited": "Robinhood rate limit hit. Try again in a few minutes.",
+            "login_failed": "Robinhood login failed. Check username and password.",
+        }
+        return jsonify({
+            "status": "error",
+            "error": err_key,
+            "message": _error_messages.get(err_key, "Credential validation failed."),
+            "validated": False,
+            "provider_calls_triggered": True,
+        }), 400
+
+    # Store encrypted credentials + mark validated
+    from app.db.users import update_broker_credentials
+    update_broker_credentials(user_id, rh_username, rh_password)
+
+    return jsonify({
+        "status": "ok",
+        "message": "Credentials updated and validated.",
+        "robinhood_username": rh_username,
+        "validated": True,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "provider_calls_triggered": True,
     }), 200

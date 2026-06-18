@@ -595,3 +595,9 @@ LEGACY_DEV_TOKEN_ENABLED = _bool_env("LEGACY_DEV_TOKEN_ENABLED", True)
 RH_QUEUE_TIMEOUT_SECONDS = _int_env("RH_QUEUE_TIMEOUT_SECONDS", 120)
 # Core run age threshold: warn user their personalization is built on stale signals.
 CORE_RUN_STALE_THRESHOLD_HOURS = _float_env("CORE_RUN_STALE_THRESHOLD_HOURS", 4.0)
+
+# --- 28C: Credential hardening ---
+# Validate Robinhood credentials via live login attempt before storing.
+BROKER_CREDENTIAL_VALIDATION_ENABLED = _bool_env("BROKER_CREDENTIAL_VALIDATION_ENABLED", True)
+# Timeout for credential validation login attempt (seconds).
+BROKER_VALIDATION_TIMEOUT_SECONDS = _int_env("BROKER_VALIDATION_TIMEOUT_SECONDS", 30)

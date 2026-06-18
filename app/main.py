@@ -571,6 +571,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <style>{css}
 .pill{{background:#00ff8822;border:1px solid #00ff8844;border-radius:4px;
   padding:.3rem .6rem;font-size:.82rem;display:inline-block;margin:.2rem}}
+.ok{{color:#00ff88}}.warn{{color:#ffcc44}}.err{{color:#ff4444}}
+.section{{margin-top:1.5rem;border-top:1px solid #333;padding-top:1rem}}
 </style></head><body><div class="card">
 <h1>Welcome, {username}</h1>
 <p><span class="pill">{role}</span></p>
@@ -579,6 +581,21 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <p class="muted">Use full key in Authorization: Bearer header or ?token= param.</p>
 <p class="muted">Last login: {last_login}</p>
 <p><a href="/api/user/status?token={api_key}">View full status (JSON)</a></p>
+<div class="section">
+<h2>Robinhood Credentials</h2>
+<p>{cred_status_html}</p>
+<details style="margin-top:.8rem">
+<summary style="cursor:pointer;color:#aaa">Update Robinhood Credentials</summary>
+<form method="POST" action="/user/update-credentials" style="margin-top:.8rem">
+  <label>Robinhood Username (email)</label>
+  <input name="robinhood_username" type="email" required>
+  <label>Robinhood Password</label>
+  <input name="robinhood_password" type="password" required>
+  <button type="submit">Validate &amp; Save</button>
+</form>
+{cred_update_msg}
+</details>
+</div>
 <form method="POST" action="/logout" style="margin-top:1.5rem">
   <button type="submit" style="background:#ff4444">Log Out</button>
 </form>
@@ -614,8 +631,15 @@ def signup():
         robinhood_username = request.form.get("robinhood_username", "").strip()
         robinhood_password = request.form.get("robinhood_password", "")
 
+        # TKT-031: Hard error if credential encryption unavailable — never silently drop creds.
+        from app.db.users import get_encryption_key_status
+        if not get_encryption_key_status():
+            error = (
+                "Service configuration error: credential storage unavailable. "
+                "Contact the administrator."
+            )
         # Validation
-        if not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
+        elif not re.match(r'^[a-zA-Z0-9_]{3,20}$', username):
             error = "Username must be 3–20 chars, letters/numbers/underscore only."
         elif len(password) < 8:
             error = "Password must be at least 8 characters."
@@ -629,15 +653,30 @@ def signup():
             try:
                 from app.db.users import (
                     create_user, create_session, get_invite_code,
-                    consume_invite_code, get_user_by_username, update_last_login
+                    consume_invite_code, get_user_by_username, update_last_login,
+                    set_credentials_validated,
                 )
                 invite = get_invite_code(invite_code)
                 if not invite or invite.get("is_used"):
                     error = "Invalid or already-used invite code."
+                elif get_user_by_username(username):
+                    error = "Username already taken."
                 else:
-                    # Check username not taken
-                    if get_user_by_username(username):
-                        error = "Username already taken."
+                    # 28C: Validate Robinhood credentials before creating account
+                    from app.services.broker_provider import BrokerCredentialProvider
+                    provider = BrokerCredentialProvider.get_provider("robinhood")
+                    valid, err_key = provider.validate_credentials(rh_username=robinhood_username, password=robinhood_password)
+                    if not valid:
+                        _signup_err_msgs = {
+                            "validation_timeout": "Robinhood validation timed out. Please try again.",
+                            "device_approval_required": (
+                                "Robinhood requires device approval for this login. "
+                                "Check your email/SMS, approve, then retry signup."
+                            ),
+                            "rate_limited": "Robinhood rate limit reached. Try again in a few minutes.",
+                            "login_failed": "Robinhood login failed. Check username and password.",
+                        }
+                        error = _signup_err_msgs.get(err_key, "Robinhood credential validation failed.")
                     else:
                         user = create_user(
                             username, password,
@@ -645,6 +684,7 @@ def signup():
                             robinhood_password_plain=robinhood_password,
                         )
                         user_id = user.get("id")
+                        set_credentials_validated(user_id)
                         consume_invite_code(invite_code, user_id)
                         token = create_session(user_id)
                         update_last_login(user_id)
@@ -698,6 +738,29 @@ def dashboard():
     key_prefix = (api_key[:12] + "...") if len(api_key) > 12 else api_key
     is_admin = bool(user.get("is_admin"))
     last_login = user.get("last_login_at") or "—"
+
+    # 28C: credential status display
+    validated_at = user.get("credentials_validated_at")
+    last_error = user.get("credentials_last_error")
+    rh_username = user.get("robinhood_username") or ""
+    if validated_at:
+        cred_status_html = (
+            f'<span class="ok">✓ Validated</span> — {escape(str(validated_at)[:10])}'
+            + (f' ({escape(rh_username)})' if rh_username else "")
+        )
+    elif last_error:
+        cred_status_html = f'<span class="err">Last error:</span> {escape(last_error[:120])}'
+    elif rh_username:
+        cred_status_html = f'<span class="warn">Not yet validated</span> — {escape(rh_username)}'
+    else:
+        cred_status_html = '<span class="warn">No Robinhood credentials stored.</span>'
+
+    cred_update_msg = request.args.get("cred_msg", "")
+    cred_update_html = (
+        f'<p class="{"ok" if "success" in cred_update_msg.lower() else "err"}">{escape(cred_update_msg)}</p>'
+        if cred_update_msg else ""
+    )
+
     html = _DASHBOARD_HTML.format(
         css=_AUTH_CSS,
         username=escape(str(user.get("username", ""))),
@@ -705,8 +768,50 @@ def dashboard():
         key_prefix=escape(key_prefix),
         api_key=escape(api_key),
         last_login=escape(str(last_login)),
+        cred_status_html=cred_status_html,
+        cred_update_msg=cred_update_html,
     )
     return html
+
+
+@app.route("/user/update-credentials", methods=["POST"])
+def update_credentials_form():
+    """
+    28C: Form-friendly POST alias for PUT /api/user/credentials.
+    Session-authenticated. Redirects to /dashboard with status message.
+    NEVER logs passwords.
+    """
+    user = _get_session_user()
+    if not user:
+        return redirect("/login")
+    user_id = user.get("id")
+
+    from app.db.users import get_encryption_key_status
+    if not get_encryption_key_status():
+        return redirect("/dashboard?cred_msg=Service+configuration+error%3A+contact+admin")
+
+    rh_username = request.form.get("robinhood_username", "").strip()
+    rh_password = request.form.get("robinhood_password", "")
+    if not rh_username or not rh_password:
+        return redirect("/dashboard?cred_msg=Username+and+password+required")
+
+    from app.services.broker_provider import BrokerCredentialProvider
+    provider = BrokerCredentialProvider.get_provider("robinhood")
+    valid, err_key = provider.validate_credentials(rh_username, rh_password)
+
+    if not valid:
+        _msgs = {
+            "validation_timeout": "Validation+timed+out.+Try+again.",
+            "device_approval_required": "Device+approval+required.+Check+email%2FSMS+then+retry.",
+            "rate_limited": "Robinhood+rate+limit+hit.+Try+again+in+a+few+minutes.",
+            "login_failed": "Robinhood+login+failed.+Check+credentials.",
+        }
+        msg = _msgs.get(err_key, "Validation+failed.")
+        return redirect(f"/dashboard?cred_msg={msg}")
+
+    from app.db.users import update_broker_credentials
+    update_broker_credentials(user_id, rh_username, rh_password)
+    return redirect("/dashboard?cred_msg=Success%3A+credentials+updated+and+validated.")
 
 
 @app.route("/logout", methods=["POST"])

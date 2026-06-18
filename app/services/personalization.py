@@ -236,6 +236,12 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         # Serialized Robinhood fetch
         try:
             positions = fetch_with_lock(user_id, rh_username, rh_password)
+            # 28C: mark creds as validated on successful fetch
+            try:
+                from app.db.users import set_credentials_validated
+                set_credentials_validated(user_id)
+            except Exception:
+                pass
         except RobinhoodQueueTimeout:
             fail_user_run(run_id, "queue_timeout", timed_out=True)
             return {
@@ -247,6 +253,12 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             err = str(exc).replace(rh_password, "[REDACTED]")
             fail_user_run(run_id, err[:500])
+            # 28C: record credential error on user record
+            try:
+                from app.db.users import set_credentials_error
+                set_credentials_error(user_id, err[:200])
+            except Exception:
+                pass
             return {
                 "status": "error",
                 "error": "fetch_failed",

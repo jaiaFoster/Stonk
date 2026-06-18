@@ -119,10 +119,37 @@ def _connect():
         conn.close()
 
 
+def get_encryption_key_status() -> bool:
+    """Return True if ROBINHOOD_ENCRYPTION_KEY is set and is a valid Fernet key."""
+    try:
+        from cryptography.fernet import Fernet  # type: ignore
+        key = config.ROBINHOOD_ENCRYPTION_KEY
+        if not key:
+            return False
+        Fernet(key.encode() if isinstance(key, str) else key)
+        return True
+    except Exception:
+        return False
+
+
+def _migrate_28c(conn: sqlite3.Connection) -> None:
+    """Add 28C columns to users table. Safe to run repeatedly (idempotent)."""
+    for sql in (
+        "ALTER TABLE users ADD COLUMN broker_type TEXT DEFAULT 'robinhood'",
+        "ALTER TABLE users ADD COLUMN credentials_validated_at TEXT",
+        "ALTER TABLE users ADD COLUMN credentials_last_error TEXT",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass  # column already exists — safe to ignore
+
+
 def init_db() -> None:
-    """Create tables if they don't exist."""
+    """Create tables if they don't exist, run schema migrations."""
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate_28c(conn)
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +265,42 @@ def rotate_api_key(user_id: int) -> str:
     with _connect() as conn:
         conn.execute("UPDATE users SET api_key=? WHERE id=?", (new_key, user_id))
     return new_key
+
+
+def update_broker_credentials(
+    user_id: int,
+    robinhood_username: str,
+    robinhood_password_plain: str,
+) -> None:
+    """Encrypt and store updated Robinhood credentials for user_id."""
+    rh_enc = encrypt_robinhood_password(robinhood_password_plain)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET robinhood_username=?, robinhood_password_encrypted=?, "
+            "broker_type='robinhood', credentials_validated_at=?, credentials_last_error=NULL "
+            "WHERE id=?",
+            (robinhood_username, rh_enc, now, user_id),
+        )
+
+
+def set_credentials_validated(user_id: int) -> None:
+    """Mark credentials as validated now."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET credentials_validated_at=?, credentials_last_error=NULL WHERE id=?",
+            (now, user_id),
+        )
+
+
+def set_credentials_error(user_id: int, error_message: str) -> None:
+    """Record credential error on failed run."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET credentials_last_error=? WHERE id=?",
+            ((error_message or "")[:500], user_id),
+        )
 
 
 def user_count() -> int:
