@@ -52,6 +52,51 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at TEXT NOT NULL,
     last_used_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS user_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    error_message TEXT,
+    positions_fetched INTEGER DEFAULT 0,
+    daily_opportunity_count INTEGER DEFAULT 0,
+    core_run_id_used TEXT,
+    core_run_freshness_hours REAL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS user_positions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    quantity REAL,
+    avg_cost REAL,
+    current_price REAL,
+    market_value REAL,
+    unrealized_pnl_pct REAL,
+    account_type TEXT,
+    fetched_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS user_daily_opportunity (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    run_id TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    action TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    signal_score REAL,
+    verdict TEXT,
+    already_held INTEGER DEFAULT 0,
+    position_size_context TEXT,
+    debit_sizing_context TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -274,6 +319,155 @@ def consume_invite_code(code: str, used_by_user_id: int) -> bool:
             (used_by_user_id, now, code),
         )
     return cur.rowcount == 1
+
+
+# ---------------------------------------------------------------------------
+# 28B: User run CRUD
+# ---------------------------------------------------------------------------
+
+def create_user_run(
+    user_id: int,
+    run_id: str,
+    core_run_id: str | None = None,
+    core_run_freshness_hours: float | None = None,
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO user_runs (user_id, run_id, status, started_at, core_run_id_used, core_run_freshness_hours) "
+            "VALUES (?,?,?,?,?,?)",
+            (user_id, run_id, "running", now, core_run_id, core_run_freshness_hours),
+        )
+
+
+def complete_user_run(run_id: str, positions_fetched: int, daily_opportunity_count: int) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE user_runs SET status=?, completed_at=?, positions_fetched=?, daily_opportunity_count=? "
+            "WHERE run_id=?",
+            ("complete", now, positions_fetched, daily_opportunity_count, run_id),
+        )
+
+
+def fail_user_run(run_id: str, error_message: str, timed_out: bool = False) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    status = "timeout" if timed_out else "failed"
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE user_runs SET status=?, completed_at=?, error_message=? WHERE run_id=?",
+            (status, now, (error_message or "")[:500], run_id),
+        )
+
+
+def get_latest_user_run(user_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_runs WHERE user_id=? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_latest_complete_user_run(user_id: int) -> dict[str, Any] | None:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_runs WHERE user_id=? AND status='complete' ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def save_user_positions(user_id: int, run_id: str, positions: list[dict[str, Any]]) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [
+        (
+            user_id, run_id,
+            str(p.get("ticker") or "").upper(),
+            p.get("quantity"),
+            p.get("avg_cost"),
+            p.get("current_price"),
+            p.get("market_value"),
+            p.get("unrealized_pnl_pct"),
+            p.get("account_type"),
+            now,
+        )
+        for p in positions
+        if p.get("ticker")
+    ]
+    if not rows:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT INTO user_positions (user_id, run_id, ticker, quantity, avg_cost, current_price, "
+            "market_value, unrealized_pnl_pct, account_type, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+
+
+def get_user_positions(user_id: int, run_id: str | None = None) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        if run_id:
+            rows = conn.execute(
+                "SELECT * FROM user_positions WHERE user_id=? AND run_id=? ORDER BY market_value DESC NULLS LAST",
+                (user_id, run_id),
+            ).fetchall()
+        else:
+            latest = get_latest_complete_user_run(user_id)
+            if not latest:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM user_positions WHERE user_id=? AND run_id=? ORDER BY market_value DESC NULLS LAST",
+                (user_id, latest["run_id"]),
+            ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_user_daily_opportunity(user_id: int, run_id: str, actions: list[dict[str, Any]]) -> None:
+    rows = [
+        (
+            user_id, run_id,
+            str(a.get("ticker") or "").upper(),
+            str(a.get("action") or ""),
+            str(a.get("strategy") or ""),
+            a.get("signal_score"),
+            a.get("verdict"),
+            1 if a.get("already_held") else 0,
+            a.get("position_size_context"),
+            a.get("debit_sizing_context"),
+            a.get("notes"),
+        )
+        for a in actions
+        if a.get("ticker") and a.get("action")
+    ]
+    if not rows:
+        return
+    with _connect() as conn:
+        conn.executemany(
+            "INSERT INTO user_daily_opportunity "
+            "(user_id, run_id, ticker, action, strategy, signal_score, verdict, "
+            "already_held, position_size_context, debit_sizing_context, notes) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            rows,
+        )
+
+
+def get_user_daily_opportunity(user_id: int, run_id: str | None = None) -> list[dict[str, Any]]:
+    with _connect() as conn:
+        if run_id:
+            rows = conn.execute(
+                "SELECT * FROM user_daily_opportunity WHERE user_id=? AND run_id=? ORDER BY signal_score DESC NULLS LAST",
+                (user_id, run_id),
+            ).fetchall()
+        else:
+            latest = get_latest_complete_user_run(user_id)
+            if not latest:
+                return []
+            rows = conn.execute(
+                "SELECT * FROM user_daily_opportunity WHERE user_id=? AND run_id=? ORDER BY signal_score DESC NULLS LAST",
+                (user_id, latest["run_id"]),
+            ).fetchall()
+    return [dict(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------
