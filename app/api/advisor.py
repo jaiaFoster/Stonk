@@ -24,7 +24,26 @@ def _token_from_request() -> str | None:
 
 
 def _valid_token(token: str | None) -> bool:
-    return bool(config.RUN_TOKEN) and token == config.RUN_TOKEN
+    """Accept RUN_TOKEN (legacy), legacy dev token, or any active user key/session."""
+    if not token:
+        return False
+    # Legacy: existing RUN_TOKEN (advisor callers)
+    if config.RUN_TOKEN and token == config.RUN_TOKEN:
+        return True
+    # Legacy: DEV_API_TOKEN bypass
+    try:
+        from app.auth import _is_legacy_token
+        if _is_legacy_token(token):
+            return True
+    except Exception:
+        pass
+    # 28A: user API key or session token
+    try:
+        from app.auth import _resolve_user
+        user = _resolve_user(token)
+        return bool(user and user.get("is_active"))
+    except Exception:
+        return False
 
 
 def _require_auth():
