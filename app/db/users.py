@@ -603,6 +603,162 @@ def get_all_users_with_run_status() -> list[dict[str, Any]]:
 # Admin seed
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 28E: Deactivate / reactivate
+# ---------------------------------------------------------------------------
+
+def deactivate_user(user_id: int) -> int:
+    """
+    Set is_active=0. Delete all sessions for user. Returns session count deleted.
+    Caller must check self-deactivation and last-admin constraints.
+    """
+    with _connect() as conn:
+        cur = conn.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))
+        sessions_deleted = cur.rowcount
+        conn.execute("UPDATE users SET is_active=0 WHERE id=?", (user_id,))
+    return sessions_deleted
+
+
+def reactivate_user(user_id: int) -> None:
+    """Set is_active=1. Sessions are NOT restored — user must log in fresh."""
+    with _connect() as conn:
+        conn.execute("UPDATE users SET is_active=1 WHERE id=?", (user_id,))
+
+
+def count_active_admins() -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE is_admin=1 AND is_active=1"
+        ).fetchone()
+    return row[0] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# 28E: Invite list + revocation
+# ---------------------------------------------------------------------------
+
+def get_invites() -> list[dict[str, Any]]:
+    """Return all invite codes joined with username of consuming user."""
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT
+                ic.code,
+                ic.is_used,
+                ic.used_at,
+                ic.created_at,
+                u.username AS used_by_username
+            FROM invite_codes ic
+            LEFT JOIN users u ON u.id = ic.used_by_user_id
+            ORDER BY ic.id DESC
+        """).fetchall()
+    return [dict(r) for r in rows]
+
+
+def revoke_invite(code: str) -> bool:
+    """
+    Mark an UNUSED invite code as used (consumed) so it cannot be used for signup.
+    Returns True if revoked, False if already used or not found.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE invite_codes SET is_used=1, used_at=? WHERE code=? AND is_used=0",
+            (now, code),
+        )
+    return cur.rowcount == 1
+
+
+# ---------------------------------------------------------------------------
+# 28E: Rate limiting
+# ---------------------------------------------------------------------------
+
+def get_runs_in_last_hour(user_id: int) -> list[dict[str, Any]]:
+    """Return user_runs rows started within the last 60 minutes, excluding rate_limited."""
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(minutes=60)
+    ).isoformat()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_runs WHERE user_id=? AND started_at > ? AND status != 'rate_limited' "
+            "ORDER BY started_at ASC",
+            (user_id, cutoff),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def record_rate_limited_run(user_id: int, run_id: str) -> None:
+    """Record a rate-limited run attempt for audit trail."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "INSERT INTO user_runs (user_id, run_id, status, started_at, completed_at) VALUES (?,?,?,?,?)",
+            (user_id, run_id, "rate_limited", now, now),
+        )
+
+
+# ---------------------------------------------------------------------------
+# 28E: Admin summary
+# ---------------------------------------------------------------------------
+
+def admin_summary_stats() -> dict[str, Any]:
+    """Return aggregate stats for GET /api/admin/summary."""
+    cutoff_24h = (
+        datetime.now(timezone.utc) - timedelta(hours=24)
+    ).isoformat()
+    with _connect() as conn:
+        users_total = (conn.execute("SELECT COUNT(*) FROM users").fetchone() or [0])[0]
+        users_active = (conn.execute("SELECT COUNT(*) FROM users WHERE is_active=1").fetchone() or [0])[0]
+        users_cred_validated = (
+            conn.execute("SELECT COUNT(*) FROM users WHERE credentials_validated_at IS NOT NULL").fetchone() or [0]
+        )[0]
+        users_with_run = (
+            conn.execute("SELECT COUNT(DISTINCT user_id) FROM user_runs WHERE status='complete'").fetchone() or [0]
+        )[0]
+
+        invites_total = (conn.execute("SELECT COUNT(*) FROM invite_codes").fetchone() or [0])[0]
+        invites_unused = (conn.execute("SELECT COUNT(*) FROM invite_codes WHERE is_used=0").fetchone() or [0])[0]
+
+        runs_total = (conn.execute("SELECT COUNT(*) FROM user_runs").fetchone() or [0])[0]
+        runs_24h = (
+            conn.execute(
+                "SELECT COUNT(*) FROM user_runs WHERE started_at > ?", (cutoff_24h,)
+            ).fetchone() or [0]
+        )[0]
+        failed_24h = (
+            conn.execute(
+                "SELECT COUNT(*) FROM user_runs WHERE started_at > ? AND status IN ('failed','timeout')",
+                (cutoff_24h,),
+            ).fetchone() or [0]
+        )[0]
+        rate_limited_24h = (
+            conn.execute(
+                "SELECT COUNT(*) FROM user_runs WHERE started_at > ? AND status='rate_limited'",
+                (cutoff_24h,),
+            ).fetchone() or [0]
+        )[0]
+
+    return {
+        "users": {
+            "total": users_total,
+            "active": users_active,
+            "inactive": users_total - users_active,
+            "credentials_validated": users_cred_validated,
+            "with_completed_run": users_with_run,
+        },
+        "invites": {
+            "total_generated": invites_total,
+            "unused": invites_unused,
+            "used": invites_total - invites_unused,
+        },
+        "runs": {
+            "total_all_users": runs_total,
+            "last_24h": runs_24h,
+            "failed_last_24h": failed_24h,
+            "rate_limited_last_24h": rate_limited_24h,
+        },
+    }
+
+
 def seed_admin_if_needed() -> None:
     """Create admin user from env vars if no users exist. Logs API key once."""
     try:

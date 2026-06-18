@@ -607,3 +607,9 @@ BROKER_VALIDATION_TIMEOUT_SECONDS = _int_env("BROKER_VALIDATION_TIMEOUT_SECONDS"
 USER_RUN_HISTORY_LIMIT = _int_env("USER_RUN_HISTORY_LIMIT", 10)
 # A running run older than this many seconds is treated as stale and ignored for dedup.
 USER_RUN_STALE_RUNNING_SECONDS = _int_env("USER_RUN_STALE_RUNNING_SECONDS", 180)
+
+# --- 28E: Admin complete + rate limiting ---
+# Max personalization runs allowed per user per 60-minute rolling window.
+USER_RUN_RATE_LIMIT_PER_HOUR = _int_env("USER_RUN_RATE_LIMIT_PER_HOUR", 3)
+# Comma-separated username prefixes treated as test users in admin list view.
+ADMIN_TEST_USER_PATTERNS = os.environ.get("ADMIN_TEST_USER_PATTERNS", "testuser,smoke,rh_test,rh28b")
