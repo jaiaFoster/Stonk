@@ -589,3 +589,9 @@ USERS_DB_PATH = os.environ.get(
 ).strip()
 # Legacy dev token bypass — set False to fully enforce user auth
 LEGACY_DEV_TOKEN_ENABLED = _bool_env("LEGACY_DEV_TOKEN_ENABLED", True)
+
+# --- 28B: Per-user personalization ---
+# How long to wait for the Robinhood fetch lock before timing out (seconds).
+RH_QUEUE_TIMEOUT_SECONDS = _int_env("RH_QUEUE_TIMEOUT_SECONDS", 120)
+# Core run age threshold: warn user their personalization is built on stale signals.
+CORE_RUN_STALE_THRESHOLD_HOURS = _float_env("CORE_RUN_STALE_THRESHOLD_HOURS", 4.0)

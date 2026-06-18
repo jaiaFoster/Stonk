@@ -88,6 +88,60 @@ def _action_shape(action: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _personalized_action_shape(row: dict[str, Any]) -> dict[str, Any]:
+    """Shape a user_daily_opportunity DB row for API output."""
+    import json as _json
+    pos_ctx = None
+    debit_ctx = None
+    try:
+        raw_pos = row.get("position_size_context")
+        if raw_pos:
+            pos_ctx = _json.loads(raw_pos)
+    except Exception:
+        pass
+    try:
+        raw_debit = row.get("debit_sizing_context")
+        if raw_debit:
+            debit_ctx = _json.loads(raw_debit)
+    except Exception:
+        pass
+    return {
+        "ticker": row.get("ticker"),
+        "action": row.get("action"),
+        "type": row.get("type"),
+        "strategy": row.get("strategy"),
+        "signal_score": row.get("signal_score"),
+        "verdict": row.get("verdict"),
+        "notes": row.get("notes"),
+        "already_held": bool(row.get("already_held")),
+        "position_size_context": pos_ctx,
+        "debit_sizing_context": debit_ctx,
+    }
+
+
+def _is_personal_user() -> bool:
+    """True when caller is a real non-admin user (not legacy token, not admin)."""
+    try:
+        from flask import g
+        user = getattr(g, "current_user", None) or {}
+        user_id = user.get("id")
+        is_admin = bool(user.get("is_admin"))
+        # Legacy synthetic user has id=0
+        return bool(user_id and user_id != 0 and not is_admin)
+    except Exception:
+        return False
+
+
+def _get_personal_user_id() -> int | None:
+    try:
+        from flask import g
+        user = getattr(g, "current_user", None) or {}
+        uid = user.get("id")
+        return int(uid) if uid and uid != 0 else None
+    except Exception:
+        return None
+
+
 def _log_event(endpoint: str, token: str | None, run_id: str | None) -> None:
     """Fire-and-forget telemetry write. Never raises."""
     try:
@@ -130,12 +184,73 @@ def daily():
     strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
     pipeline = tradier.get("_pipeline_status", {}) or {}
 
-    actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
     run_date = str(snapshot.get("completed_at") or "")[:10]
     run_id = snapshot.get("run_id")
 
     _log_event("/api/advisor/daily", _token_from_request(), run_id)
 
+    # 28B: serve personalized output for non-admin users
+    if _is_personal_user():
+        user_id = _get_personal_user_id()
+        try:
+            from app.db.users import get_latest_complete_user_run, get_user_daily_opportunity
+            user_run = get_latest_complete_user_run(user_id) if user_id else None
+            if user_run:
+                rows = get_user_daily_opportunity(user_id, run_id=user_run.get("run_id"))
+                personalized_actions = [_personalized_action_shape(r) for r in rows]
+                total_account_value: float | None = None
+                positions_count = user_run.get("positions_fetched") or 0
+                # Compute account value from stored positions
+                try:
+                    from app.db.users import get_user_positions
+                    positions = get_user_positions(user_id, run_id=user_run.get("run_id"))
+                    total_account_value = sum(float(p.get("market_value") or 0) for p in positions)
+                    if total_account_value == 0:
+                        total_account_value = None
+                except Exception:
+                    pass
+                freshness = user_run.get("core_run_freshness_hours")
+                stale_threshold = float(getattr(config, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
+                return jsonify({
+                    "status": "ok",
+                    "provider_calls_triggered": False,
+                    "personalized": True,
+                    "user_run_id": user_run.get("run_id"),
+                    "core_run_id": user_run.get("core_run_id_used"),
+                    "core_run_freshness_hours": round(freshness, 2) if freshness is not None else None,
+                    "core_run_stale": (freshness > stale_threshold) if freshness is not None else None,
+                    "total_account_value": round(total_account_value, 2) if total_account_value else None,
+                    "positions_count": positions_count,
+                    "run_id": run_id,
+                    "run_date": run_date,
+                    "run_quality": pipeline.get("report_quality") or pipeline.get("overall_status"),
+                    "generated_at": snapshot.get("completed_at"),
+                    "actions": personalized_actions,
+                    "strategy_summary": _strategy_summary(strategies),
+                    "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
+                }), 200
+        except Exception:
+            pass  # Fall through to shared output on any error
+
+        # No completed run yet — shared output with personalized: false
+        actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
+        return jsonify({
+            "status": "ok",
+            "provider_calls_triggered": False,
+            "personalized": False,
+            "reason": "no_run_yet",
+            "message": "No personalization run yet. POST /api/user/run to personalize.",
+            "run_id": run_id,
+            "run_date": run_date,
+            "run_quality": pipeline.get("report_quality") or pipeline.get("overall_status"),
+            "generated_at": snapshot.get("completed_at"),
+            "actions": actions,
+            "strategy_summary": _strategy_summary(strategies),
+            "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
+        }), 200
+
+    # Admin / legacy token: shared output, unchanged behavior
+    actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
     return jsonify({
         "status": "ok",
         "provider_calls_triggered": False,
@@ -156,14 +271,60 @@ def positions():
         return auth_error
 
     snapshot, summary, report = _load_snapshot()
+    run_id = snapshot.get("run_id") if snapshot else None
+    _log_event("/api/advisor/positions", _token_from_request(), run_id)
+
+    # 28B: serve per-user positions for non-admin users
+    if _is_personal_user():
+        user_id = _get_personal_user_id()
+        try:
+            from app.db.users import get_latest_complete_user_run, get_user_positions
+            user_run = get_latest_complete_user_run(user_id) if user_id else None
+            if user_run:
+                user_positions = get_user_positions(user_id, run_id=user_run.get("run_id"))
+                by_account: dict[str, list[dict[str, Any]]] = {}
+                for pos in user_positions:
+                    acct = str(pos.get("account_type") or "default")
+                    by_account.setdefault(acct, []).append({
+                        "ticker": pos.get("ticker"),
+                        "quantity": pos.get("quantity"),
+                        "avg_cost": pos.get("avg_cost"),
+                        "current_price": pos.get("current_price"),
+                        "unrealized_pnl_pct": pos.get("unrealized_pnl_pct"),
+                        "market_value": pos.get("market_value"),
+                        "asset_type": "stock",
+                    })
+                accounts_list = [{"account_type": acct, "positions": rows} for acct, rows in by_account.items()]
+                return jsonify({
+                    "status": "ok",
+                    "provider_calls_triggered": False,
+                    "personalized": True,
+                    "as_of": user_run.get("completed_at"),
+                    "user_run_id": user_run.get("run_id"),
+                    "accounts": accounts_list,
+                }), 200
+        except Exception:
+            pass  # Fall through
+
+        # No run yet
+        return jsonify({
+            "status": "ok",
+            "provider_calls_triggered": False,
+            "personalized": False,
+            "reason": "no_run_yet",
+            "message": "No personalization run yet. POST /api/user/run to fetch your positions.",
+            "accounts": [],
+        }), 200
+
+    # Admin / legacy token: shared positions from core run snapshot
     if snapshot is None:
         return jsonify({"status": "no_data", "error": "No completed run available.", "provider_calls_triggered": False}), 404
 
     raw_positions = report.get("positions", []) or []
-    by_account: dict[str, list[dict[str, Any]]] = {}
+    by_account_shared: dict[str, list[dict[str, Any]]] = {}
     for pos in raw_positions:
         account = str(pos.get("account") or "unknown")
-        by_account.setdefault(account, []).append({
+        by_account_shared.setdefault(account, []).append({
             "ticker": pos.get("ticker"),
             "quantity": pos.get("quantity"),
             "avg_cost": pos.get("avg_buy_price"),
@@ -173,16 +334,13 @@ def positions():
             "asset_type": pos.get("asset_type", "stock"),
         })
 
-    accounts = [{"account_type": acct, "positions": rows} for acct, rows in by_account.items()]
-    run_id = snapshot.get("run_id")
-
-    _log_event("/api/advisor/positions", _token_from_request(), run_id)
+    accounts_shared = [{"account_type": acct, "positions": rows} for acct, rows in by_account_shared.items()]
 
     return jsonify({
         "status": "ok",
         "provider_calls_triggered": False,
         "as_of": snapshot.get("completed_at"),
-        "accounts": accounts,
+        "accounts": accounts_shared,
     }), 200
 
 
