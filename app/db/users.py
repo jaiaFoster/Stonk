@@ -533,6 +533,72 @@ def get_user_daily_opportunity(user_id: int, run_id: str | None = None) -> list[
     return [dict(r) for r in rows]
 
 
+def get_user_run_history(user_id: int, limit: int = 10) -> list[dict[str, Any]]:
+    """Return last `limit` runs for a user, newest first."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_runs WHERE user_id=? ORDER BY id DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_user_runs(user_id: int) -> int:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM user_runs WHERE user_id=?", (user_id,)
+        ).fetchone()
+    return row[0] if row else 0
+
+
+def get_active_user_run(user_id: int, stale_seconds: int = 180) -> dict[str, Any] | None:
+    """
+    Return a currently-running run if one exists and is not stale.
+    Stale = started more than `stale_seconds` ago with no completion.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=stale_seconds)
+    ).isoformat()
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM user_runs WHERE user_id=? AND status='running' AND started_at > ? "
+            "ORDER BY id DESC LIMIT 1",
+            (user_id, cutoff),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def get_all_users_with_run_status() -> list[dict[str, Any]]:
+    """
+    Return all users joined with their latest run record.
+    NEVER returns api_key, password_hash, or robinhood_password_encrypted.
+    """
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT
+                u.id AS user_id,
+                u.username,
+                u.is_active,
+                u.is_admin,
+                u.broker_type,
+                u.credentials_validated_at,
+                u.credentials_last_error,
+                u.created_at,
+                u.last_login_at,
+                r.status     AS last_run_status,
+                r.completed_at AS last_run_at,
+                r.positions_fetched AS last_run_positions_fetched
+            FROM users u
+            LEFT JOIN user_runs r ON r.id = (
+                SELECT id FROM user_runs
+                WHERE user_id = u.id
+                ORDER BY id DESC LIMIT 1
+            )
+            ORDER BY u.id
+        """).fetchall()
+    return [dict(row) for row in rows]
+
+
 # ---------------------------------------------------------------------------
 # Admin seed
 # ---------------------------------------------------------------------------

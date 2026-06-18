@@ -36,6 +36,22 @@ def status():
     api_key = user.get("api_key") or ""
     prefix = api_key[:12] + "..." if len(api_key) > 12 else api_key
     validated_at = user.get("credentials_validated_at")
+
+    # 28D: last run info + session cache availability
+    last_run = None
+    session_cache = None
+    if user_id and user_id != 0:
+        try:
+            from app.db.users import get_latest_user_run
+            last_run = get_latest_user_run(user_id)
+        except Exception:
+            pass
+        try:
+            from app.services.robinhood_queue import session_cache_available
+            session_cache = session_cache_available(user_id)
+        except Exception:
+            pass
+
     return jsonify({
         "status": "ok",
         "username": user.get("username"),
@@ -48,6 +64,11 @@ def status():
         "credentials_validated": bool(validated_at),
         "credentials_validated_at": validated_at,
         "credentials_last_error": user.get("credentials_last_error"),
+        "last_run_status": last_run.get("status") if last_run else None,
+        "last_run_at": last_run.get("completed_at") if last_run else None,
+        "last_run_positions_fetched": last_run.get("positions_fetched") if last_run else None,
+        "last_run_daily_opportunity_count": last_run.get("daily_opportunity_count") if last_run else None,
+        "session_cache_available": session_cache,
         "provider_calls_triggered": False,
     }), 200
 
@@ -96,11 +117,16 @@ def trigger_run():
     result = run_personalization(user_id, full_user)
 
     status_code = 200
-    if result.get("status") == "error":
+    run_status = result.get("status")
+    if run_status == "error":
         if result.get("error") == "queue_timeout":
+            status_code = 503
+        elif result.get("error") == "device_approval_required":
             status_code = 503
         else:
             status_code = 500
+    elif run_status == "already_running":
+        status_code = 202
     return jsonify(result), status_code
 
 
@@ -221,4 +247,86 @@ def update_credentials():
         "validated": True,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "provider_calls_triggered": True,
+    }), 200
+
+
+@user_bp.route("/runs")
+@require_auth
+def run_history():
+    """28D: Return paginated run history for authenticated user."""
+    user = g.current_user or {}
+    user_id = user.get("id")
+    if not user_id or user_id == 0:
+        return jsonify({
+            "runs": [],
+            "total_runs": 0,
+            "note": "No run history for legacy token.",
+            "provider_calls_triggered": False,
+        }), 200
+
+    from app import config as _cfg
+    limit = int(getattr(_cfg, "USER_RUN_HISTORY_LIMIT", 10))
+    stale_threshold = float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
+
+    from app.db.users import get_user_run_history, count_user_runs
+    runs = get_user_run_history(user_id, limit=limit)
+    total = count_user_runs(user_id)
+
+    shaped = []
+    for r in runs:
+        freshness = r.get("core_run_freshness_hours")
+        shaped.append({
+            "run_id": r.get("run_id"),
+            "status": r.get("status"),
+            "started_at": r.get("started_at"),
+            "completed_at": r.get("completed_at"),
+            "positions_fetched": r.get("positions_fetched"),
+            "daily_opportunity_count": r.get("daily_opportunity_count"),
+            "core_run_id_used": r.get("core_run_id_used"),
+            "core_run_freshness_hours": round(freshness, 2) if freshness is not None else None,
+            "core_run_stale": (freshness > stale_threshold) if freshness is not None else None,
+            "error_message": r.get("error_message"),
+        })
+
+    return jsonify({
+        "runs": shaped,
+        "total_runs": total,
+        "provider_calls_triggered": False,
+    }), 200
+
+
+@user_bp.route("/core-run-status")
+@require_auth
+def core_run_status():
+    """28D: Return shared core market run freshness. No provider calls."""
+    from app.services.personalization import _load_latest_core_run, _core_run_freshness_hours
+    from app import config as _cfg
+
+    snapshot, report = _load_latest_core_run()
+    if not snapshot:
+        return jsonify({
+            "status": "ok",
+            "core_run_id": None,
+            "core_run_quality": None,
+            "core_run_completed_at": None,
+            "core_run_freshness_hours": None,
+            "core_run_stale": None,
+            "stale_threshold_hours": float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0)),
+            "provider_calls_triggered": False,
+        }), 200
+
+    freshness = _core_run_freshness_hours(snapshot)
+    stale_threshold = float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
+    tradier = (report or {}).get("tradier_snapshot", {}) or {}
+    pipeline = tradier.get("_pipeline_status", {}) or {}
+
+    return jsonify({
+        "status": "ok",
+        "core_run_id": snapshot.get("run_id"),
+        "core_run_quality": pipeline.get("report_quality") or pipeline.get("overall_status"),
+        "core_run_completed_at": snapshot.get("completed_at"),
+        "core_run_freshness_hours": round(freshness, 2),
+        "core_run_stale": freshness > stale_threshold,
+        "stale_threshold_hours": stale_threshold,
+        "provider_calls_triggered": False,
     }), 200

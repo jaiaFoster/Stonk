@@ -573,6 +573,10 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
   padding:.3rem .6rem;font-size:.82rem;display:inline-block;margin:.2rem}}
 .ok{{color:#00ff88}}.warn{{color:#ffcc44}}.err{{color:#ff4444}}
 .section{{margin-top:1.5rem;border-top:1px solid #333;padding-top:1rem}}
+#run-btn{{background:#00ff8833;border:1px solid #00ff8866;color:#00ff88;
+  padding:.5rem 1.2rem;border-radius:4px;cursor:pointer;font-size:1rem}}
+#run-btn:disabled{{opacity:.4;cursor:not-allowed}}
+#run-result{{margin-top:.8rem;font-size:.9rem;white-space:pre-wrap}}
 </style></head><body><div class="card">
 <h1>Welcome, {username}</h1>
 <p><span class="pill">{role}</span></p>
@@ -581,6 +585,37 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <p class="muted">Use full key in Authorization: Bearer header or ?token= param.</p>
 <p class="muted">Last login: {last_login}</p>
 <p><a href="/api/user/status?token={api_key}">View full status (JSON)</a></p>
+<div class="section">
+<h2>Personalization Run</h2>
+<p>{run_status_html}</p>
+<p>{core_freshness_html}</p>
+<button id="run-btn" onclick="triggerRun()">Run Personalization</button>
+<div id="run-result"></div>
+<script>
+function triggerRun(){{
+  var btn=document.getElementById('run-btn');
+  var out=document.getElementById('run-result');
+  btn.disabled=true; btn.textContent='Running…';
+  out.textContent='Fetching positions…';
+  fetch('/api/user/run?token={api_key}',{{method:'POST'}})
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      btn.disabled=false; btn.textContent='Run Personalization';
+      if(d.status==='ok'){{
+        out.textContent='✓ Done — '+d.positions_fetched+' positions, '+d.daily_opportunity_count+' opportunities'+(d.core_run_stale?' (core run stale)':'');
+      }} else if(d.status==='already_running'){{
+        out.textContent='⏳ Already running since '+d.started_at;
+      }} else {{
+        out.textContent='✗ '+d.error+': '+d.message;
+      }}
+    }})
+    .catch(function(e){{
+      btn.disabled=false; btn.textContent='Run Personalization';
+      out.textContent='Network error: '+e;
+    }});
+}}
+</script>
+</div>
 <div class="section">
 <h2>Robinhood Credentials</h2>
 <p>{cred_status_html}</p>
@@ -742,16 +777,16 @@ def dashboard():
     # 28C: credential status display
     validated_at = user.get("credentials_validated_at")
     last_error = user.get("credentials_last_error")
-    rh_username = user.get("robinhood_username") or ""
+    rh_username_disp = user.get("robinhood_username") or ""
     if validated_at:
         cred_status_html = (
             f'<span class="ok">✓ Validated</span> — {escape(str(validated_at)[:10])}'
-            + (f' ({escape(rh_username)})' if rh_username else "")
+            + (f' ({escape(rh_username_disp)})' if rh_username_disp else "")
         )
     elif last_error:
         cred_status_html = f'<span class="err">Last error:</span> {escape(last_error[:120])}'
-    elif rh_username:
-        cred_status_html = f'<span class="warn">Not yet validated</span> — {escape(rh_username)}'
+    elif rh_username_disp:
+        cred_status_html = f'<span class="warn">Not yet validated</span> — {escape(rh_username_disp)}'
     else:
         cred_status_html = '<span class="warn">No Robinhood credentials stored.</span>'
 
@@ -761,6 +796,36 @@ def dashboard():
         if cred_update_msg else ""
     )
 
+    # 28D: last run status + core freshness for dashboard
+    run_status_html = '<span class="muted">No personalization run yet.</span>'
+    core_freshness_html = ""
+    try:
+        user_id_dash = user.get("id")
+        if user_id_dash and not is_admin:
+            from app.db.users import get_latest_user_run
+            last_run = get_latest_user_run(user_id_dash)
+            if last_run:
+                st = escape(str(last_run.get("status") or ""))
+                ts = escape(str(last_run.get("completed_at") or last_run.get("started_at") or "")[:16])
+                pos = last_run.get("positions_fetched") or 0
+                opp = last_run.get("daily_opportunity_count") or 0
+                cls = "ok" if st == "complete" else ("err" if st == "failed" else "warn")
+                run_status_html = (
+                    f'Last run: <span class="{cls}">{st}</span> — {ts} '
+                    f'({pos} positions, {opp} opportunities)'
+                )
+        from app.services.personalization import _load_latest_core_run, _core_run_freshness_hours
+        from app import config as _cfg
+        snap, _ = _load_latest_core_run()
+        if snap:
+            fh = _core_run_freshness_hours(snap)
+            stale = fh > float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
+            cls = "err" if stale else "ok"
+            stale_txt = ' <span class="warn">(STALE)</span>' if stale else ""
+            core_freshness_html = f'Core run: <span class="{cls}">{fh:.1f}h old</span>{stale_txt}'
+    except Exception:
+        pass
+
     html = _DASHBOARD_HTML.format(
         css=_AUTH_CSS,
         username=escape(str(user.get("username", ""))),
@@ -768,6 +833,8 @@ def dashboard():
         key_prefix=escape(key_prefix),
         api_key=escape(api_key),
         last_login=escape(str(last_login)),
+        run_status_html=run_status_html,
+        core_freshness_html=core_freshness_html,
         cred_status_html=cred_status_html,
         cred_update_msg=cred_update_html,
     )

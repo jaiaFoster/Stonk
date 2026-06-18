@@ -601,3 +601,9 @@ CORE_RUN_STALE_THRESHOLD_HOURS = _float_env("CORE_RUN_STALE_THRESHOLD_HOURS", 4.
 BROKER_CREDENTIAL_VALIDATION_ENABLED = _bool_env("BROKER_CREDENTIAL_VALIDATION_ENABLED", True)
 # Timeout for credential validation login attempt (seconds).
 BROKER_VALIDATION_TIMEOUT_SECONDS = _int_env("BROKER_VALIDATION_TIMEOUT_SECONDS", 30)
+
+# --- 28D: Run hardening ---
+# Max user run records returned by /api/user/runs and admin history endpoints.
+USER_RUN_HISTORY_LIMIT = _int_env("USER_RUN_HISTORY_LIMIT", 10)
+# A running run older than this many seconds is treated as stale and ignored for dedup.
+USER_RUN_STALE_RUNNING_SECONDS = _int_env("USER_RUN_STALE_RUNNING_SECONDS", 180)
