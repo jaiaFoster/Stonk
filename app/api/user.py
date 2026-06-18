@@ -107,6 +107,40 @@ def trigger_run():
             "provider_calls_triggered": False,
         }), 400
 
+    # 28E: rate limiting — max runs per rolling 60-minute window
+    from app import config as _cfg
+    rate_limit = int(getattr(_cfg, "USER_RUN_RATE_LIMIT_PER_HOUR", 3))
+    from app.db.users import get_runs_in_last_hour, record_rate_limited_run
+    import secrets as _secrets
+    recent_runs = get_runs_in_last_hour(user_id)
+    if len(recent_runs) >= rate_limit:
+        rate_limited_run_id = "rl_" + _secrets.token_hex(8)
+        try:
+            record_rate_limited_run(user_id, rate_limited_run_id)
+        except Exception:
+            pass
+        # Compute seconds until oldest run in window falls out
+        retry_after = 3600
+        if recent_runs:
+            oldest_started = recent_runs[0].get("started_at") or ""
+            try:
+                from datetime import datetime, timezone, timedelta
+                oldest_dt = datetime.fromisoformat(oldest_started.replace("Z", "+00:00"))
+                window_end = oldest_dt + timedelta(hours=1)
+                now_dt = datetime.now(timezone.utc)
+                retry_after = max(1, int((window_end - now_dt).total_seconds()))
+            except Exception:
+                pass
+        return jsonify({
+            "status": "error",
+            "error": "rate_limited",
+            "message": f"Run limit reached. Max {rate_limit} runs per hour.",
+            "retry_after_seconds": retry_after,
+            "runs_this_hour": len(recent_runs),
+            "limit": rate_limit,
+            "provider_calls_triggered": False,
+        }), 429
+
     # Reload full user row to get encrypted Robinhood creds
     from app.db.users import get_user_by_id
     full_user = get_user_by_id(user_id) or {}
