@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 from app import config
 from app.services.calendar_opportunity_state_service import attach_calendar_display_fields
-from app.services.calendar_verdict_service import build_final_calendar_verdict
+from app.services.calendar_verdict_service import build_final_calendar_verdict, evaluate_account_risk
 
 LogFn = Callable[[str], None]
 
@@ -208,6 +208,11 @@ def _build_new_trade_row(
     entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)
 
+    # TKT-024: evaluate account risk for all rows so account_value_used and
+    # debit_pct_of_account are populated and account_risk_status reflects actual
+    # positions data rather than a hardcoded fallback string.
+    acct_risk = evaluate_account_risk(candidate, account_context)
+
     row = {
         "strategy_id": "earnings_calendar",
         "strategy_label": "Earnings Calendar",
@@ -222,8 +227,10 @@ def _build_new_trade_row(
         "main_blocker": final.get("main_blocker") or no_structure_blocker,
         "main_reason": final.get("main_reason") or no_structure_blocker,
         "backtest_status": final.get("backtest_status") or ("skipped_no_candidate" if not has_candidate else ""),
-        "account_risk_status": final.get("account_risk_status") or ("UNKNOWN ACCOUNT VALUE" if not has_candidate else ""),
-        "account_risk_warning": final.get("account_risk_warning") or "",
+        "account_risk_status": final.get("account_risk_status") or acct_risk["account_risk_status"],
+        "account_risk_warning": final.get("account_risk_warning") or acct_risk.get("account_risk_warning") or "",
+        "account_value_used": acct_risk.get("account_value_estimate"),
+        "debit_pct_of_account": acct_risk.get("debit_pct_of_account"),
         "raw_scanner_verdict": final.get("raw_scanner_verdict") or _new_trade_verdict(has_candidate, strategy),
         "entry_plan": entry_plan,
         "earnings": _compact_event(event),

@@ -249,7 +249,9 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         short_spread <= float(config.SKEW_VERTICAL_MAX_LEG_SPREAD_PCT),
         spread_market_width_pct <= float(config.SKEW_VERTICAL_MAX_SPREAD_MARKET_WIDTH_PCT),
     ])
-    skew_pass = iv_edge >= float(config.SKEW_VERTICAL_MIN_SHORT_IV_EDGE) and financing >= float(config.SKEW_VERTICAL_MIN_SHORT_PREMIUM_FINANCING_PCT)
+    # TKT-029: gate on adjusted chain skew richness (post-lottery-filter) not raw per-leg metrics.
+    richness_threshold = float(getattr(config, "SKEW_RICHNESS_THRESHOLD", 12.5))
+    skew_pass = adjusted_skew_score >= richness_threshold
     event_risk = _event_inside(earnings_event, dte)
     account_value = _first_num(account_context.get("account_value_estimate"))
     account_risk_pct = max_risk / account_value * 100 if account_value else None
@@ -257,7 +259,7 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         _req("Momentum confirmation", direction.get("confirmed"), direction.get("reason"), "momentum"),
         _req("Usable options chain", True, "Same-expiration quoted legs found.", "no_chain"),
         _req("Liquidity", liquidity_pass, f"Leg spreads {long_spread:.1f}% / {short_spread:.1f}%; OI {long_leg.get('open_interest')}/{short_leg.get('open_interest')}.", "liquidity"),
-        _req("Skew financing", skew_pass, f"Short IV edge {iv_edge:.3f}; short premium finances {financing:.1f}% of long ask.", "skew"),
+        _req("Skew richness", skew_pass, f"Adjusted chain skew {adjusted_skew_score:.1f} vs threshold {richness_threshold}; raw {raw_skew_score:.1f}; {lottery_calls_stripped_count} lottery call(s) stripped.", "skew"),
         _req("Debit limit", max_risk <= float(config.SKEW_VERTICAL_MAX_DEBIT_DOLLARS) and debit_pct <= float(config.SKEW_VERTICAL_MAX_DEBIT_PCT_OF_WIDTH), f"Conservative debit ${conservative_debit:.2f}; {debit_pct:.1f}% of width.", "debit"),
         _req("Reward/risk", rr >= float(config.SKEW_VERTICAL_MIN_REWARD_RISK), f"Conservative reward/risk {rr:.2f}.", "reward_risk"),
         _req("Data quality", bool(long_leg.get("iv") is not None and short_leg.get("iv") is not None), "Tradier quotes and IV present for both legs.", "data_quality"),
