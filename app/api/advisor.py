@@ -396,6 +396,12 @@ def positions():
         "provider_calls_triggered": False,
         "as_of": snapshot.get("completed_at"),
         "accounts": accounts_shared,
+        # Options fields always present so callers never guard on MISSING keys.
+        # Admin/shared path has no per-user options context; return empty.
+        "options_positions": [],
+        "options_count": 0,
+        "has_open_verticals": False,
+        "has_open_calendars": False,
     }), 200
 
 
