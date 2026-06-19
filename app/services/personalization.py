@@ -521,10 +521,10 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
     # Persist Daily Opportunity
     save_user_daily_opportunity(user_id, run_id, daily_opp)
 
-    # Mark run complete
+    # Mark run complete — count all rows stored (stock + options)
     complete_user_run(
         run_id,
-        positions_fetched=len(positions),
+        positions_fetched=len(positions) + len(normalized_options_positions),
         daily_opportunity_count=len(daily_opp),
     )
 
@@ -532,7 +532,7 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         "status": "ok",
         "run_id": run_id,
         "user_id": user_id,
-        "positions_fetched": len(positions),
+        "positions_fetched": len(positions) + len(normalized_options_positions),
         "option_calendars_detected": len(detected_calendars),
         "option_verticals_detected": len(detected_verticals),
         "daily_opportunity_count": len(daily_opp),
