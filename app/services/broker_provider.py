@@ -434,13 +434,31 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
             )
 
             # --- Raw option positions (same session, no second login) ---
+            # Loop ACCOUNT_MAP for options just like the stock fetch above.
             raw_option_positions: list[dict[str, Any]] = []
             try:
-                raw_option_positions = r.options.get_open_option_positions() or []
+                seen_option_ids: set[str] = set()
+                for acct_num in list(ACCOUNT_MAP.keys()) + [None]:
+                    try:
+                        batch = r.options.get_open_option_positions(account_number=acct_num) or []
+                    except Exception as exc:
+                        err = str(exc).replace(password_decrypted, "[REDACTED]")
+                        print(f"[broker_provider] acct={acct_num} get_open_option_positions failed: {err}", flush=True)
+                        continue
+                    print(f"[broker_provider] acct={acct_num} returned {len(batch)} option position(s)", flush=True)
+                    for opt_pos in batch:
+                        opt_id = opt_pos.get("id") or opt_pos.get("option_id") or id(opt_pos)
+                        if opt_id in seen_option_ids:
+                            continue
+                        seen_option_ids.add(opt_id)
+                        raw_option_positions.append(opt_pos)
                 print(
-                    f"[broker_provider] user_id={user_id} fetched {len(raw_option_positions)} raw option position(s).",
+                    f"[broker_provider] user_id={user_id} fetched {len(raw_option_positions)} "
+                    f"raw option position(s) total across {len(ACCOUNT_MAP)} mapped account(s) + default.",
                     flush=True,
                 )
+                if raw_option_positions:
+                    print(f"[broker_provider] sample raw option position keys: {sorted(raw_option_positions[0].keys())}", flush=True)
             except Exception as exc:
                 err = str(exc).replace(password_decrypted, "[REDACTED]")
                 print(f"[broker_provider] get_open_option_positions failed (non-fatal): {err}", flush=True)

@@ -426,7 +426,7 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
                     "Robinhood requires device approval. "
                     "Check your Robinhood app/email and approve, then retry."
                 ),
-                "session_cache_available": cache_available,
+                "session_cache_available": session_cache_available(user_id),
                 "provider_calls_triggered": True,
             }
         except Exception as exc:
@@ -539,7 +539,7 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         "core_run_id_used": core_run_id,
         "core_run_freshness_hours": round(freshness_hours, 2),
         "core_run_stale": core_run_stale,
-        "session_cache_available": cache_available,
+        "session_cache_available": session_cache_available(user_id),
         "personalized": True,
         "completed_at": datetime.now(timezone.utc).isoformat(),
         "provider_calls_triggered": True,

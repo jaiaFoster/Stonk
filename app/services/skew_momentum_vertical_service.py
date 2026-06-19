@@ -60,6 +60,7 @@ def build_skew_momentum_vertical_strategy(
         "watch_items": [],
         "blocked_items": [],
         "active_items": [],
+        "active_count": 0,
         "errors": [],
         "summary": {},
         "lifecycle_status": "deferred",
@@ -78,10 +79,11 @@ def build_skew_momentum_vertical_strategy(
             row["exit_signal"] = exit_signal
             row["exit_reason"] = exit_reason
             active_rows.append(row)
+        result["active_items"] = active_rows
+        result["active_rows"] = active_rows
+        result["active_count"] = len(active_rows)
+        result["lifecycle_status"] = "active" if active_rows else "inactive"
         if active_rows:
-            result["active_items"] = active_rows
-            result["active_rows"] = active_rows
-            result["lifecycle_status"] = "active"
             logger(f"Strategy 2: {len(active_rows)} active vertical(s) detected from open options.")
 
     if not result["enabled"]:
