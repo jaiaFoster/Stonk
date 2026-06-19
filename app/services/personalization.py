@@ -242,6 +242,12 @@ def _normalize_options_positions_for_storage(
         if not ticker:
             continue
         covered_tickers[ticker] = covered_tickers.get(ticker, 0) + 1
+        # TKT-035: compute advisory exit signal at storage time so advisor.py can read it
+        try:
+            from app.services.skew_momentum_vertical_service import _compute_exit_signal
+            exit_signal, exit_reason = _compute_exit_signal(v)
+        except Exception:
+            exit_signal, exit_reason = None, None
         result.append({
             "ticker": ticker,
             "strategy_type": "skew_vertical",
@@ -257,6 +263,8 @@ def _normalize_options_positions_for_storage(
             "max_profit": v.get("max_profit"),
             "max_loss": v.get("max_loss"),
             "pct_of_max_profit": v.get("pct_of_max_profit"),
+            "exit_signal": exit_signal,
+            "exit_reason": exit_reason,
             "account_type": "options",
         })
 
