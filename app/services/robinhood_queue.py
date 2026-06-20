@@ -78,10 +78,10 @@ def fetch_with_lock(user_id: int, rh_username: str, rh_password: str) -> list[di
 
 def fetch_all_with_lock(
     user_id: int, rh_username: str, rh_password: str
-) -> tuple[list[dict[Any, Any]], list[dict[Any, Any]]]:
+) -> tuple[list[dict[Any, Any]], list[dict[Any, Any]], list[dict[Any, Any]]]:
     """
     Like fetch_with_lock but also fetches raw option positions in the same session.
-    Returns (stock_positions, raw_option_positions).
+    Returns (stock_positions, raw_option_positions, discovered_accounts).
     One login, one logout — no second Robinhood session.
     Raises RobinhoodQueueTimeout, RobinhoodDeviceApprovalRequired, or RuntimeError.
     NEVER logs rh_password.

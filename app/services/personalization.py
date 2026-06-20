@@ -394,14 +394,26 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
             }
 
         # Serialized Robinhood fetch — stock + options in one session
+        discovered_accounts: list[dict[str, Any]] = []
         try:
-            positions, raw_option_positions = fetch_all_with_lock(user_id, rh_username, rh_password)
+            positions, raw_option_positions, discovered_accounts = fetch_all_with_lock(user_id, rh_username, rh_password)
             # Mark creds validated on successful fetch
             try:
                 from app.db.users import set_credentials_validated
                 set_credentials_validated(user_id)
             except Exception:
                 pass
+            # TKT-043: persist discovered broker accounts
+            try:
+                from app.db.users import save_user_broker_accounts
+                if discovered_accounts:
+                    save_user_broker_accounts(user_id, discovered_accounts)
+                    print(
+                        f"[personalization] user_id={user_id}: saved {len(discovered_accounts)} broker account(s).",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(f"[personalization] save_user_broker_accounts failed (non-fatal): {exc}", flush=True)
         except RobinhoodQueueTimeout:
             fail_user_run(run_id, "queue_timeout", timed_out=True)
             return {

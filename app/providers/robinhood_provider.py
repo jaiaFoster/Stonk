@@ -58,10 +58,59 @@ except (ImportError, ModuleNotFoundError):
 
 DEBUG = True
 
-ACCOUNT_MAP = {
-    "973901945": "Roth IRA",
-    "489284471": "Rollover IRA",
-}
+def discover_accounts() -> list[dict[str, Any]]:
+    """Discover all Robinhood accounts via API. Must be called while logged in.
+
+    Returns list of dicts: [{"account_number": str, "account_type": str}, ...]
+    Falls back to empty list on API failure — callers should use default fetch.
+    """
+    try:
+        all_accounts = r.profiles.load_account_profile(dataType="results")
+        if not isinstance(all_accounts, list):
+            if isinstance(all_accounts, dict) and all_accounts.get("account_number"):
+                all_accounts = [all_accounts]
+            else:
+                print("[discover_accounts] API returned no accounts.", flush=True)
+                return []
+
+        result = []
+        for acct in all_accounts:
+            if not isinstance(acct, dict):
+                continue
+            acct_num = str(acct.get("account_number") or "").strip()
+            if not acct_num:
+                continue
+            result.append({
+                "account_number": acct_num,
+                "account_type": _classify_account_type(acct),
+            })
+        print(
+            f"[discover_accounts] {len(result)} account(s): "
+            + ", ".join(f"{a['account_type']}({a['account_number']})" for a in result),
+            flush=True,
+        )
+        return result
+    except Exception as e:
+        print(f"[discover_accounts] failed: {sanitize_for_log(e)}", flush=True)
+        return []
+
+
+def _classify_account_type(acct: dict) -> str:
+    """Derive human-readable label from Robinhood account profile dict."""
+    acct_type = str(acct.get("type") or "").lower().strip()
+    if "roth" in acct_type:
+        return "Roth IRA"
+    if "rollover" in acct_type:
+        return "Rollover IRA"
+    if "traditional" in acct_type or "trad_ira" in acct_type:
+        return "Traditional IRA"
+    if "ira" in acct_type:
+        return "IRA"
+    if acct_type in ("cash", "margin"):
+        return "Individual"
+    if acct_type:
+        return acct_type.replace("_", " ").title()
+    return "Brokerage"
 
 MAX_LOGIN_RETRIES = 3
 RETRY_INTERVAL_SECONDS = 60
@@ -349,18 +398,29 @@ def get_positions():
         if not login_result.get("success"):
             _last_positions_result = {
                 "account_results": [
-                    {"account_id": acct_num, "account_name": acct_label, "status": "FAILED", "positions": None, "error": login_result.get("error")}
-                    for acct_num, acct_label in ACCOUNT_MAP.items()
-                ] + [{"account_id": "crypto", "account_name": "Crypto", "status": "FAILED", "positions": None, "error": login_result.get("error")}],
+                    {"account_id": "all", "account_name": "All Accounts", "status": "FAILED",
+                     "positions": None, "error": login_result.get("error")},
+                    {"account_id": "crypto", "account_name": "Crypto", "status": "FAILED",
+                     "positions": None, "error": login_result.get("error")},
+                ],
             }
             return []
 
         logged_in = True
         all_positions = []
 
+        discovered = discover_accounts()
+
         # --- STOCK POSITIONS ---
-        print("Fetching stock positions from IRA accounts...", flush=True)
-        for acct_num, acct_label in ACCOUNT_MAP.items():
+        if discovered:
+            print(f"Fetching stock positions from {len(discovered)} discovered account(s)...", flush=True)
+        else:
+            print("No accounts discovered — fetching from default account...", flush=True)
+            discovered = [{"account_number": None, "account_type": "Default"}]
+
+        for acct in discovered:
+            acct_num = acct["account_number"]
+            acct_label = acct["account_type"]
             print(f"Account: {acct_label} ({acct_num})", flush=True)
             account_positions = []
             build_errors = []
@@ -483,8 +543,8 @@ def get_positions():
         print(f"Robinhood error: {sanitize_for_log(e)}", flush=True)
         traceback.print_exc()
         _last_positions_result = {"account_results": account_results or [
-            {"account_id": acct_num, "account_name": acct_label, "status": "FAILED", "positions": None, "error": str(e)}
-            for acct_num, acct_label in ACCOUNT_MAP.items()
+            {"account_id": "all", "account_name": "All Accounts", "status": "FAILED",
+             "positions": None, "error": str(e)},
         ]}
         return []
 
@@ -893,12 +953,6 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
         result["errors"].append("Robinhood credentials are not configured.")
         return result
 
-    accounts = _option_accounts_to_scan(account_numbers)
-    result["debug"].append(
-        "accounts_to_scan="
-        + ", ".join(f"{label}({display or 'default'})" for call_number, display, label in accounts)
-    )
-
     try:
         login_result = login_with_retry()
         result["provider_status"] = _robinhood_auth_status_payload(login_result)
@@ -906,6 +960,13 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
             result["errors"].append("Robinhood login failed while fetching option positions.")
             return result
         logged_in = True
+
+        discovered = discover_accounts()
+        accounts = _option_accounts_to_scan(account_numbers, discovered_accounts=discovered)
+        result["debug"].append(
+            "accounts_to_scan="
+            + ", ".join(f"{label}({display or 'default'})" for call_number, display, label in accounts)
+        )
 
         seen_positions = set()
         for call_account_number, display_account_number, account_label in accounts:
@@ -978,9 +1039,11 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
                 print(f"Robinhood option logout skipped or failed: {sanitize_for_log(e)}", flush=True)
 
 
-def _option_accounts_to_scan(account_numbers=None):
+def _option_accounts_to_scan(account_numbers=None, discovered_accounts=None):
     """Return tuples of (api_account_number, display_account_number, label)."""
     accounts = []
+    discovered = discovered_accounts or []
+    discovered_map = {a["account_number"]: a["account_type"] for a in discovered if a.get("account_number")}
 
     def add(call_number, display_number, label):
         key = (str(call_number or "__default__"), str(display_number or "default"))
@@ -997,13 +1060,13 @@ def _option_accounts_to_scan(account_numbers=None):
             if lowered in {"default", "investing", "brokerage", "taxable"}:
                 add(None, "default", getattr(config, "ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL", "Investing"))
             else:
-                add(text, text, ACCOUNT_MAP.get(text, text))
+                add(text, text, discovered_map.get(text, text))
         return accounts
 
     if bool(getattr(config, "ROBINHOOD_OPTIONS_SCAN_DEFAULT_ACCOUNT", True)):
         add(None, "default", getattr(config, "ROBINHOOD_OPTIONS_DEFAULT_ACCOUNT_LABEL", "Investing"))
 
-    for acct_num, acct_label in ACCOUNT_MAP.items():
+    for acct_num, acct_label in discovered_map.items():
         add(acct_num, acct_num, acct_label)
 
     return accounts
