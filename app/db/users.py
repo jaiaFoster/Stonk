@@ -120,6 +120,16 @@ CREATE TABLE IF NOT EXISTS user_option_positions (
     calendar_json TEXT,
     fetched_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS user_broker_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    account_number TEXT NOT NULL,
+    account_type TEXT,
+    broker_type TEXT DEFAULT 'robinhood',
+    discovered_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(user_id, account_number)
+);
 """
 
 
@@ -183,18 +193,31 @@ def _migrate_29a(conn: sqlite3.Connection) -> None:
             pass
 
 
+def _migrate_43(conn: sqlite3.Connection) -> None:
+    """TKT-043: user_broker_accounts table. Idempotent — table created by SCHEMA."""
+    pass
+
+
 def init_db() -> None:
     """Create tables if they don't exist, run schema migrations."""
     with _connect() as conn:
         conn.executescript(SCHEMA)
         _migrate_28c(conn)
         _migrate_29a(conn)
+        _migrate_43(conn)
         cols = [c[1] for c in conn.execute("PRAGMA table_info(user_positions)").fetchall()]
         if "position_type" not in cols or "option_details" not in cols:
             print(f"[init_db] WARNING: user_positions missing options columns. "
                   f"columns={cols}", flush=True)
         else:
             print(f"[init_db] user_positions schema OK: position_type and option_details present.", flush=True)
+        acct_tables = [t[0] for t in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='user_broker_accounts'"
+        ).fetchall()]
+        if acct_tables:
+            print("[init_db] user_broker_accounts table OK.", flush=True)
+        else:
+            print("[init_db] WARNING: user_broker_accounts table missing.", flush=True)
 
 
 def seed_sysadmin() -> None:
@@ -998,4 +1021,41 @@ def get_user_option_positions(user_id: int, run_id: str | None = None) -> list[d
                 "SELECT * FROM user_option_positions WHERE user_id=? AND run_id=? ORDER BY underlying",
                 (user_id, latest["run_id"]),
             ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# TKT-043: Broker account discovery persistence
+# ---------------------------------------------------------------------------
+
+def save_user_broker_accounts(user_id: int, accounts: list[dict[str, Any]]) -> None:
+    """Upsert discovered broker accounts for a user. Replaces stale entries."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute("DELETE FROM user_broker_accounts WHERE user_id=?", (user_id,))
+        for acct in accounts:
+            acct_num = str(acct.get("account_number") or "").strip()
+            if not acct_num:
+                continue
+            conn.execute(
+                "INSERT OR REPLACE INTO user_broker_accounts "
+                "(user_id, account_number, account_type, broker_type, discovered_at) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    user_id,
+                    acct_num,
+                    acct.get("account_type") or "Unknown",
+                    acct.get("broker_type") or "robinhood",
+                    now,
+                ),
+            )
+
+
+def get_user_broker_accounts(user_id: int) -> list[dict[str, Any]]:
+    """Return discovered broker accounts for a user."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM user_broker_accounts WHERE user_id=? ORDER BY account_number",
+            (user_id,),
+        ).fetchall()
     return [dict(r) for r in rows]

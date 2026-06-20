@@ -7,9 +7,9 @@ to work. The real Robinhood provider now lives in
 """
 
 from app.providers.robinhood_provider import (  # noqa: F401
-    ACCOUNT_MAP,
     MAX_LOGIN_RETRIES,
     RETRY_INTERVAL_SECONDS,
+    discover_accounts,
     get_positions,
     login_with_retry,
 )

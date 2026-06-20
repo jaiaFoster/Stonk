@@ -354,6 +354,18 @@ def positions():
                 has_open_verticals = any(p.get("strategy_type") == "skew_vertical" for p in options_positions)
                 has_open_calendars = any(p.get("strategy_type") == "earnings_calendar" for p in options_positions)
 
+                # TKT-043: surface discovered broker accounts
+                broker_accounts = []
+                try:
+                    from app.db.users import get_user_broker_accounts
+                    broker_accounts = [
+                        {"account_number": a.get("account_number"), "account_type": a.get("account_type"),
+                         "broker_type": a.get("broker_type"), "discovered_at": a.get("discovered_at")}
+                        for a in get_user_broker_accounts(user_id)
+                    ]
+                except Exception:
+                    pass
+
                 return jsonify({
                     "status": "ok",
                     "provider_calls_triggered": False,
@@ -361,6 +373,7 @@ def positions():
                     "as_of": user_run.get("completed_at"),
                     "user_run_id": user_run.get("run_id"),
                     "accounts": accounts_list,
+                    "broker_accounts": broker_accounts,
                     "options_positions": options_positions,
                     "options_count": len(options_positions),
                     "has_open_verticals": has_open_verticals,
@@ -380,6 +393,7 @@ def positions():
             "reason": "no_run_yet",
             "message": "No personalization run yet. POST /api/user/run to fetch your positions.",
             "accounts": [],
+            "broker_accounts": [],
             "options_positions": [],
             "options_count": 0,
             "has_open_verticals": False,

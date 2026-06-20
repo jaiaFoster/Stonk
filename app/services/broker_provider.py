@@ -237,15 +237,16 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
 
     def fetch_positions_with_options(
         self, username: str, password_decrypted: str, user_id: int
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """
-        Log in once, fetch stock positions (all IRA/brokerage accounts via ACCOUNT_MAP)
+        Log in once, fetch stock positions (all dynamically discovered accounts)
         AND raw Robinhood option positions, log out.
+        Returns (stock_positions, raw_option_positions, discovered_accounts).
         r.logout() is guaranteed in finally — no second session opened.
         NEVER logs password_decrypted.
         """
         import robin_stocks.robinhood as r
-        from app.providers.robinhood_provider import ACCOUNT_MAP
+        from app.providers.robinhood_provider import discover_accounts
 
         data_dir = str(getattr(config, "DATA_DIR", "data"))
         os.makedirs(data_dir, exist_ok=True)
@@ -275,68 +276,68 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
         try:
             stock_positions: list[dict[str, Any]] = []
 
-            # --- IRA / brokerage accounts from ACCOUNT_MAP ---
-            # Fetch each named account explicitly so we don't miss Roth IRA / Rollover IRA.
-            fetched_account_nums: set[str] = set()
-            for acct_num, acct_label in ACCOUNT_MAP.items():
-                fetched_account_nums.add(acct_num)
-                try:
-                    raw = r.account.get_open_stock_positions(account_number=acct_num) or []
-                    print(
-                        f"[broker_provider] user_id={user_id} account={acct_label} "
-                        f"({acct_num}): {len(raw)} raw position(s).",
-                        flush=True,
-                    )
-                except Exception as exc:
-                    err = str(exc).replace(password_decrypted, "[REDACTED]")
-                    print(
-                        f"[broker_provider] get_open_stock_positions({acct_num}) failed: {err}",
-                        flush=True,
-                    )
-                    raw = []
+            discovered = discover_accounts()
+            discovered_map = {a["account_number"]: a["account_type"] for a in discovered}
 
-                for pos in raw:
+            # --- Discovered accounts (replaces hardcoded ACCOUNT_MAP) ---
+            if discovered:
+                for acct_num, acct_label in discovered_map.items():
                     try:
-                        qty = float(pos.get("quantity") or 0)
-                        if qty <= 0:
-                            continue
-                        ticker = pos.get("symbol") or ""
-                        if not ticker:
-                            url = pos.get("instrument") or ""
-                            if url:
-                                try:
-                                    ticker = r.get_symbol_by_url(url) or ""
-                                except Exception:
-                                    pass
-                        if not ticker:
-                            continue
-                        avg_cost = float(pos.get("average_buy_price") or 0)
-                        current_price: float | None = None
-                        try:
-                            quotes = r.stocks.get_latest_price(ticker)
-                            if quotes and quotes[0] is not None:
-                                current_price = float(quotes[0])
-                        except Exception:
-                            pass
-                        market_value = current_price * qty if current_price is not None else None
-                        pnl_pct: float | None = None
-                        if current_price is not None and avg_cost and avg_cost > 0:
-                            pnl_pct = round((current_price - avg_cost) / avg_cost * 100, 3)
-                        stock_positions.append({
-                            "ticker": str(ticker).upper(),
-                            "quantity": qty,
-                            "avg_cost": avg_cost,
-                            "current_price": current_price,
-                            "market_value": market_value,
-                            "unrealized_pnl_pct": pnl_pct,
-                            "account_type": acct_label,
-                        })
-                    except Exception:
-                        traceback.print_exc()
-                        continue
+                        raw = r.account.get_open_stock_positions(account_number=acct_num) or []
+                        print(
+                            f"[broker_provider] user_id={user_id} account={acct_label} "
+                            f"({acct_num}): {len(raw)} raw position(s).",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        err = str(exc).replace(password_decrypted, "[REDACTED]")
+                        print(
+                            f"[broker_provider] get_open_stock_positions({acct_num}) failed: {err}",
+                            flush=True,
+                        )
+                        raw = []
 
-            # --- Default brokerage account (if not already covered by ACCOUNT_MAP) ---
-            if not ACCOUNT_MAP:
+                    for pos in raw:
+                        try:
+                            qty = float(pos.get("quantity") or 0)
+                            if qty <= 0:
+                                continue
+                            ticker = pos.get("symbol") or ""
+                            if not ticker:
+                                url = pos.get("instrument") or ""
+                                if url:
+                                    try:
+                                        ticker = r.get_symbol_by_url(url) or ""
+                                    except Exception:
+                                        pass
+                            if not ticker:
+                                continue
+                            avg_cost = float(pos.get("average_buy_price") or 0)
+                            current_price: float | None = None
+                            try:
+                                quotes = r.stocks.get_latest_price(ticker)
+                                if quotes and quotes[0] is not None:
+                                    current_price = float(quotes[0])
+                            except Exception:
+                                pass
+                            market_value = current_price * qty if current_price is not None else None
+                            pnl_pct: float | None = None
+                            if current_price is not None and avg_cost and avg_cost > 0:
+                                pnl_pct = round((current_price - avg_cost) / avg_cost * 100, 3)
+                            stock_positions.append({
+                                "ticker": str(ticker).upper(),
+                                "quantity": qty,
+                                "avg_cost": avg_cost,
+                                "current_price": current_price,
+                                "market_value": market_value,
+                                "unrealized_pnl_pct": pnl_pct,
+                                "account_type": acct_label,
+                            })
+                        except Exception:
+                            traceback.print_exc()
+                            continue
+            else:
+                # Fallback: no accounts discovered — fetch from default account
                 try:
                     raw_default = r.account.get_open_stock_positions() or []
                     print(
@@ -382,7 +383,7 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                             "current_price": current_price,
                             "market_value": market_value,
                             "unrealized_pnl_pct": pnl_pct,
-                            "account_type": "default",
+                            "account_type": "Default",
                         })
                     except Exception:
                         traceback.print_exc()
@@ -434,11 +435,12 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
             )
 
             # --- Raw option positions (same session, no second login) ---
-            # Loop ACCOUNT_MAP for options just like the stock fetch above.
+            # Loop discovered accounts for options just like the stock fetch above.
             raw_option_positions: list[dict[str, Any]] = []
             try:
                 seen_option_ids: set[str] = set()
-                for acct_num in list(ACCOUNT_MAP.keys()) + [None]:
+                option_account_nums = list(discovered_map.keys()) + [None]
+                for acct_num in option_account_nums:
                     try:
                         batch = r.options.get_open_option_positions(account_number=acct_num) or []
                     except Exception as exc:
@@ -454,7 +456,7 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                         raw_option_positions.append(opt_pos)
                 print(
                     f"[broker_provider] user_id={user_id} fetched {len(raw_option_positions)} "
-                    f"raw option position(s) total across {len(ACCOUNT_MAP)} mapped account(s) + default.",
+                    f"raw option position(s) total across {len(discovered_map)} discovered account(s) + default.",
                     flush=True,
                 )
                 if raw_option_positions:
@@ -463,7 +465,7 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                 err = str(exc).replace(password_decrypted, "[REDACTED]")
                 print(f"[broker_provider] get_open_option_positions failed (non-fatal): {err}", flush=True)
 
-            return stock_positions, raw_option_positions
+            return stock_positions, raw_option_positions, discovered
 
         finally:
             try:
