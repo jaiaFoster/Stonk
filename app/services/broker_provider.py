@@ -332,6 +332,7 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                                 "market_value": market_value,
                                 "unrealized_pnl_pct": pnl_pct,
                                 "account_type": acct_label,
+                                "account_number": acct_num,
                             })
                         except Exception:
                             traceback.print_exc()
@@ -384,6 +385,7 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                             "market_value": market_value,
                             "unrealized_pnl_pct": pnl_pct,
                             "account_type": "Default",
+                            "account_number": None,
                         })
                     except Exception:
                         traceback.print_exc()
@@ -421,6 +423,7 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                             "market_value": market_value,
                             "unrealized_pnl_pct": pnl_pct,
                             "account_type": "Crypto",
+                            "account_number": None,
                         })
                     except Exception:
                         traceback.print_exc()
@@ -453,6 +456,8 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                         if opt_id in seen_option_ids:
                             continue
                         seen_option_ids.add(opt_id)
+                        opt_pos["_source_account_number"] = acct_num
+                        opt_pos["_source_account_type"] = discovered_map.get(acct_num, "Default") if acct_num else "Default"
                         raw_option_positions.append(opt_pos)
                 print(
                     f"[broker_provider] user_id={user_id} fetched {len(raw_option_positions)} "

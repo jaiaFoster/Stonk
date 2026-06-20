@@ -225,6 +225,15 @@ def build_user_daily_opportunity(
     return result
 
 
+def _extract_account_from_legs(spread: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract account_number and account_type from a detected spread's embedded legs."""
+    for leg_key in ("long_leg", "short_leg", "short_front_leg", "long_back_leg"):
+        leg = spread.get(leg_key)
+        if isinstance(leg, dict) and leg.get("account_id"):
+            return str(leg["account_id"]), str(leg.get("account_label") or "")
+    return None, None
+
+
 def _normalize_options_positions_for_storage(
     calendars: list[dict[str, Any]],
     verticals: list[dict[str, Any]],
@@ -242,12 +251,12 @@ def _normalize_options_positions_for_storage(
         if not ticker:
             continue
         covered_tickers[ticker] = covered_tickers.get(ticker, 0) + 1
-        # TKT-035: compute advisory exit signal at storage time so advisor.py can read it
         try:
             from app.services.skew_momentum_vertical_service import _compute_exit_signal
             exit_signal, exit_reason = _compute_exit_signal(v)
         except Exception:
             exit_signal, exit_reason = None, None
+        acct_num, acct_type = _extract_account_from_legs(v)
         result.append({
             "ticker": ticker,
             "strategy_type": "skew_vertical",
@@ -265,13 +274,15 @@ def _normalize_options_positions_for_storage(
             "pct_of_max_profit": v.get("pct_of_max_profit"),
             "exit_signal": exit_signal,
             "exit_reason": exit_reason,
-            "account_type": "options",
+            "account_type": acct_type or "options",
+            "account_number": acct_num,
         })
 
     for cal in calendars:
         ticker = str(cal.get("underlying") or cal.get("ticker") or "").upper().strip()
         if not ticker:
             continue
+        acct_num, acct_type = _extract_account_from_legs(cal)
         result.append({
             "ticker": ticker,
             "strategy_type": "earnings_calendar",
@@ -287,7 +298,8 @@ def _normalize_options_positions_for_storage(
             "max_profit": None,
             "max_loss": None,
             "pct_of_max_profit": None,
-            "account_type": "options",
+            "account_type": acct_type or "options",
+            "account_number": acct_num,
         })
 
     return result

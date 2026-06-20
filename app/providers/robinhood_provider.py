@@ -80,9 +80,15 @@ def discover_accounts() -> list[dict[str, Any]]:
             acct_num = str(acct.get("account_number") or "").strip()
             if not acct_num:
                 continue
+            raw_type = acct.get("type")
+            classified = _classify_account_type(acct)
+            print(
+                f"[discover_accounts] account={acct_num} raw_type={raw_type!r} → classified={classified!r}",
+                flush=True,
+            )
             result.append({
                 "account_number": acct_num,
-                "account_type": _classify_account_type(acct),
+                "account_type": classified,
             })
         print(
             f"[discover_accounts] {len(result)} account(s): "
@@ -1134,11 +1140,17 @@ def _normalize_option_position(raw, account_number, account_label):
     option_id = _option_id_from_position(raw)
     option_symbol = _occ_symbol(underlying, expiration, option_type, strike)
 
+    effective_account_number = account_number
+    effective_account_label = account_label
+    if effective_account_number is None and isinstance(raw, dict):
+        effective_account_number = raw.get("_source_account_number")
+        effective_account_label = raw.get("_source_account_type") or account_label
+
     return {
         "source": "robinhood",
         "broker": "robinhood",
-        "account_id": account_number,
-        "account_label": account_label,
+        "account_id": effective_account_number,
+        "account_label": effective_account_label,
         "id": raw.get("id") or raw.get("url") or option_id,
         "option_id": option_id,
         "symbol": option_symbol,

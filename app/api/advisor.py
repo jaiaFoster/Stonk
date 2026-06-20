@@ -298,19 +298,26 @@ def positions():
             user_run = get_latest_complete_user_run(user_id) if user_id else None
             if user_run:
                 user_positions = get_user_positions(user_id, run_id=user_run.get("run_id"))
-                by_account: dict[str, list[dict[str, Any]]] = {}
+                by_account: dict[str, dict[str, Any]] = {}
                 for pos in user_positions:
-                    acct = str(pos.get("account_type") or "default")
-                    by_account.setdefault(acct, []).append({
+                    acct_num = str(pos.get("account_number") or pos.get("account_type") or "default")
+                    acct_type = str(pos.get("account_type") or "default")
+                    if acct_num not in by_account:
+                        by_account[acct_num] = {
+                            "account_number": pos.get("account_number"),
+                            "account_type": acct_type,
+                            "positions": [],
+                        }
+                    by_account[acct_num]["positions"].append({
                         "ticker": pos.get("ticker"),
                         "quantity": pos.get("quantity"),
                         "avg_cost": pos.get("avg_cost"),
                         "current_price": pos.get("current_price"),
                         "unrealized_pnl_pct": pos.get("unrealized_pnl_pct"),
                         "market_value": pos.get("market_value"),
-                        "asset_type": "stock",
+                        "asset_type": "stock" if pos.get("position_type") != "options" else "options",
                     })
-                accounts_list = [{"account_type": acct, "positions": rows} for acct, rows in by_account.items()]
+                accounts_list = list(by_account.values())
 
                 # TKT-035: options positions in spec format
                 options_positions = []
