@@ -194,8 +194,14 @@ def _migrate_29a(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_43(conn: sqlite3.Connection) -> None:
-    """TKT-043: user_broker_accounts table. Idempotent — table created by SCHEMA."""
-    pass
+    """TKT-043: user_broker_accounts table + account_number column. Idempotent."""
+    for sql in (
+        "ALTER TABLE user_positions ADD COLUMN account_number TEXT",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
 
 
 def init_db() -> None:
@@ -570,6 +576,7 @@ def save_user_positions(user_id: int, run_id: str, positions: list[dict[str, Any
             p.get("unrealized_pnl_pct"),
             p.get("account_type"),
             now,
+            p.get("account_number"),
         )
         for p in positions
         if p.get("ticker")
@@ -579,7 +586,7 @@ def save_user_positions(user_id: int, run_id: str, positions: list[dict[str, Any
     with _connect() as conn:
         conn.executemany(
             "INSERT INTO user_positions (user_id, run_id, ticker, quantity, avg_cost, current_price, "
-            "market_value, unrealized_pnl_pct, account_type, fetched_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "market_value, unrealized_pnl_pct, account_type, fetched_at, account_number) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
 
@@ -643,14 +650,16 @@ def save_user_option_positions_to_positions(
             now,
             "options",
             _json.dumps(details),
+            opt.get("account_number"),
         ))
     if not rows:
         return
     with _connect() as conn:
         conn.executemany(
             "INSERT INTO user_positions (user_id, run_id, ticker, quantity, avg_cost, current_price, "
-            "market_value, unrealized_pnl_pct, account_type, fetched_at, position_type, option_details) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "market_value, unrealized_pnl_pct, account_type, fetched_at, position_type, option_details, "
+            "account_number) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             rows,
         )
 
