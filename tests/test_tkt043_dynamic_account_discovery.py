@@ -56,6 +56,26 @@ class TestClassifyAccountType:
         from app.providers.robinhood_provider import _classify_account_type
         assert _classify_account_type({"type": "sep_ira"}) == "IRA"
 
+    def test_brokerage_account_type_field_roth(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "brokerage_account_type": "roth_ira"}) == "Roth IRA"
+
+    def test_brokerage_account_type_field_traditional(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "brokerage_account_type": "traditional_ira"}) == "Traditional IRA"
+
+    def test_account_type_field_overrides_type(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "account_type": "rollover_ira"}) == "Rollover IRA"
+
+    def test_pinnacle_account_fallback(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "is_pinnacle_account": True}) == "Retirement"
+
+    def test_pinnacle_false_stays_individual(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "is_pinnacle_account": False}) == "Individual"
+
 
 # ---------------------------------------------------------------------------
 # discover_accounts() mock tests

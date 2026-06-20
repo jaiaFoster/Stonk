@@ -74,12 +74,22 @@ def discover_accounts() -> list[dict[str, Any]]:
                 return []
 
         result = []
-        for acct in all_accounts:
+        for i, acct in enumerate(all_accounts):
             if not isinstance(acct, dict):
                 continue
             acct_num = str(acct.get("account_number") or "").strip()
             if not acct_num:
                 continue
+            type_fields = {
+                k: acct.get(k) for k in
+                ("type", "brokerage_account_type", "account_type", "is_pinnacle_account")
+                if acct.get(k) is not None
+            }
+            print(
+                f"[discover_accounts] account[{i}] num={acct_num} "
+                f"type_fields={type_fields} all_keys={sorted(acct.keys())}",
+                flush=True,
+            )
             result.append({
                 "account_number": acct_num,
                 "account_type": _classify_account_type(acct),
@@ -96,21 +106,54 @@ def discover_accounts() -> list[dict[str, Any]]:
 
 
 def _classify_account_type(acct: dict) -> str:
-    """Derive human-readable label from Robinhood account profile dict."""
+    """Derive human-readable label from Robinhood account profile dict.
+
+    Robinhood's /accounts/ endpoint returns `type` as "cash" or "margin"
+    (the trading type), NOT the account category. IRA accounts are type="cash"
+    because margin isn't allowed in IRAs. We check multiple fields to find
+    the real account category:
+      1. `brokerage_account_type` (undocumented, sometimes present)
+      2. `account_type` (undocumented, sometimes present)
+      3. `is_pinnacle_account` (Pinnacle = Robinhood retirement platform)
+      4. `type` (fallback — only distinguishes cash/margin)
+    """
+    for field in ("brokerage_account_type", "account_type"):
+        val = str(acct.get(field) or "").lower().strip()
+        if val:
+            label = _match_ira_label(val)
+            if label:
+                return label
+
     acct_type = str(acct.get("type") or "").lower().strip()
-    if "roth" in acct_type:
-        return "Roth IRA"
-    if "rollover" in acct_type:
-        return "Rollover IRA"
-    if "traditional" in acct_type or "trad_ira" in acct_type:
-        return "Traditional IRA"
-    if "ira" in acct_type:
-        return "IRA"
+    label = _match_ira_label(acct_type)
+    if label:
+        return label
+
+    if acct.get("is_pinnacle_account"):
+        return "Retirement"
+
     if acct_type in ("cash", "margin"):
         return "Individual"
     if acct_type:
         return acct_type.replace("_", " ").title()
     return "Brokerage"
+
+
+def _match_ira_label(val: str) -> str | None:
+    """Return IRA label if val contains IRA-related keywords, else None."""
+    if not val:
+        return None
+    if "roth" in val:
+        return "Roth IRA"
+    if "rollover" in val:
+        return "Rollover IRA"
+    if "traditional" in val or "trad_ira" in val:
+        return "Traditional IRA"
+    if "ira" in val:
+        return "IRA"
+    if "retirement" in val:
+        return "Retirement"
+    return None
 
 MAX_LOGIN_RETRIES = 3
 RETRY_INTERVAL_SECONDS = 60
