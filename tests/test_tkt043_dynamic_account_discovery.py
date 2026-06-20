@@ -56,6 +56,22 @@ class TestClassifyAccountType:
         from app.providers.robinhood_provider import _classify_account_type
         assert _classify_account_type({"type": "sep_ira"}) == "IRA"
 
+    def test_pinnacle_account_is_ira(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "is_pinnacle_account": True}) == "IRA"
+
+    def test_pinnacle_false_cash_is_individual(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "is_pinnacle_account": False}) == "Individual"
+
+    def test_pinnacle_none_cash_is_individual(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "cash", "is_pinnacle_account": None}) == "Individual"
+
+    def test_pinnacle_margin_is_individual(self):
+        from app.providers.robinhood_provider import _classify_account_type
+        assert _classify_account_type({"type": "margin", "is_pinnacle_account": False}) == "Individual"
+
 
 # ---------------------------------------------------------------------------
 # discover_accounts() mock tests
