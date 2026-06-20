@@ -1,18 +1,19 @@
 """
-app/api/user.py — User endpoints (28A + 28B + 28C).
+app/api/user.py — User endpoints (28A + 28B + 28C + TKT-045).
 
 GET  /api/user/status         — return user info (no credentials).
 POST /api/user/rotate-key     — generate new API key, invalidate old.
 POST /api/user/run            — trigger personalization run (28B).
 GET  /api/user/run/status     — return latest run status (28B).
 PUT  /api/user/credentials    — update Robinhood credentials with validation (28C).
+PUT  /api/user/accounts/<acct>/nickname — set/clear account nickname (TKT-045).
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from flask import Blueprint, g, jsonify
+from flask import Blueprint, g, jsonify, request
 
 from app.auth import require_auth
 
@@ -374,5 +375,51 @@ def core_run_status():
         "core_run_freshness_hours": round(freshness, 2),
         "core_run_stale": freshness > stale_threshold,
         "stale_threshold_hours": stale_threshold,
+        "provider_calls_triggered": False,
+    }), 200
+
+
+@user_bp.route("/accounts/<account_number>/nickname", methods=["PUT"])
+@require_auth
+def set_nickname(account_number):
+    """TKT-045: Set or clear a user-defined nickname for a broker account."""
+    user = g.current_user or {}
+    user_id = user.get("id")
+    if not user_id or user_id == 0:
+        return jsonify({
+            "status": "error",
+            "error": "not_supported",
+            "message": "Cannot set nickname for legacy token.",
+            "provider_calls_triggered": False,
+        }), 400
+
+    body = request.get_json(silent=True) or {}
+    nickname = body.get("nickname")
+    if nickname is not None:
+        nickname = str(nickname).strip()
+        if len(nickname) > 100:
+            return jsonify({
+                "status": "error",
+                "error": "invalid_nickname",
+                "message": "Nickname must be 100 characters or fewer.",
+                "provider_calls_triggered": False,
+            }), 400
+        if not nickname:
+            nickname = None
+
+    from app.db.users import set_account_nickname
+    updated = set_account_nickname(user_id, account_number, nickname)
+    if not updated:
+        return jsonify({
+            "status": "error",
+            "error": "account_not_found",
+            "message": "No discovered account with that number for this user.",
+            "provider_calls_triggered": False,
+        }), 404
+
+    return jsonify({
+        "status": "ok",
+        "account_number": account_number,
+        "nickname": nickname,
         "provider_calls_triggered": False,
     }), 200
