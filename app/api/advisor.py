@@ -23,33 +23,39 @@ def _token_from_request() -> str | None:
     return request.args.get("token")
 
 
-def _valid_token(token: str | None) -> bool:
-    """Accept RUN_TOKEN (legacy), legacy dev token, or any active user key/session."""
+def _valid_token(token: str | None) -> "tuple[bool, dict | None]":
+    """Accept RUN_TOKEN (legacy), legacy dev token, or any active user key/session.
+    Returns (is_valid, user_dict_or_none)."""
     if not token:
-        return False
+        return False, None
     # Legacy: existing RUN_TOKEN (advisor callers)
     if config.RUN_TOKEN and token == config.RUN_TOKEN:
-        return True
+        return True, None
     # Legacy: DEV_API_TOKEN bypass
     try:
-        from app.auth import _is_legacy_token
+        from app.auth import _is_legacy_token, _synthetic_admin_user
         if _is_legacy_token(token):
-            return True
+            return True, _synthetic_admin_user()
     except Exception:
         pass
     # 28A: user API key or session token
     try:
         from app.auth import _resolve_user
         user = _resolve_user(token)
-        return bool(user and user.get("is_active"))
+        if user and user.get("is_active"):
+            return True, user
     except Exception:
-        return False
+        pass
+    return False, None
 
 
 def _require_auth():
-    """Returns a 401 response if token invalid, else None."""
-    if not _valid_token(_token_from_request()):
+    """Returns a 401 response if token invalid, else None. Sets g.current_user on success."""
+    from flask import g
+    valid, user = _valid_token(_token_from_request())
+    if not valid:
         return jsonify({"status": "error", "error": "Unauthorized.", "provider_calls_triggered": False}), 401
+    g.current_user = user or {}
     return None
 
 
