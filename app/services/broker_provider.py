@@ -157,14 +157,15 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
         import robin_stocks.robinhood as r
 
         data_dir = str(getattr(config, "DATA_DIR", "data"))
-        pickle_name = os.path.join(data_dir, f"rh_user_{user_id}")
+        os.makedirs(data_dir, exist_ok=True)
 
         try:
             r.login(
                 username=username,
                 password=password_decrypted,
                 store_session=True,
-                pickle_name=pickle_name,
+                pickle_path=data_dir,
+                pickle_name=f"_user_{user_id}",
             )
         except Exception as exc:
             err = str(exc).replace(password_decrypted, "[REDACTED]")
@@ -247,16 +248,15 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
         from app.providers.robinhood_provider import ACCOUNT_MAP
 
         data_dir = str(getattr(config, "DATA_DIR", "data"))
-        # Ensure the pickle directory exists before login so store_session can write the file.
         os.makedirs(data_dir, exist_ok=True)
-        pickle_name = os.path.join(data_dir, f"rh_user_{user_id}")
 
         try:
             r.login(
                 username=username,
                 password=password_decrypted,
                 store_session=True,
-                pickle_name=pickle_name,
+                pickle_path=data_dir,
+                pickle_name=f"_user_{user_id}",
             )
         except Exception as exc:
             err = str(exc).replace(password_decrypted, "[REDACTED]")

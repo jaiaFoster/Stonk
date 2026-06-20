@@ -1161,7 +1161,8 @@ def _option_id_from_position(raw):
 
 
 def _infer_robinhood_option_side(raw, quantity):
-    for key in ["side", "direction", "position_type", "quantity_direction", "opening_side", "strategy"]:
+    for key in ["side", "direction", "position_type", "quantity_direction", "opening_side", "strategy",
+                "clearing_direction", "clearing_intraday_direction"]:
         text = str(raw.get(key) or "").lower()
         if "short" in text or "sell" in text or text in {"credit", "sold"}:
             return "short"
@@ -1169,9 +1170,12 @@ def _infer_robinhood_option_side(raw, quantity):
             return "long"
     if quantity < 0:
         return "short"
-    # Robinhood option position rows can omit long/short direction. Keep this
-    # unknown so the calendar detector can infer front-short/back-long only
-    # when the grouped legs make that structure plausible.
+    print(
+        f"[side_inference] unknown side — clearing_direction={raw.get('clearing_direction')!r} "
+        f"clearing_intraday_direction={raw.get('clearing_intraday_direction')!r} "
+        f"quantity={raw.get('quantity')!r} keys={sorted(raw.keys())}",
+        flush=True,
+    )
     return "unknown"
 
 
