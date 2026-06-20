@@ -39,6 +39,8 @@ app.register_blueprint(advisor_bp)
 from app.api.admin import admin_bp
 app.register_blueprint(admin_bp)
 
+from app.auth import require_admin
+
 from app.api.user import user_bp
 app.register_blueprint(user_bp)
 
@@ -1029,6 +1031,13 @@ def dev_usage_telemetry():
     _require_dev_diagnostics_token()
     from app.services.usage_telemetry_service import build_usage_telemetry_diagnostics
     return jsonify(build_usage_telemetry_diagnostics()), 200
+
+
+@app.route("/api/dev/ff-graduation-analysis")
+@require_admin
+def dev_ff_graduation_analysis():
+    from app.services.ff_graduation_analysis_service import build_ff_graduation_analysis
+    return jsonify(build_ff_graduation_analysis()), 200
 
 
 def _run_job(job_id: str, run_mode: str = "prod", job_lock: threading.Lock | None = None) -> None:
