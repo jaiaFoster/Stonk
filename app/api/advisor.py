@@ -237,8 +237,10 @@ def daily():
                     "strategy_summary": _strategy_summary(strategies),
                     "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
                 }), 200
-        except Exception:
-            pass  # Fall through to shared output on any error
+        except Exception as exc:
+            import traceback
+            print(f"[advisor.snapshot] personal block failed: {type(exc).__name__}: {exc}", flush=True)
+            print(traceback.format_exc(), flush=True)
 
         # No completed run yet — shared output with personalized: false
         actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
@@ -336,8 +338,12 @@ def positions():
                             "exit_signal": details.get("exit_signal"),
                             "exit_reason": details.get("exit_reason"),
                         })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    import traceback
+                    print(f"[advisor.positions] options block failed for user_id={user_id} "
+                          f"run_id={user_run.get('run_id') if user_run else None}: "
+                          f"{type(exc).__name__}: {exc}", flush=True)
+                    print(traceback.format_exc(), flush=True)
 
                 has_open_verticals = any(p.get("strategy_type") == "skew_vertical" for p in options_positions)
                 has_open_calendars = any(p.get("strategy_type") == "earnings_calendar" for p in options_positions)
@@ -354,8 +360,11 @@ def positions():
                     "has_open_verticals": has_open_verticals,
                     "has_open_calendars": has_open_calendars,
                 }), 200
-        except Exception:
-            pass  # Fall through
+        except Exception as exc:
+            import traceback
+            print(f"[advisor.positions] outer block failed for user_id={user_id}: "
+                  f"{type(exc).__name__}: {exc}", flush=True)
+            print(traceback.format_exc(), flush=True)
 
         # No run yet — include empty options fields so callers don't need to guard on MISSING keys
         return jsonify({
