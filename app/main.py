@@ -42,6 +42,9 @@ app.register_blueprint(admin_bp)
 from app.api.user import user_bp
 app.register_blueprint(user_bp)
 
+from app.api.knowledge import knowledge_bp
+app.register_blueprint(knowledge_bp)
+
 # 28A: set secret key for signed cookies and seed admin user on first boot
 app.secret_key = config.SESSION_SECRET_KEY or os.urandom(32)
 try:
