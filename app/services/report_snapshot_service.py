@@ -257,6 +257,7 @@ def _compact_strategy(value: dict[str, Any], *, include_rows: bool) -> dict[str,
     keep = {
         "strategy_id", "strategy_label", "enabled", "ran", "mode", "run_mode",
         "pass_count", "watch_count", "fail_count", "skipped_count", "summary",
+        "lifecycle_status", "active_count",
     }
     output = {key: value.get(key) for key in keep if key in value}
     if "summary" in output:
@@ -274,6 +275,7 @@ def _compact_hot_detail(value: dict[str, Any]) -> dict[str, Any]:
     scalar_keys = {
         "enabled", "has_data", "mode", "run_mode", "overall_status", "report_quality",
         "target_profile", "summary", "broker_summary", "config_snapshot", "errors", "warnings",
+        "lifecycle_status", "active_count",
     }
     row_keys = {
         "actions", "active_rows", "blocked_items", "calendars", "checks",
