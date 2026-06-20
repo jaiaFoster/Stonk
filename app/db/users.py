@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS user_positions (
     market_value REAL,
     unrealized_pnl_pct REAL,
     account_type TEXT,
-    fetched_at TEXT DEFAULT (datetime('now'))
+    fetched_at TEXT DEFAULT (datetime('now')),
+    position_type TEXT DEFAULT 'stock',
+    option_details TEXT
 );
 
 CREATE TABLE IF NOT EXISTS user_daily_opportunity (
@@ -187,6 +189,12 @@ def init_db() -> None:
         conn.executescript(SCHEMA)
         _migrate_28c(conn)
         _migrate_29a(conn)
+        cols = [c[1] for c in conn.execute("PRAGMA table_info(user_positions)").fetchall()]
+        if "position_type" not in cols or "option_details" not in cols:
+            print(f"[init_db] WARNING: user_positions missing options columns. "
+                  f"columns={cols}", flush=True)
+        else:
+            print(f"[init_db] user_positions schema OK: position_type and option_details present.", flush=True)
 
 
 def seed_sysadmin() -> None:
