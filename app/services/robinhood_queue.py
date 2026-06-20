@@ -33,9 +33,8 @@ class RobinhoodDeviceApprovalRequired(Exception):
 def session_cache_available(user_id: int) -> bool:
     """Return True if a per-user Robinhood session pickle exists on disk."""
     data_dir = str(getattr(config, "DATA_DIR", "data"))
-    pickle_path = os.path.join(data_dir, f"rh_user_{user_id}")
-    # robin_stocks appends .pickle to the pickle_name
-    return os.path.exists(pickle_path) or os.path.exists(pickle_path + ".pickle")
+    pickle_path = os.path.join(data_dir, f"robinhood_user_{user_id}.pickle")
+    return os.path.exists(pickle_path)
 
 
 def fetch_with_lock(user_id: int, rh_username: str, rh_password: str) -> list[dict[str, Any]]:
