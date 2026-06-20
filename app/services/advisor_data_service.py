@@ -120,6 +120,8 @@ def _strategy_summary(strategies: dict[str, Any]) -> dict[str, Any]:
             "watch": result.get("watch_count", 0),
             "fail": result.get("fail_count", 0),
             "skipped": result.get("skipped_count", 0),
+            "lifecycle_status": result.get("lifecycle_status"),
+            "active_count": result.get("active_count", 0),
         }
     return out
 
