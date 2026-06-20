@@ -200,10 +200,11 @@ class TestCandidateSkewFields:
         row = self._make_candidate_with_patch(skew_filter_applied=True, lottery_count=2)
         assert row["skew_filter_applied"] is True
 
-    def test_skew_gap_to_pass_none_when_diagnostic_mode_off(self):
+    def test_skew_gap_to_pass_always_computed(self):
         with patch("app.config.SKEW_DIAGNOSTIC_MODE", False):
             row = self._make_candidate_with_patch()
-        assert row["skew_gap_to_pass"] is None
+        assert row["skew_gap_to_pass"] is not None
+        assert isinstance(row["skew_gap_to_pass"], float)
 
     def test_skew_gap_to_pass_computed_when_diagnostic_mode_on(self):
         with patch("app.config.SKEW_DIAGNOSTIC_MODE", True), \
@@ -223,3 +224,18 @@ class TestCandidateSkewFields:
             row = _candidate_row("X", direction, 100.0, "2024-03-15", 28, "call", leg, sleg, {}, {}, {}, adjusted_skew_score=15.0)
         # 10.0 - 15.0 = -5.0
         assert row["skew_gap_to_pass"] == -5.0
+
+    def test_would_pass_at_threshold_equals_adjusted_skew(self):
+        """would_pass_at_threshold = adjusted_skew_score rounded to 2dp."""
+        row = self._make_candidate_with_patch()
+        assert "would_pass_at_threshold" in row
+        assert row["would_pass_at_threshold"] == 12.0
+
+    def test_would_pass_at_threshold_with_high_score(self):
+        with patch("app.config.SKEW_RICHNESS_THRESHOLD", 10.0):
+            from app.services.skew_momentum_vertical_service import _candidate_row
+            direction = {"direction": "bullish", "confirmed": True, "score": 70.0, "reason": "x"}
+            leg = {"strike": 100.0, "bid": 1.00, "ask": 1.20, "mid": 1.10, "iv": 0.30, "delta": 0.50, "open_interest": 200, "volume": 100}
+            sleg = {"strike": 105.0, "bid": 0.40, "ask": 0.50, "mid": 0.45, "iv": 0.35, "delta": 0.30, "open_interest": 150, "volume": 80}
+            row = _candidate_row("X", direction, 100.0, "2024-03-15", 28, "call", leg, sleg, {}, {}, {}, adjusted_skew_score=15.0)
+        assert row["would_pass_at_threshold"] == 15.0
