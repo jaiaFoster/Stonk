@@ -46,7 +46,5 @@ ENV OPEND_PORT=11111
 
 EXPOSE ${OPEND_PORT}
 
-VOLUME /data
-
 ENTRYPOINT ["/opt/opend/FutuOpenD"]
 CMD ["-cfg_file", "/opt/opend/FutuOpenD.xml"]
