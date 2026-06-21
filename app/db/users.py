@@ -1,7 +1,7 @@
 """
 app/db/users.py — users.db schema, init, and helpers.
 
-Tables: users, invite_codes, sessions.
+Tables: users, invite_codes, sessions, user_errors.
 Passwords: bcrypt. Robinhood password: Fernet encryption.
 API keys: asa_<32 hex>. Session tokens: 32 hex chars.
 Invite codes: ASA-XXXX-XXXX-XXXX (uppercase alphanum segments).
@@ -130,6 +130,16 @@ CREATE TABLE IF NOT EXISTS user_broker_accounts (
     discovered_at TEXT DEFAULT (datetime('now')),
     UNIQUE(user_id, account_number)
 );
+
+CREATE TABLE IF NOT EXISTS user_errors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    run_id TEXT,
+    error_source TEXT NOT NULL,
+    error_type TEXT,
+    error_message TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -210,6 +220,62 @@ def _migrate_45(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE user_broker_accounts ADD COLUMN nickname TEXT")
     except Exception:
         pass
+
+
+def log_user_error(
+    user_id: int | None,
+    error_source: str,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    run_id: str | None = None,
+) -> None:
+    """Fire-and-forget per-user error log. NEVER raises."""
+    try:
+        if error_message:
+            from app.services.redaction_service import known_secrets
+            for secret in known_secrets():
+                if secret:
+                    error_message = error_message.replace(secret, "[REDACTED]")
+            error_message = error_message[:500]
+        with _connect() as conn:
+            conn.execute(
+                "INSERT INTO user_errors (user_id, run_id, error_source, error_type, error_message) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (user_id, run_id, error_source, error_type, error_message),
+            )
+    except Exception:
+        pass
+
+
+def get_user_errors(
+    user_id: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return recent errors, optionally filtered by user_id."""
+    with _connect() as conn:
+        if user_id is not None:
+            rows = conn.execute(
+                "SELECT id, user_id, run_id, error_source, error_type, error_message, created_at "
+                "FROM user_errors WHERE user_id = ? ORDER BY id DESC LIMIT ? OFFSET ?",
+                (user_id, limit, offset),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, user_id, run_id, error_source, error_type, error_message, created_at "
+                "FROM user_errors ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def count_user_errors_24h() -> int:
+    """Count errors in last 24h for admin summary."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    with _connect() as conn:
+        return (conn.execute(
+            "SELECT COUNT(*) FROM user_errors WHERE created_at > ?", (cutoff,)
+        ).fetchone() or [0])[0]
 
 
 def init_db() -> None:

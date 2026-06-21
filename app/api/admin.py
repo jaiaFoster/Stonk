@@ -10,6 +10,7 @@ POST /api/admin/users/<id>/reset-key          — generate new API key for user 
 GET  /api/admin/invites                       — list all invite codes (28E).
 POST /api/admin/invites/<code>/revoke         — revoke unused invite code (28E).
 GET  /api/admin/summary                       — full admin picture in one call (28E).
+GET  /api/admin/errors                        — per-user error log.
 """
 
 from __future__ import annotations
@@ -284,10 +285,15 @@ def revoke_invite(code: str):
 @admin_bp.route("/summary")
 @require_admin
 def admin_summary():
-    from app.db.users import admin_summary_stats, get_encryption_key_status
+    from app.db.users import admin_summary_stats, get_encryption_key_status, count_user_errors_24h
     from app import config as _cfg
 
     stats = admin_summary_stats()
+    errors_24h = 0
+    try:
+        errors_24h = count_user_errors_24h()
+    except Exception:
+        pass
 
     # Core run freshness
     core_run_data = _core_run_info()
@@ -304,6 +310,9 @@ def admin_summary():
         "users": stats["users"],
         "invites": stats["invites"],
         "runs": stats["runs"],
+        "errors": {
+            "last_24h": errors_24h,
+        },
         "core_run": core_run_data,
         "system": {
             "encryption_key_set": encryption_key_set,
@@ -347,3 +356,22 @@ def _core_run_info() -> dict:
         }
     except Exception:
         return {"quality": None, "freshness_hours": None, "stale": None}
+
+
+@admin_bp.route("/errors")
+@require_admin
+def admin_errors():
+    """Per-user error log. Optional ?user_id= filter, ?limit=, ?offset=."""
+    from app.db.users import get_user_errors
+
+    uid = request.args.get("user_id", type=int)
+    limit = min(request.args.get("limit", 50, type=int), 200)
+    offset = request.args.get("offset", 0, type=int)
+
+    errors = get_user_errors(user_id=uid, limit=limit, offset=offset)
+    return jsonify({
+        "status": "ok",
+        "errors": errors,
+        "count": len(errors),
+        "provider_calls_triggered": False,
+    }), 200

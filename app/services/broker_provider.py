@@ -262,6 +262,8 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
         except Exception as exc:
             err = str(exc).replace(password_decrypted, "[REDACTED]")
             low = err.lower()
+            from app.db.users import log_user_error
+            log_user_error(user_id, "broker_provider.login", type(exc).__name__, err)
             if (
                 "device_approval" in low
                 or "verification" in low
@@ -431,6 +433,8 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
             except Exception as exc:
                 err = str(exc).replace(password_decrypted, "[REDACTED]")
                 print(f"[broker_provider] crypto positions failed (non-fatal): {err}", flush=True)
+                from app.db.users import log_user_error
+                log_user_error(user_id, "broker_provider.crypto", type(exc).__name__, err)
 
             print(
                 f"[broker_provider] user_id={user_id} total stock+crypto positions: {len(stock_positions)}.",
@@ -469,6 +473,8 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
             except Exception as exc:
                 err = str(exc).replace(password_decrypted, "[REDACTED]")
                 print(f"[broker_provider] get_open_option_positions failed (non-fatal): {err}", flush=True)
+                from app.db.users import log_user_error
+                log_user_error(user_id, "broker_provider.options", type(exc).__name__, err)
 
             return stock_positions, raw_option_positions, discovered
 
