@@ -577,6 +577,12 @@ TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT = _int_env("TRADE_MEMORY_DEFAULT_PROFIT_T
 TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT = _int_env("TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT", -35)
 TRADE_MEMORY_DEFAULT_STATUS = os.environ.get("TRADE_MEMORY_DEFAULT_STATUS", "open").strip().lower()
 
+# --- Plaid broker integration ---
+PLAID_CLIENT_ID = os.environ.get("PLAID_CLIENT_ID")
+PLAID_SECRET = os.environ.get("PLAID_SECRET")
+PLAID_ENV = os.environ.get("PLAID_ENV", "production")
+PLAID_REFRESH_ON_EVERY_RUN = _bool_env("PLAID_REFRESH_ON_EVERY_RUN", True)
+
 # --- 28A: User auth / multi-user foundation ---
 ASA_ADMIN_USERNAME = os.environ.get("ASA_ADMIN_USERNAME", "jaia").strip()
 ASA_ADMIN_PASSWORD = os.environ.get("ASA_ADMIN_PASSWORD", "").strip()

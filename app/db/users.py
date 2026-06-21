@@ -222,6 +222,18 @@ def _migrate_45(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _migrate_plaid(conn: sqlite3.Connection) -> None:
+    """Plaid integration columns on users table. Idempotent."""
+    for sql in (
+        "ALTER TABLE users ADD COLUMN plaid_access_token_encrypted TEXT",
+        "ALTER TABLE users ADD COLUMN plaid_item_id TEXT",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+
+
 def log_user_error(
     user_id: int | None,
     error_source: str,
@@ -286,6 +298,7 @@ def init_db() -> None:
         _migrate_29a(conn)
         _migrate_43(conn)
         _migrate_45(conn)
+        _migrate_plaid(conn)
         cols = [c[1] for c in conn.execute("PRAGMA table_info(user_positions)").fetchall()]
         if "position_type" not in cols or "option_details" not in cols:
             print(f"[init_db] WARNING: user_positions missing options columns. "
@@ -402,6 +415,53 @@ def encrypt_robinhood_password(plain: str) -> str:
 
 def decrypt_robinhood_password(encrypted: str) -> str:
     return _fernet().decrypt(encrypted.encode()).decode()
+
+
+def encrypt_credential(plain: str) -> str:
+    """Encrypt any credential with the same Fernet key. NEVER log the plain value."""
+    return _fernet().encrypt(plain.encode()).decode()
+
+
+def decrypt_credential(encrypted: str) -> str:
+    """Decrypt any credential encrypted with encrypt_credential(). NEVER log the result."""
+    return _fernet().decrypt(encrypted.encode()).decode()
+
+
+def store_plaid_tokens(user_id: int, access_token: str, item_id: str) -> None:
+    """Encrypt and store Plaid access_token + item_id, set broker_type='plaid'."""
+    enc = encrypt_credential(access_token)
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET plaid_access_token_encrypted=?, plaid_item_id=?, "
+            "broker_type='plaid', credentials_validated_at=?, credentials_last_error=NULL "
+            "WHERE id=?",
+            (enc, item_id, now, user_id),
+        )
+
+
+def get_plaid_access_token(user_id: int) -> str | None:
+    """Return decrypted Plaid access_token for user, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT plaid_access_token_encrypted FROM users WHERE id=?", (user_id,)
+        ).fetchone()
+    if not row or not row[0]:
+        return None
+    return decrypt_credential(row[0])
+
+
+def record_plaid_webhook(item_id: str) -> None:
+    """Record last webhook timestamp for a Plaid item. Fire-and-forget."""
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        with _connect() as conn:
+            conn.execute(
+                "UPDATE users SET credentials_validated_at=? WHERE plaid_item_id=?",
+                (now, item_id),
+            )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

@@ -339,23 +339,28 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         session_cache_available,
     )
 
+    broker_type = str(user.get("broker_type") or "robinhood").lower()
     rh_username = str(user.get("robinhood_username") or "").strip()
     rh_password_enc = str(user.get("robinhood_password_encrypted") or "").strip()
+    plaid_token_enc = str(user.get("plaid_access_token_encrypted") or "").strip()
 
-    # Q5: no creds — write a run row first so it counts toward the rate limit window,
-    # then return the shared-signal response.
-    if not rh_username or not rh_password_enc:
+    has_creds = (
+        (broker_type == "plaid" and bool(plaid_token_enc))
+        or (broker_type != "plaid" and bool(rh_username) and bool(rh_password_enc))
+    )
+
+    if not has_creds:
         _no_creds_run_id = generate_run_id()
         try:
             create_user_run(user_id, _no_creds_run_id)
-            fail_user_run(_no_creds_run_id, "no_robinhood_credentials")
+            fail_user_run(_no_creds_run_id, "no_broker_credentials")
         except Exception:
             pass
         return {
             "status": "ok",
             "personalized": False,
-            "reason": "no_robinhood_credentials",
-            "message": "No Robinhood credentials on file. Showing shared market signals.",
+            "reason": "no_broker_credentials",
+            "message": "No broker credentials on file. Showing shared market signals.",
             "provider_calls_triggered": False,
         }
 
@@ -391,97 +396,133 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         core_run_freshness_hours=freshness_hours,
     )
 
-    # Decrypt credentials immediately before fetch, delete immediately after
-    rh_password: str | None = None
-    try:
-        try:
-            rh_password = decrypt_robinhood_password(rh_password_enc)
-        except Exception as exc:
-            fail_user_run(run_id, f"credential_decrypt_failed: {type(exc).__name__}")
-            from app.db.users import log_user_error
-            log_user_error(user_id, "personalization.decrypt", type(exc).__name__, str(exc), run_id=run_id)
-            return {
-                "status": "error",
-                "error": "credential_decrypt_failed",
-                "message": "Could not decrypt stored Robinhood credentials.",
-                "provider_calls_triggered": False,
-            }
-
-        # Serialized Robinhood fetch — stock + options in one session
+    # --- Plaid path: API-based, no queue lock needed ---
+    if broker_type == "plaid":
+        positions: list[dict[str, Any]] = []
+        raw_option_positions: list[dict[str, Any]] = []
         discovered_accounts: list[dict[str, Any]] = []
         try:
-            positions, raw_option_positions, discovered_accounts = fetch_all_with_lock(user_id, rh_username, rh_password)
-            # Mark creds validated on successful fetch
+            from app.db.users import decrypt_credential
+            plaid_token = decrypt_credential(plaid_token_enc)
+            from app.services.broker_provider import BrokerCredentialProvider
+            provider = BrokerCredentialProvider.get_provider("plaid")
+            positions, raw_option_positions, discovered_accounts = provider.fetch_positions_with_options(
+                plaid_token, "", user_id
+            )
+            del plaid_token
             try:
                 from app.db.users import set_credentials_validated
                 set_credentials_validated(user_id)
             except Exception:
                 pass
-            # TKT-043: persist discovered broker accounts
             try:
                 from app.db.users import save_user_broker_accounts
                 if discovered_accounts:
                     save_user_broker_accounts(user_id, discovered_accounts)
-                    print(
-                        f"[personalization] user_id={user_id}: saved {len(discovered_accounts)} broker account(s).",
-                        flush=True,
-                    )
             except Exception as exc:
-                print(f"[personalization] save_user_broker_accounts failed (non-fatal): {exc}", flush=True)
                 from app.db.users import log_user_error
                 log_user_error(user_id, "personalization.save_broker_accounts", type(exc).__name__, str(exc), run_id=run_id)
-        except RobinhoodQueueTimeout:
-            fail_user_run(run_id, "queue_timeout", timed_out=True)
-            from app.db.users import log_user_error
-            log_user_error(user_id, "personalization.fetch", "RobinhoodQueueTimeout", "queue_timeout", run_id=run_id)
-            return {
-                "status": "error",
-                "error": "queue_timeout",
-                "message": "Robinhood fetch queue busy. Try again in 60 seconds.",
-                "retry_after_seconds": 60,
-                "provider_calls_triggered": True,
-            }
-        except RobinhoodDeviceApprovalRequired as exc:
-            err = str(exc).replace(rh_password, "[REDACTED]")
-            fail_user_run(run_id, "device_approval_required")
-            from app.db.users import log_user_error
-            log_user_error(user_id, "personalization.fetch", "RobinhoodDeviceApprovalRequired", err, run_id=run_id)
-            try:
-                from app.db.users import set_credentials_error
-                set_credentials_error(user_id, "device_approval_required")
-            except Exception:
-                pass
-            return {
-                "status": "error",
-                "error": "device_approval_required",
-                "message": (
-                    "Robinhood requires device approval. "
-                    "Check your Robinhood app/email and approve, then retry."
-                ),
-                "session_cache_available": session_cache_available(user_id),
-                "provider_calls_triggered": True,
-            }
         except Exception as exc:
-            err = str(exc).replace(rh_password, "[REDACTED]")
-            fail_user_run(run_id, err[:500])
+            fail_user_run(run_id, str(exc)[:500])
             from app.db.users import log_user_error
-            log_user_error(user_id, "personalization.fetch", type(exc).__name__, err, run_id=run_id)
-            try:
-                from app.db.users import set_credentials_error
-                set_credentials_error(user_id, err[:200])
-            except Exception:
-                pass
+            log_user_error(user_id, "personalization.plaid_fetch", type(exc).__name__, str(exc), run_id=run_id)
             return {
                 "status": "error",
                 "error": "fetch_failed",
-                "message": f"Robinhood fetch failed: {type(exc).__name__}",
+                "message": f"Plaid fetch failed: {type(exc).__name__}",
                 "provider_calls_triggered": True,
             }
+    else:
+        # --- Robinhood path: decrypt + queue lock ---
+        rh_password: str | None = None
+        positions = []
+        raw_option_positions = []
+        discovered_accounts = []
+        try:
+            try:
+                rh_password = decrypt_robinhood_password(rh_password_enc)
+            except Exception as exc:
+                fail_user_run(run_id, f"credential_decrypt_failed: {type(exc).__name__}")
+                from app.db.users import log_user_error
+                log_user_error(user_id, "personalization.decrypt", type(exc).__name__, str(exc), run_id=run_id)
+                return {
+                    "status": "error",
+                    "error": "credential_decrypt_failed",
+                    "message": "Could not decrypt stored Robinhood credentials.",
+                    "provider_calls_triggered": False,
+                }
 
-    finally:
-        # Ensure password not held beyond this scope
-        if rh_password is not None:
-            del rh_password
+            # Serialized Robinhood fetch — stock + options in one session
+            try:
+                positions, raw_option_positions, discovered_accounts = fetch_all_with_lock(user_id, rh_username, rh_password)
+                try:
+                    from app.db.users import set_credentials_validated
+                    set_credentials_validated(user_id)
+                except Exception:
+                    pass
+                try:
+                    from app.db.users import save_user_broker_accounts
+                    if discovered_accounts:
+                        save_user_broker_accounts(user_id, discovered_accounts)
+                        print(
+                            f"[personalization] user_id={user_id}: saved {len(discovered_accounts)} broker account(s).",
+                            flush=True,
+                        )
+                except Exception as exc:
+                    print(f"[personalization] save_user_broker_accounts failed (non-fatal): {exc}", flush=True)
+                    from app.db.users import log_user_error
+                    log_user_error(user_id, "personalization.save_broker_accounts", type(exc).__name__, str(exc), run_id=run_id)
+            except RobinhoodQueueTimeout:
+                fail_user_run(run_id, "queue_timeout", timed_out=True)
+                from app.db.users import log_user_error
+                log_user_error(user_id, "personalization.fetch", "RobinhoodQueueTimeout", "queue_timeout", run_id=run_id)
+                return {
+                    "status": "error",
+                    "error": "queue_timeout",
+                    "message": "Robinhood fetch queue busy. Try again in 60 seconds.",
+                    "retry_after_seconds": 60,
+                    "provider_calls_triggered": True,
+                }
+            except RobinhoodDeviceApprovalRequired as exc:
+                err = str(exc).replace(rh_password, "[REDACTED]")
+                fail_user_run(run_id, "device_approval_required")
+                from app.db.users import log_user_error
+                log_user_error(user_id, "personalization.fetch", "RobinhoodDeviceApprovalRequired", err, run_id=run_id)
+                try:
+                    from app.db.users import set_credentials_error
+                    set_credentials_error(user_id, "device_approval_required")
+                except Exception:
+                    pass
+                return {
+                    "status": "error",
+                    "error": "device_approval_required",
+                    "message": (
+                        "Robinhood requires device approval. "
+                        "Check your Robinhood app/email and approve, then retry."
+                    ),
+                    "session_cache_available": session_cache_available(user_id),
+                    "provider_calls_triggered": True,
+                }
+            except Exception as exc:
+                err = str(exc).replace(rh_password, "[REDACTED]")
+                fail_user_run(run_id, err[:500])
+                from app.db.users import log_user_error
+                log_user_error(user_id, "personalization.fetch", type(exc).__name__, err, run_id=run_id)
+                try:
+                    from app.db.users import set_credentials_error
+                    set_credentials_error(user_id, err[:200])
+                except Exception:
+                    pass
+                return {
+                    "status": "error",
+                    "error": "fetch_failed",
+                    "message": f"Robinhood fetch failed: {type(exc).__name__}",
+                    "provider_calls_triggered": True,
+                }
+
+        finally:
+            if rh_password is not None:
+                del rh_password
 
     # TKT-035: Detect option spreads from raw positions (same session reuse — no second login)
     option_detection: dict[str, Any] = {}

@@ -47,6 +47,9 @@ app.register_blueprint(user_bp)
 from app.api.knowledge import knowledge_bp
 app.register_blueprint(knowledge_bp)
 
+from app.api.plaid import plaid_bp
+app.register_blueprint(plaid_bp)
+
 # 28A: set secret key for signed cookies and seed admin user on first boot
 app.secret_key = config.SESSION_SECRET_KEY or os.urandom(32)
 try:
@@ -547,7 +550,15 @@ a{color:#00ff88}
 """
 
 _SIGNUP_HTML = """<!DOCTYPE html><html><head><title>ASA — Sign Up</title>
-<style>{css}</style></head><body><div class="card">
+<style>{css}
+.broker-choice{{margin:1rem 0;display:flex;gap:.5rem}}
+.broker-choice label{{flex:1;padding:.6rem;border:1px solid #333;border-radius:4px;
+  text-align:center;cursor:pointer}}
+.broker-choice input[type=radio]{{display:none}}
+.broker-choice input:checked+span{{color:#00ff88;border-color:#00ff88}}
+.broker-choice label:has(input:checked){{border-color:#00ff88}}
+#rh-fields,#plaid-fields{{display:none}}
+</style></head><body><div class="card">
 <h1>Sign Up — Algo Stock Advisor</h1>
 <form method="POST">
   <label>Username (3–20 chars, a-z A-Z 0-9 _)</label>
@@ -558,15 +569,39 @@ _SIGNUP_HTML = """<!DOCTYPE html><html><head><title>ASA — Sign Up</title>
   <input type="password" name="confirm_password" required>
   <label>Invite Code</label>
   <input name="invite_code" value="{invite_code}" required>
-  <label>Robinhood Username</label>
-  <input name="robinhood_username" value="{robinhood_username}" required>
-  <label>Robinhood Password</label>
-  <input type="password" name="robinhood_password" required>
+  <p style="margin-top:1rem;font-weight:bold">Connect Your Broker</p>
+  <div class="broker-choice">
+    <label><input type="radio" name="broker_path" value="robinhood" checked onchange="toggleBroker()"><span>Robinhood Direct</span></label>
+    <label><input type="radio" name="broker_path" value="plaid" onchange="toggleBroker()"><span>Connect via Plaid</span></label>
+  </div>
+  <div id="rh-fields">
+    <label>Robinhood Username</label>
+    <input name="robinhood_username" value="{robinhood_username}">
+    <label>Robinhood Password</label>
+    <input type="password" name="robinhood_password">
+  </div>
+  <div id="plaid-fields">
+    <p class="muted">After creating your account, you'll connect your brokerage via Plaid's secure widget.</p>
+    <input type="hidden" name="broker_path_value" value="robinhood">
+  </div>
   <button type="submit">Create Account</button>
 </form>
 {error}
 <p class="muted"><a href="/login">Already have an account? Log in</a></p>
-</div></body></html>"""
+</div>
+<script>
+function toggleBroker(){{
+  var rh=document.querySelector('input[value=robinhood]').checked;
+  document.getElementById('rh-fields').style.display=rh?'block':'none';
+  document.getElementById('plaid-fields').style.display=rh?'none':'block';
+  var rhU=document.querySelector('[name=robinhood_username]');
+  var rhP=document.querySelector('[name=robinhood_password]');
+  rhU.required=rh; rhP.required=rh;
+  document.querySelector('[name=broker_path_value]').value=rh?'robinhood':'plaid';
+}}
+toggleBroker();
+</script>
+</body></html>"""
 
 _LOGIN_HTML = """<!DOCTYPE html><html><head><title>ASA — Login</title>
 <style>{css}</style></head><body><div class="card">
@@ -632,7 +667,7 @@ function triggerRun(){{
 </script>
 </div>
 <div class="section">
-<h2>Robinhood Credentials</h2>
+<h2>Broker Connection</h2>
 <p>{cred_status_html}</p>
 <details style="margin-top:.8rem">
 <summary style="cursor:pointer;color:#aaa">Update Robinhood Credentials</summary>
@@ -645,6 +680,52 @@ function triggerRun(){{
 </form>
 {cred_update_msg}
 </details>
+<details style="margin-top:.8rem">
+<summary style="cursor:pointer;color:#aaa">Connect via Plaid</summary>
+<p class="muted">Link your brokerage account securely through Plaid — no password stored on our servers.</p>
+<button id="plaid-btn" onclick="launchPlaid()" style="margin-top:.5rem">Connect Brokerage via Plaid</button>
+<div id="plaid-result" style="margin-top:.5rem;font-size:.9rem"></div>
+</details>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script>
+function launchPlaid(){{
+  var btn=document.getElementById('plaid-btn');
+  var out=document.getElementById('plaid-result');
+  btn.disabled=true; btn.textContent='Connecting…';
+  fetch('/api/plaid/link-token?token={api_key}',{{method:'POST'}})
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      if(d.status!=='ok'){{
+        btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
+        out.textContent='✗ '+d.message; return;
+      }}
+      var handler=Plaid.create({{
+        token:d.link_token,
+        onSuccess:function(public_token){{
+          out.textContent='Exchanging token…';
+          fetch('/api/plaid/exchange?token={api_key}',{{
+            method:'POST',
+            headers:{{'Content-Type':'application/json'}},
+            body:JSON.stringify({{public_token:public_token}})
+          }}).then(function(r){{return r.json();}}).then(function(ex){{
+            btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
+            if(ex.status==='ok'){{out.textContent='✓ Connected! Run Personalization to fetch positions.';}}
+            else{{out.textContent='✗ '+ex.message;}}
+          }});
+        }},
+        onExit:function(){{
+          btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
+        }}
+      }});
+      handler.open();
+    }})
+    .catch(function(e){{
+      btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
+      out.textContent='Network error: '+e;
+    }});
+}}
+if(window.location.search.indexOf('connect_plaid=1')!==-1){{setTimeout(launchPlaid,500);}}
+</script>
 </div>
 <form method="POST" action="/logout" style="margin-top:1.5rem">
   <button type="submit" style="background:#ff4444">Log Out</button>
@@ -678,6 +759,7 @@ def signup():
         password = request.form.get("password", "")
         confirm = request.form.get("confirm_password", "")
         invite_code = request.form.get("invite_code", "").strip()
+        broker_path = request.form.get("broker_path", "robinhood").strip()
         robinhood_username = request.form.get("robinhood_username", "").strip()
         robinhood_password = request.form.get("robinhood_password", "")
 
@@ -697,7 +779,7 @@ def signup():
             error = "Passwords do not match."
         elif not invite_code:
             error = "Invite code required."
-        elif not robinhood_username or not robinhood_password:
+        elif broker_path == "robinhood" and (not robinhood_username or not robinhood_password):
             error = "Robinhood credentials required."
         else:
             try:
@@ -711,6 +793,15 @@ def signup():
                     error = "Invalid or already-used invite code."
                 elif get_user_by_username(username):
                     error = "Username already taken."
+                elif broker_path == "plaid":
+                    user = create_user(username, password)
+                    user_id = user.get("id")
+                    consume_invite_code(invite_code, user_id)
+                    token = create_session(user_id)
+                    update_last_login(user_id)
+                    from flask import session as flask_session
+                    flask_session["session_token"] = token
+                    return redirect("/dashboard?connect_plaid=1")
                 else:
                     # 28C: Validate Robinhood credentials before creating account
                     from app.services.broker_provider import BrokerCredentialProvider
