@@ -573,6 +573,7 @@ _SIGNUP_HTML = """<!DOCTYPE html><html><head><title>ASA — Sign Up</title>
   <div class="broker-choice">
     <label><input type="radio" name="broker_path" value="robinhood" checked onchange="toggleBroker()"><span>Robinhood Direct</span></label>
     <label><input type="radio" name="broker_path" value="plaid" onchange="toggleBroker()"><span>Connect via Plaid</span></label>
+    <label><input type="radio" name="broker_path" value="moomoo" onchange="toggleBroker()"><span>Moomoo</span></label>
   </div>
   <div id="rh-fields">
     <label>Robinhood Username</label>
@@ -584,6 +585,9 @@ _SIGNUP_HTML = """<!DOCTYPE html><html><head><title>ASA — Sign Up</title>
     <p class="muted">After creating your account, you'll connect your brokerage via Plaid's secure widget.</p>
     <input type="hidden" name="broker_path_value" value="robinhood">
   </div>
+  <div id="moomoo-fields">
+    <p class="muted">Moomoo uses an OpenD gateway. After creating your account, your admin will configure your OpenD connection.</p>
+  </div>
   <button type="submit">Create Account</button>
 </form>
 {error}
@@ -591,13 +595,14 @@ _SIGNUP_HTML = """<!DOCTYPE html><html><head><title>ASA — Sign Up</title>
 </div>
 <script>
 function toggleBroker(){{
-  var rh=document.querySelector('input[value=robinhood]').checked;
-  document.getElementById('rh-fields').style.display=rh?'block':'none';
-  document.getElementById('plaid-fields').style.display=rh?'none':'block';
+  var sel=document.querySelector('input[name=broker_path]:checked').value;
+  document.getElementById('rh-fields').style.display=sel==='robinhood'?'block':'none';
+  document.getElementById('plaid-fields').style.display=sel==='plaid'?'block':'none';
+  document.getElementById('moomoo-fields').style.display=sel==='moomoo'?'block':'none';
   var rhU=document.querySelector('[name=robinhood_username]');
   var rhP=document.querySelector('[name=robinhood_password]');
-  rhU.required=rh; rhP.required=rh;
-  document.querySelector('[name=broker_path_value]').value=rh?'robinhood':'plaid';
+  rhU.required=sel==='robinhood'; rhP.required=sel==='robinhood';
+  document.querySelector('[name=broker_path_value]').value=sel;
 }}
 toggleBroker();
 </script>
@@ -802,6 +807,18 @@ def signup():
                     from flask import session as flask_session
                     flask_session["session_token"] = token
                     return redirect("/dashboard?connect_plaid=1")
+                elif broker_path == "moomoo":
+                    user = create_user(username, password)
+                    user_id = user.get("id")
+                    import sqlite3 as _sq
+                    with _sq.connect(config.USERS_DB_PATH) as _conn:
+                        _conn.execute("UPDATE users SET broker_type='moomoo' WHERE id=?", (user_id,))
+                    consume_invite_code(invite_code, user_id)
+                    token = create_session(user_id)
+                    update_last_login(user_id)
+                    from flask import session as flask_session
+                    flask_session["session_token"] = token
+                    return redirect("/dashboard")
                 else:
                     # 28C: Validate Robinhood credentials before creating account
                     from app.services.broker_provider import BrokerCredentialProvider

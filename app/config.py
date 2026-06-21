@@ -577,6 +577,10 @@ TRADE_MEMORY_DEFAULT_PROFIT_TARGET_PCT = _int_env("TRADE_MEMORY_DEFAULT_PROFIT_T
 TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT = _int_env("TRADE_MEMORY_DEFAULT_MAX_LOSS_PCT", -35)
 TRADE_MEMORY_DEFAULT_STATUS = os.environ.get("TRADE_MEMORY_DEFAULT_STATUS", "open").strip().lower()
 
+# --- Moomoo broker integration ---
+MOOMOO_OPEND_HOST = os.environ.get("MOOMOO_OPEND_HOST")
+MOOMOO_OPEND_PORT = _int_env("MOOMOO_OPEND_PORT", 11111)
+
 # --- Plaid broker integration ---
 PLAID_CLIENT_ID = os.environ.get("PLAID_CLIENT_ID")
 PLAID_SECRET = os.environ.get("PLAID_SECRET")

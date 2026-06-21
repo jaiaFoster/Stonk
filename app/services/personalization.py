@@ -346,7 +346,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
 
     has_creds = (
         (broker_type == "plaid" and bool(plaid_token_enc))
-        or (broker_type != "plaid" and bool(rh_username) and bool(rh_password_enc))
+        or (broker_type == "moomoo" and bool(config.MOOMOO_OPEND_HOST))
+        or (broker_type not in ("plaid", "moomoo") and bool(rh_username) and bool(rh_password_enc))
     )
 
     if not has_creds:
@@ -430,6 +431,39 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
                 "status": "error",
                 "error": "fetch_failed",
                 "message": f"Plaid fetch failed: {type(exc).__name__}",
+                "provider_calls_triggered": True,
+            }
+    elif broker_type == "moomoo":
+        # --- Moomoo path: OpenD gateway, no queue lock needed ---
+        positions = []
+        raw_option_positions = []
+        discovered_accounts = []
+        try:
+            from app.services.broker_provider import BrokerCredentialProvider
+            provider = BrokerCredentialProvider.get_provider("moomoo")
+            positions, raw_option_positions, discovered_accounts = provider.fetch_positions_with_options(
+                "", "", user_id
+            )
+            try:
+                from app.db.users import set_credentials_validated
+                set_credentials_validated(user_id)
+            except Exception:
+                pass
+            try:
+                from app.db.users import save_user_broker_accounts
+                if discovered_accounts:
+                    save_user_broker_accounts(user_id, discovered_accounts)
+            except Exception as exc:
+                from app.db.users import log_user_error
+                log_user_error(user_id, "personalization.save_broker_accounts", type(exc).__name__, str(exc), run_id=run_id)
+        except Exception as exc:
+            fail_user_run(run_id, str(exc)[:500])
+            from app.db.users import log_user_error
+            log_user_error(user_id, "personalization.moomoo_fetch", type(exc).__name__, str(exc), run_id=run_id)
+            return {
+                "status": "error",
+                "error": "fetch_failed",
+                "message": f"Moomoo fetch failed: {type(exc).__name__}",
                 "provider_calls_triggered": True,
             }
     else:

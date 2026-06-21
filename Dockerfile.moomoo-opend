@@ -1,0 +1,52 @@
+# Dockerfile.moomoo-opend — Moomoo OpenD gateway for ASA broker integration.
+#
+# Based on community image pattern (manhinhang/futu-opend-docker).
+# OpenD is the mandatory local gateway for moomoo-api SDK connections.
+#
+# ARCHITECTURE NOTE:
+# Each OpenD instance authenticates ONE moomoo account. Multi-user requires
+# multiple OpenD processes. SMS/CAPTCHA 2FA is required on first login —
+# subsequent restarts reuse cached session tokens (persisted in /data volume).
+#
+# DEPLOYMENT:
+#   Railway: add as a separate service in the same project.
+#   Use Railway private networking for internal TCP communication.
+#   The ASA app connects via MOOMOO_OPEND_HOST (internal Railway hostname)
+#   on MOOMOO_OPEND_PORT (default 11111).
+#
+# ENV VARS:
+#   FUTU_ACCOUNT_ID     — Moomoo/Futu account ID
+#   FUTU_ACCOUNT_PWD_MD5 — MD5 hash of account password (32 hex chars)
+#   OPEND_PORT          — TCP port for SDK connections (default 11111)
+#
+# VOLUME:
+#   Mount a persistent volume to /data to preserve session tokens across
+#   deploys and avoid repeated 2FA.
+
+FROM ubuntu:22.04
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget ca-certificates libssl3 && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG OPEND_VERSION=7.2.3208
+ARG OPEND_ARCH=amd64
+
+RUN mkdir -p /opt/opend /data && \
+    wget -q -O /tmp/opend.tar.gz \
+        "https://softwaredownload.futunn.com/FutuOpenD_${OPEND_VERSION}_Ubuntu22.04_${OPEND_ARCH}.tar.gz" && \
+    tar -xzf /tmp/opend.tar.gz -C /opt/opend --strip-components=1 && \
+    rm /tmp/opend.tar.gz && \
+    chmod +x /opt/opend/FutuOpenD
+
+ENV FUTU_ACCOUNT_ID=""
+ENV FUTU_ACCOUNT_PWD_MD5=""
+ENV OPEND_PORT=11111
+
+EXPOSE ${OPEND_PORT}
+
+VOLUME /data
+
+ENTRYPOINT ["/opt/opend/FutuOpenD"]
+CMD ["-cfg_file", "/opt/opend/FutuOpenD.xml"]

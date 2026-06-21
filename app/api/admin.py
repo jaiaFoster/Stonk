@@ -304,6 +304,8 @@ def admin_summary():
     ff_dry_run = bool(getattr(_cfg, "FORWARD_FACTOR_DRY_RUN", True))
     trade_execution_enabled = bool(getattr(_cfg, "TRADE_EXECUTION_ENABLED", False))
 
+    coverage_issues = _broker_coverage_issues()
+
     return jsonify({
         "status": "ok",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -313,6 +315,7 @@ def admin_summary():
         "errors": {
             "last_24h": errors_24h,
         },
+        "broker_coverage_issues": coverage_issues,
         "core_run": core_run_data,
         "system": {
             "encryption_key_set": encryption_key_set,
@@ -322,6 +325,31 @@ def admin_summary():
         },
         "provider_calls_triggered": False,
     }), 200
+
+
+def _broker_coverage_issues() -> dict:
+    """Aggregate recent broker normalization/connection failures for admin visibility."""
+    try:
+        from app.db.users import get_user_errors
+        errors = get_user_errors(limit=200)
+        coverage_types = {
+            "UnmappedAccountSubtype", "IncompleteOptionData",
+            "UnsupportedSecurityType", "PlaidConnectionFailed",
+        }
+        counts: dict[str, int] = {}
+        for e in errors:
+            etype = e.get("error_type", "")
+            if etype in coverage_types:
+                counts[etype] = counts.get(etype, 0) + 1
+        return {
+            "unmapped_subtypes": counts.get("UnmappedAccountSubtype", 0),
+            "unsupported_securities": counts.get("UnsupportedSecurityType", 0),
+            "incomplete_options": counts.get("IncompleteOptionData", 0),
+            "failed_connections": counts.get("PlaidConnectionFailed", 0),
+            "total_issues": sum(counts.values()),
+        }
+    except Exception:
+        return {"total_issues": 0}
 
 
 def _core_run_info() -> dict:

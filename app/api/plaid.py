@@ -134,13 +134,30 @@ def exchange_public_token():
         }), 200
     except Exception as exc:
         from app.db.users import log_user_error
-        log_user_error(user_id, "plaid.exchange", type(exc).__name__, str(exc))
+        err_str = str(exc)
+        error_type = type(exc).__name__
+        error_key = "exchange_failed"
+        status_code = 500
+
+        try:
+            import plaid
+            if isinstance(exc, plaid.ApiException):
+                error_type = "PlaidConnectionFailed"
+                error_key = "broker_connection_failed"
+                status_code = 422
+        except (ImportError, AttributeError):
+            pass
+
+        log_user_error(user_id, "plaid.exchange", error_type, err_str[:500])
+        msg = f"Token exchange failed: {type(exc).__name__}"
+        if error_key == "broker_connection_failed":
+            msg = "This brokerage couldn't be connected. It may not be supported yet — this has been logged for review."
         return jsonify({
             "status": "error",
-            "error": "exchange_failed",
-            "message": f"Token exchange failed: {type(exc).__name__}",
+            "error": error_key,
+            "message": msg,
             "provider_calls_triggered": True,
-        }), 500
+        }), status_code
 
 
 @plaid_bp.route("/webhook", methods=["POST"])

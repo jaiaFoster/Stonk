@@ -1,8 +1,10 @@
 """
-app/services/broker_provider.py — Broker credential abstraction layer (28C + Plaid).
+app/services/broker_provider.py — Broker credential abstraction layer (28C + Plaid + Moomoo).
 
-Two providers: RobinhoodCredentialProvider (direct login via robin_stocks)
-and PlaidCredentialProvider (Plaid Link → access_token → /investments/holdings/get).
+Three providers:
+- RobinhoodCredentialProvider (direct login via robin_stocks)
+- PlaidCredentialProvider (Plaid Link → access_token → /investments/holdings/get)
+- MoomooCredentialProvider (connects to OpenD gateway via moomoo-api SDK)
 
 SECURITY: passwords/access_tokens passed as plain strings only inside
 validate_credentials() and fetch_positions(). Never stored in instance state.
@@ -28,6 +30,8 @@ class BrokerCredentialProvider:
             return RobinhoodCredentialProvider()
         if broker_type == "plaid":
             return PlaidCredentialProvider()
+        if broker_type == "moomoo":
+            return MoomooCredentialProvider()
         raise ValueError(f"Unknown broker type: {broker_type!r}")
 
     def validate_credentials(self, username: str, password: str) -> tuple[bool, str]:
@@ -522,9 +526,24 @@ _PLAID_ACCOUNT_TYPE_MAP = {
 }
 
 
-def _classify_plaid_account_type(account: dict[str, Any]) -> str:
+def _classify_plaid_account_type(account: dict[str, Any], user_id: int = 0) -> str:
     subtype = str(account.get("subtype") or "").lower()
-    return _PLAID_ACCOUNT_TYPE_MAP.get(subtype, subtype.title() if subtype else "Unknown")
+    if not subtype:
+        return "Unknown"
+    mapped = _PLAID_ACCOUNT_TYPE_MAP.get(subtype)
+    if mapped:
+        return mapped
+    try:
+        from app.db.users import log_user_error
+        log_user_error(
+            user_id,
+            "plaid.account_classification",
+            "UnmappedAccountSubtype",
+            f"Unrecognized Plaid account subtype: {subtype!r}",
+        )
+    except Exception:
+        pass
+    return subtype.replace("_", " ").title()
 
 
 def _normalize_plaid_holding(
@@ -580,6 +599,61 @@ def _normalize_plaid_option(
         "_broker": "plaid",
         "_plaid_raw_quantity": raw_qty,
     }
+
+
+def _normalize_plaid_security(
+    holding: dict[str, Any], security: dict[str, Any], account: dict[str, Any], user_id: int = 0
+) -> tuple[str, dict[str, Any] | None]:
+    """Route a Plaid security to the correct normalizer. Returns (category, result_or_None).
+
+    category is 'stock', 'option', or 'skip'.
+    result is None when the security can't be confidently normalized.
+    """
+    sec_type = str(security.get("type") or "").lower()
+
+    if sec_type == "derivative" or security.get("option_contract"):
+        contract = security.get("option_contract")
+        if not contract or not all([
+            contract.get("strike_price"),
+            contract.get("expiration_date"),
+            contract.get("contract_type"),
+        ]):
+            try:
+                from app.db.users import log_user_error
+                log_user_error(
+                    user_id,
+                    "plaid.security_normalization",
+                    "IncompleteOptionData",
+                    f"Option-type security missing required fields. "
+                    f"ticker={security.get('ticker_symbol')} "
+                    f"fields_present={sorted(security.keys())}",
+                )
+            except Exception:
+                pass
+            return "skip", None
+        return "option", _normalize_plaid_option(holding, security, account)
+
+    if sec_type in ("equity", "etf", "mutual fund", "fixed income", "cash", ""):
+        ticker = str(security.get("ticker_symbol") or "").upper()
+        if not ticker:
+            return "skip", None
+        qty = float(holding.get("quantity") or 0)
+        if qty <= 0:
+            return "skip", None
+        return "stock", _normalize_plaid_holding(holding, security, account)
+
+    try:
+        from app.db.users import log_user_error
+        log_user_error(
+            user_id,
+            "plaid.security_normalization",
+            "UnsupportedSecurityType",
+            f"Unrecognized security type={sec_type!r} "
+            f"ticker={security.get('ticker_symbol')}",
+        )
+    except Exception:
+        pass
+    return "skip", None
 
 
 class PlaidCredentialProvider(BrokerCredentialProvider):
@@ -653,7 +727,7 @@ class PlaidCredentialProvider(BrokerCredentialProvider):
                 seen_accounts.add(acct_id)
                 discovered_accounts.append({
                     "account_number": acct_id,
-                    "account_type": _classify_plaid_account_type(acct),
+                    "account_type": _classify_plaid_account_type(acct, user_id=user_id),
                     "broker_type": "plaid",
                 })
 
@@ -664,18 +738,13 @@ class PlaidCredentialProvider(BrokerCredentialProvider):
             acct_id = h_dict.get("account_id")
             acct = accounts.get(acct_id, {})
 
-            sec_type = str(sec.get("type") or "").lower()
-
-            if sec_type == "derivative" or sec.get("option_contract"):
-                raw_option_positions.append(_normalize_plaid_option(h_dict, sec, acct))
-            elif sec_type in ("equity", "etf", "mutual fund", ""):
-                ticker = str(sec.get("ticker_symbol") or "").upper()
-                if not ticker:
-                    continue
-                qty = float(h_dict.get("quantity") or 0)
-                if qty <= 0:
-                    continue
-                stock_positions.append(_normalize_plaid_holding(h_dict, sec, acct))
+            category, result = _normalize_plaid_security(h_dict, sec, acct, user_id=user_id)
+            if result is None:
+                continue
+            if category == "option":
+                raw_option_positions.append(result)
+            elif category == "stock":
+                stock_positions.append(result)
 
         print(
             f"[plaid_provider] user_id={user_id}: {len(stock_positions)} stock position(s), "
@@ -685,3 +754,202 @@ class PlaidCredentialProvider(BrokerCredentialProvider):
         )
 
         return stock_positions, raw_option_positions, discovered_accounts
+
+
+# ---------------------------------------------------------------------------
+# Moomoo broker provider (OpenD gateway)
+# ---------------------------------------------------------------------------
+
+_MOOMOO_ACCOUNT_TYPE_MAP = {
+    "CASH": "Cash",
+    "MARGIN": "Margin",
+    "INDIVIDUAL": "Individual",
+}
+
+
+def _classify_moomoo_account_type(trd_env: str, acc_id: str = "") -> str:
+    return _MOOMOO_ACCOUNT_TYPE_MAP.get(str(trd_env).upper(), str(trd_env).title() if trd_env else "Unknown")
+
+
+def _normalize_moomoo_position(row: dict[str, Any], account_type: str) -> dict[str, Any]:
+    """Normalize a moomoo position_list_query row into ASA's position shape."""
+    code = str(row.get("code") or "")
+    ticker = code.split(".")[-1].upper() if "." in code else code.upper()
+    qty = float(row.get("qty") or 0)
+    avg_cost = float(row.get("cost_price") or 0)
+    current_price = float(row.get("nominal_price") or 0) or None
+    market_value = float(row.get("market_val") or 0) or None
+    pnl_pct = float(row.get("pl_ratio") or 0) * 100 if row.get("pl_ratio") is not None else None
+
+    return {
+        "ticker": ticker,
+        "quantity": qty,
+        "avg_cost": avg_cost,
+        "current_price": current_price,
+        "market_value": market_value,
+        "unrealized_pnl_pct": round(pnl_pct, 3) if pnl_pct is not None else None,
+        "account_type": account_type,
+        "account_number": str(row.get("acc_id") or ""),
+        "_broker": "moomoo",
+    }
+
+
+def _normalize_moomoo_option(row: dict[str, Any], account_type: str) -> dict[str, Any] | None:
+    """Normalize a moomoo option position into ASA's raw option shape.
+
+    Moomoo option codes use OCC-style format: US.AAPL250815C00250000
+    Pattern: MARKET.TICKER{YYMMDD}{C|P}{STRIKE*1000 padded to 8 digits}
+    """
+    import re
+    code = str(row.get("code") or "")
+    # Try to parse OCC-style option code
+    match = re.match(r'^[A-Z]{2}\.([A-Z]+)(\d{6})([CP])(\d{8})$', code)
+    if not match:
+        return None
+
+    underlying = match.group(1)
+    date_str = match.group(2)  # YYMMDD
+    cp = match.group(3)
+    strike_raw = match.group(4)
+
+    expiration = f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:6]}"
+    strike = float(strike_raw) / 1000.0
+    contract_type = "call" if cp == "C" else "put"
+    qty = float(row.get("qty") or 0)
+
+    return {
+        "chain_symbol": underlying,
+        "type": contract_type,
+        "strike_price": str(strike),
+        "expiration_date": expiration,
+        "quantity": str(qty),
+        "average_price": str(row.get("cost_price") or "0"),
+        "id": str(row.get("position_id") or id(row)),
+        "_source_account_number": str(row.get("acc_id") or ""),
+        "_source_account_type": account_type,
+        "_broker": "moomoo",
+    }
+
+
+class MoomooCredentialProvider(BrokerCredentialProvider):
+    """Moomoo provider — connects to OpenD gateway via moomoo-api SDK.
+
+    Architecture note: each OpenD instance authenticates one moomoo account.
+    Multi-user requires multiple OpenD processes. The SDK connects to an
+    already-authenticated OpenD instance via TCP — it does not pass credentials
+    per-request.
+    """
+
+    def broker_type(self) -> str:
+        return "moomoo"
+
+    def validate_credentials(self, username: str = "", password: str = "", **kwargs) -> tuple[bool, str]:
+        """Test connectivity to the configured OpenD instance."""
+        host = config.MOOMOO_OPEND_HOST
+        port = config.MOOMOO_OPEND_PORT
+        if not host:
+            return False, "moomoo_not_configured"
+        try:
+            from moomoo import OpenSecTradeContext, TrdEnv
+            ctx = OpenSecTradeContext(host=host, port=port)
+            ret, data = ctx.accinfo_query(trd_env=TrdEnv.REAL)
+            ctx.close()
+            if ret == 0:
+                return True, ""
+            return False, "connection_failed"
+        except Exception as exc:
+            print(f"[moomoo_provider] validate_credentials failed: {type(exc).__name__}", flush=True)
+            return False, "connection_failed"
+
+    def fetch_positions(self, username: str = "", password_decrypted: str = "", user_id: int = 0) -> list[dict[str, Any]]:
+        positions, _options, _accounts = self.fetch_positions_with_options(username, password_decrypted, user_id)
+        return positions
+
+    def fetch_positions_with_options(
+        self, username: str = "", password_decrypted: str = "", user_id: int = 0
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Fetch positions from Moomoo via OpenD. Returns (stocks, options, accounts)."""
+        host = config.MOOMOO_OPEND_HOST
+        port = config.MOOMOO_OPEND_PORT
+        if not host:
+            raise RuntimeError("Moomoo OpenD not configured (MOOMOO_OPEND_HOST missing)")
+
+        try:
+            from moomoo import OpenSecTradeContext, TrdEnv, TrdMarket
+        except ImportError:
+            raise RuntimeError("moomoo-api package not installed")
+
+        ctx = None
+        try:
+            ctx = OpenSecTradeContext(host=host, port=port)
+
+            ret, acc_data = ctx.accinfo_query(trd_env=TrdEnv.REAL)
+            if ret != 0:
+                from app.db.users import log_user_error
+                log_user_error(user_id, "moomoo_provider.accinfo", "ConnectionError", str(acc_data))
+                raise RuntimeError(f"Moomoo accinfo_query failed: {acc_data}")
+
+            ret, pos_data = ctx.position_list_query(
+                trd_env=TrdEnv.REAL,
+                refresh_cache=True,
+            )
+            if ret != 0:
+                from app.db.users import log_user_error
+                log_user_error(user_id, "moomoo_provider.positions", "FetchError", str(pos_data))
+                raise RuntimeError(f"Moomoo position_list_query failed: {pos_data}")
+
+            stock_positions: list[dict[str, Any]] = []
+            raw_option_positions: list[dict[str, Any]] = []
+            discovered_accounts: list[dict[str, Any]] = []
+            seen_accounts: set[str] = set()
+
+            if pos_data is not None and hasattr(pos_data, "iterrows"):
+                for _, row in pos_data.iterrows():
+                    row_dict = row.to_dict()
+                    acc_id = str(row_dict.get("acc_id") or "")
+                    account_type = _classify_moomoo_account_type(
+                        row_dict.get("trd_env", ""), acc_id
+                    )
+
+                    if acc_id and acc_id not in seen_accounts:
+                        seen_accounts.add(acc_id)
+                        discovered_accounts.append({
+                            "account_number": acc_id,
+                            "account_type": account_type,
+                            "broker_type": "moomoo",
+                        })
+
+                    code = str(row_dict.get("code") or "")
+                    asset_cat = str(row_dict.get("asset_category") or "").upper()
+
+                    if asset_cat == "OPTIONS" or _is_moomoo_option_code(code):
+                        opt = _normalize_moomoo_option(row_dict, account_type)
+                        if opt:
+                            raw_option_positions.append(opt)
+                    else:
+                        qty = float(row_dict.get("qty") or 0)
+                        if qty > 0:
+                            stock_positions.append(
+                                _normalize_moomoo_position(row_dict, account_type)
+                            )
+
+            print(
+                f"[moomoo_provider] user_id={user_id}: {len(stock_positions)} stock position(s), "
+                f"{len(raw_option_positions)} option position(s), "
+                f"{len(discovered_accounts)} account(s).",
+                flush=True,
+            )
+            return stock_positions, raw_option_positions, discovered_accounts
+
+        finally:
+            if ctx:
+                try:
+                    ctx.close()
+                except Exception:
+                    pass
+
+
+def _is_moomoo_option_code(code: str) -> bool:
+    """Check if a moomoo code looks like an option (OCC-style)."""
+    import re
+    return bool(re.match(r'^[A-Z]{2}\.[A-Z]+\d{6}[CP]\d{8}$', code))
