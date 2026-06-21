@@ -247,6 +247,8 @@ def daily():
             import traceback
             print(f"[advisor.snapshot] personal block failed: {type(exc).__name__}: {exc}", flush=True)
             print(traceback.format_exc(), flush=True)
+            from app.db.users import log_user_error
+            log_user_error(user_id, "advisor.daily", type(exc).__name__, str(exc))
 
         # No completed run yet — shared output with personalized: false
         actions = [_action_shape(a) for a in (daily_opp.get("actions") or [])]
@@ -357,6 +359,9 @@ def positions():
                           f"run_id={user_run.get('run_id') if user_run else None}: "
                           f"{type(exc).__name__}: {exc}", flush=True)
                     print(traceback.format_exc(), flush=True)
+                    from app.db.users import log_user_error
+                    log_user_error(user_id, "advisor.positions.options", type(exc).__name__, str(exc),
+                                   run_id=user_run.get("run_id") if user_run else None)
 
                 has_open_verticals = any(p.get("strategy_type") == "skew_vertical" for p in options_positions)
                 has_open_calendars = any(p.get("strategy_type") == "earnings_calendar" for p in options_positions)
@@ -392,6 +397,8 @@ def positions():
             print(f"[advisor.positions] outer block failed for user_id={user_id}: "
                   f"{type(exc).__name__}: {exc}", flush=True)
             print(traceback.format_exc(), flush=True)
+            from app.db.users import log_user_error
+            log_user_error(user_id, "advisor.positions", type(exc).__name__, str(exc))
 
         # No run yet — include empty options fields so callers don't need to guard on MISSING keys
         return jsonify({

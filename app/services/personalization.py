@@ -398,6 +398,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
             rh_password = decrypt_robinhood_password(rh_password_enc)
         except Exception as exc:
             fail_user_run(run_id, f"credential_decrypt_failed: {type(exc).__name__}")
+            from app.db.users import log_user_error
+            log_user_error(user_id, "personalization.decrypt", type(exc).__name__, str(exc), run_id=run_id)
             return {
                 "status": "error",
                 "error": "credential_decrypt_failed",
@@ -426,8 +428,12 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
                     )
             except Exception as exc:
                 print(f"[personalization] save_user_broker_accounts failed (non-fatal): {exc}", flush=True)
+                from app.db.users import log_user_error
+                log_user_error(user_id, "personalization.save_broker_accounts", type(exc).__name__, str(exc), run_id=run_id)
         except RobinhoodQueueTimeout:
             fail_user_run(run_id, "queue_timeout", timed_out=True)
+            from app.db.users import log_user_error
+            log_user_error(user_id, "personalization.fetch", "RobinhoodQueueTimeout", "queue_timeout", run_id=run_id)
             return {
                 "status": "error",
                 "error": "queue_timeout",
@@ -438,6 +444,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         except RobinhoodDeviceApprovalRequired as exc:
             err = str(exc).replace(rh_password, "[REDACTED]")
             fail_user_run(run_id, "device_approval_required")
+            from app.db.users import log_user_error
+            log_user_error(user_id, "personalization.fetch", "RobinhoodDeviceApprovalRequired", err, run_id=run_id)
             try:
                 from app.db.users import set_credentials_error
                 set_credentials_error(user_id, "device_approval_required")
@@ -456,6 +464,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         except Exception as exc:
             err = str(exc).replace(rh_password, "[REDACTED]")
             fail_user_run(run_id, err[:500])
+            from app.db.users import log_user_error
+            log_user_error(user_id, "personalization.fetch", type(exc).__name__, err, run_id=run_id)
             try:
                 from app.db.users import set_credentials_error
                 set_credentials_error(user_id, err[:200])
@@ -497,6 +507,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         )
     except Exception as exc:
         print(f"[personalization] option detection failed (non-fatal): {exc}", flush=True)
+        from app.db.users import log_user_error
+        log_user_error(user_id, "personalization.option_detection", type(exc).__name__, str(exc), run_id=run_id)
 
     # 28D: Position fetch validation
     # Warn on zero positions (not a failure — might be empty account)
@@ -525,6 +537,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         save_user_option_positions(user_id, run_id, detected_calendars)
     except Exception as exc:
         print(f"[personalization] save_user_option_positions failed (non-fatal): {exc}", flush=True)
+        from app.db.users import log_user_error
+        log_user_error(user_id, "personalization.save_option_positions", type(exc).__name__, str(exc), run_id=run_id)
 
     # TKT-035 3g: Persist options positions to user_positions table (position_type='options')
     try:
@@ -532,6 +546,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
         save_user_option_positions_to_positions(user_id, run_id, normalized_options_positions)
     except Exception as exc:
         print(f"[personalization] save_user_option_positions_to_positions failed (non-fatal): {exc}", flush=True)
+        from app.db.users import log_user_error
+        log_user_error(user_id, "personalization.save_options_to_positions", type(exc).__name__, str(exc), run_id=run_id)
 
     # Build personalized Daily Opportunity (pass calendars for conflict detection)
     daily_opp: list[dict[str, Any]] = []
