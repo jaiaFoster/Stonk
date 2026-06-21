@@ -1033,6 +1033,13 @@ def dev_usage_telemetry():
     return jsonify(build_usage_telemetry_diagnostics()), 200
 
 
+@app.route("/api/dev/skew-threshold-analysis")
+@require_admin
+def dev_skew_threshold_analysis():
+    from app.services.skew_threshold_analysis_service import build_skew_threshold_analysis
+    return jsonify(build_skew_threshold_analysis()), 200
+
+
 @app.route("/api/dev/ff-graduation-analysis")
 @require_admin
 def dev_ff_graduation_analysis():
