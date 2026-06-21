@@ -1040,6 +1040,13 @@ def dev_skew_threshold_analysis():
     return jsonify(build_skew_threshold_analysis()), 200
 
 
+@app.route("/api/dev/ff-graduation-analysis")
+@require_admin
+def dev_ff_graduation_analysis():
+    from app.services.ff_graduation_analysis_service import build_ff_graduation_analysis
+    return jsonify(build_ff_graduation_analysis()), 200
+
+
 def _run_job(job_id: str, run_mode: str = "prod", job_lock: threading.Lock | None = None) -> None:
     global ACTIVE_JOB_ID
 
