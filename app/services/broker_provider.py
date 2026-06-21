@@ -497,7 +497,6 @@ def _plaid_client():
 
     env_map = {
         "sandbox": plaid.Environment.Sandbox,
-        "development": plaid.Environment.Development,
         "production": plaid.Environment.Production,
     }
     plaid_env = env_map.get(config.PLAID_ENV or "production", plaid.Environment.Production)
