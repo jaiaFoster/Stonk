@@ -1,12 +1,12 @@
 """
-app/services/broker_provider.py — Broker credential abstraction layer (28C).
+app/services/broker_provider.py — Broker credential abstraction layer (28C + Plaid).
 
-All broker credential operations go through this interface.
-To swap to Plaid: add PlaidCredentialProvider and change get_provider() —
-zero changes to personalization or queue code required.
+Two providers: RobinhoodCredentialProvider (direct login via robin_stocks)
+and PlaidCredentialProvider (Plaid Link → access_token → /investments/holdings/get).
 
-SECURITY: passwords passed as plain strings only inside validate_credentials()
-and fetch_positions(). Never stored in instance state. Never logged.
+SECURITY: passwords/access_tokens passed as plain strings only inside
+validate_credentials() and fetch_positions(). Never stored in instance state.
+Never logged.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ class BrokerCredentialProvider:
     def get_provider(broker_type: str) -> "BrokerCredentialProvider":
         if broker_type == "robinhood":
             return RobinhoodCredentialProvider()
+        if broker_type == "plaid":
+            return PlaidCredentialProvider()
         raise ValueError(f"Unknown broker type: {broker_type!r}")
 
     def validate_credentials(self, username: str, password: str) -> tuple[bool, str]:
@@ -47,11 +49,10 @@ class BrokerCredentialProvider:
 
     def fetch_positions_with_options(
         self, username: str, password_decrypted: str, user_id: int
-    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         """
         Log in once, fetch stock positions AND raw option positions, log out.
-        Returns (stock_positions, raw_option_positions).
-        Options fetch uses the same authenticated session — no second login.
+        Returns (stock_positions, raw_option_positions, discovered_accounts).
         Raises RuntimeError on auth failure.
         NEVER log password_decrypted.
         """
@@ -483,3 +484,205 @@ class RobinhoodCredentialProvider(BrokerCredentialProvider):
                 r.logout()
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Plaid broker provider
+# ---------------------------------------------------------------------------
+
+def _plaid_client():
+    """Create a Plaid API client from config. Lazy import to avoid import-time failures."""
+    import plaid
+    from plaid.api import plaid_api
+
+    env_map = {
+        "sandbox": plaid.Environment.Sandbox,
+        "development": plaid.Environment.Development,
+        "production": plaid.Environment.Production,
+    }
+    plaid_env = env_map.get(config.PLAID_ENV or "production", plaid.Environment.Production)
+
+    configuration = plaid.Configuration(
+        host=plaid_env,
+        api_key={
+            "clientId": config.PLAID_CLIENT_ID,
+            "secret": config.PLAID_SECRET,
+        },
+    )
+    api_client = plaid.ApiClient(configuration)
+    return plaid_api.PlaidApi(api_client)
+
+
+_PLAID_ACCOUNT_TYPE_MAP = {
+    "roth": "Roth IRA",
+    "ira": "Traditional IRA",
+    "roth 401k": "Roth 401k",
+    "401k": "401k",
+    "brokerage": "Individual",
+    "non-taxable brokerage account": "Individual",
+}
+
+
+def _classify_plaid_account_type(account: dict[str, Any]) -> str:
+    subtype = str(account.get("subtype") or "").lower()
+    return _PLAID_ACCOUNT_TYPE_MAP.get(subtype, subtype.title() if subtype else "Unknown")
+
+
+def _normalize_plaid_holding(
+    holding: dict[str, Any], security: dict[str, Any], account: dict[str, Any]
+) -> dict[str, Any]:
+    qty = float(holding.get("quantity") or 0)
+    cost_basis = float(holding.get("cost_basis") or 0)
+    avg_cost = cost_basis / qty if qty else 0.0
+    close_price = security.get("close_price")
+    current_price = float(close_price) if close_price is not None else None
+    market_value_raw = holding.get("institution_value")
+    market_value = float(market_value_raw) if market_value_raw is not None else (
+        current_price * qty if current_price is not None else None
+    )
+    pnl_pct: float | None = None
+    if current_price is not None and avg_cost and avg_cost > 0:
+        pnl_pct = round((current_price - avg_cost) / avg_cost * 100, 3)
+    return {
+        "ticker": str(security.get("ticker_symbol") or "").upper(),
+        "quantity": qty,
+        "avg_cost": avg_cost,
+        "current_price": current_price,
+        "market_value": market_value,
+        "unrealized_pnl_pct": pnl_pct,
+        "account_type": _classify_plaid_account_type(account),
+        "account_number": account.get("account_id"),
+        "_broker": "plaid",
+    }
+
+
+def _normalize_plaid_option(
+    holding: dict[str, Any], security: dict[str, Any], account: dict[str, Any]
+) -> dict[str, Any]:
+    """Normalize a Plaid option holding into ASA's raw option position shape.
+
+    Plaid option quantity = contracts × 100 (share-equivalent).
+    Divide by 100 to match Robinhood's contract-count convention.
+    """
+    contract = security.get("option_contract") or {}
+    raw_qty = float(holding.get("quantity") or 0)
+    qty = raw_qty / 100.0
+
+    return {
+        "chain_symbol": str(contract.get("underlying_security_ticker") or "").upper(),
+        "type": str(contract.get("contract_type") or "").lower(),
+        "strike_price": str(contract.get("strike_price") or "0"),
+        "expiration_date": contract.get("expiration_date"),
+        "quantity": str(qty),
+        "average_price": str(holding.get("cost_basis") or "0"),
+        "id": holding.get("holding_id") or holding.get("security_id") or id(holding),
+        "_source_account_number": account.get("account_id"),
+        "_source_account_type": _classify_plaid_account_type(account),
+        "_broker": "plaid",
+        "_plaid_raw_quantity": raw_qty,
+    }
+
+
+class PlaidCredentialProvider(BrokerCredentialProvider):
+    """Plaid investment broker — no username/password, uses access_token from Link flow."""
+
+    def broker_type(self) -> str:
+        return "plaid"
+
+    def validate_credentials(self, public_token: str, *args) -> tuple[bool, str]:
+        """Exchange public_token for access_token. Returns (success, error_key)."""
+        try:
+            from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+            client = _plaid_client()
+            req = ItemPublicTokenExchangeRequest(public_token=public_token)
+            response = client.item_public_token_exchange(req)
+            return True, ""
+        except Exception as exc:
+            err = str(exc)
+            print(f"[plaid_provider] token exchange failed: {type(exc).__name__}", flush=True)
+            return False, "exchange_failed"
+
+    def exchange_public_token(self, public_token: str) -> tuple[str, str]:
+        """Exchange public_token → (access_token, item_id). Raises on failure."""
+        from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchangeRequest
+        client = _plaid_client()
+        req = ItemPublicTokenExchangeRequest(public_token=public_token)
+        response = client.item_public_token_exchange(req)
+        return response.access_token, response.item_id
+
+    def fetch_positions(self, access_token: str, _password_unused: str = "", user_id: int = 0) -> list[dict[str, Any]]:
+        """Fetch all investment holdings via Plaid. Returns normalized position list."""
+        positions, _options, _accounts = self.fetch_positions_with_options(access_token, "", user_id)
+        return positions
+
+    def fetch_positions_with_options(
+        self, access_token: str, _password_unused: str = "", user_id: int = 0
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Fetch holdings + options from Plaid. Returns (stock_positions, raw_option_positions, discovered_accounts)."""
+        from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+
+        client = _plaid_client()
+
+        if config.PLAID_REFRESH_ON_EVERY_RUN:
+            try:
+                from plaid.model.investments_refresh_request import InvestmentsRefreshRequest
+                client.investments_refresh(InvestmentsRefreshRequest(access_token=access_token))
+                print(f"[plaid_provider] user_id={user_id}: investments refresh triggered.", flush=True)
+            except Exception as exc:
+                print(f"[plaid_provider] investments refresh failed (non-fatal): {type(exc).__name__}", flush=True)
+
+        try:
+            response = client.investments_holdings_get(
+                InvestmentsHoldingsGetRequest(access_token=access_token)
+            )
+        except Exception as exc:
+            from app.db.users import log_user_error
+            log_user_error(user_id, "plaid_provider.fetch", type(exc).__name__, str(exc))
+            raise RuntimeError(f"Plaid holdings fetch failed: {type(exc).__name__}") from None
+
+        holdings = response.holdings or []
+        securities = {s.security_id: s.to_dict() for s in (response.securities or [])}
+        accounts = {a.account_id: a.to_dict() for a in (response.accounts or [])}
+
+        stock_positions: list[dict[str, Any]] = []
+        raw_option_positions: list[dict[str, Any]] = []
+        discovered_accounts: list[dict[str, Any]] = []
+
+        seen_accounts: set[str] = set()
+        for acct_id, acct in accounts.items():
+            if acct_id not in seen_accounts:
+                seen_accounts.add(acct_id)
+                discovered_accounts.append({
+                    "account_number": acct_id,
+                    "account_type": _classify_plaid_account_type(acct),
+                    "broker_type": "plaid",
+                })
+
+        for h in holdings:
+            h_dict = h.to_dict() if hasattr(h, "to_dict") else h
+            sec_id = h_dict.get("security_id")
+            sec = securities.get(sec_id, {})
+            acct_id = h_dict.get("account_id")
+            acct = accounts.get(acct_id, {})
+
+            sec_type = str(sec.get("type") or "").lower()
+
+            if sec_type == "derivative" or sec.get("option_contract"):
+                raw_option_positions.append(_normalize_plaid_option(h_dict, sec, acct))
+            elif sec_type in ("equity", "etf", "mutual fund", ""):
+                ticker = str(sec.get("ticker_symbol") or "").upper()
+                if not ticker:
+                    continue
+                qty = float(h_dict.get("quantity") or 0)
+                if qty <= 0:
+                    continue
+                stock_positions.append(_normalize_plaid_holding(h_dict, sec, acct))
+
+        print(
+            f"[plaid_provider] user_id={user_id}: {len(stock_positions)} stock position(s), "
+            f"{len(raw_option_positions)} option position(s), "
+            f"{len(discovered_accounts)} account(s).",
+            flush=True,
+        )
+
+        return stock_positions, raw_option_positions, discovered_accounts
