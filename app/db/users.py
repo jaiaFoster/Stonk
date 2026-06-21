@@ -204,6 +204,14 @@ def _migrate_43(conn: sqlite3.Connection) -> None:
             pass
 
 
+def _migrate_45(conn: sqlite3.Connection) -> None:
+    """TKT-045: nickname column on user_broker_accounts. Idempotent."""
+    try:
+        conn.execute("ALTER TABLE user_broker_accounts ADD COLUMN nickname TEXT")
+    except Exception:
+        pass
+
+
 def init_db() -> None:
     """Create tables if they don't exist, run schema migrations."""
     with _connect() as conn:
@@ -211,6 +219,7 @@ def init_db() -> None:
         _migrate_28c(conn)
         _migrate_29a(conn)
         _migrate_43(conn)
+        _migrate_45(conn)
         cols = [c[1] for c in conn.execute("PRAGMA table_info(user_positions)").fetchall()]
         if "position_type" not in cols or "option_details" not in cols:
             print(f"[init_db] WARNING: user_positions missing options columns. "
@@ -1068,3 +1077,23 @@ def get_user_broker_accounts(user_id: int) -> list[dict[str, Any]]:
             (user_id,),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def set_account_nickname(user_id: int, account_number: str, nickname: str | None) -> bool:
+    """Set or clear nickname for a broker account. Returns True if row existed."""
+    with _connect() as conn:
+        cur = conn.execute(
+            "UPDATE user_broker_accounts SET nickname=? WHERE user_id=? AND account_number=?",
+            (nickname, user_id, account_number),
+        )
+    return cur.rowcount > 0
+
+
+def get_account_nickname(user_id: int, account_number: str) -> str | None:
+    """Return nickname for a specific broker account, or None."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT nickname FROM user_broker_accounts WHERE user_id=? AND account_number=?",
+            (user_id, account_number),
+        ).fetchone()
+    return row["nickname"] if row else None

@@ -367,7 +367,8 @@ def positions():
                     from app.db.users import get_user_broker_accounts
                     broker_accounts = [
                         {"account_number": a.get("account_number"), "account_type": a.get("account_type"),
-                         "broker_type": a.get("broker_type"), "discovered_at": a.get("discovered_at")}
+                         "broker_type": a.get("broker_type"), "discovered_at": a.get("discovered_at"),
+                         "account_nickname": a.get("nickname")}
                         for a in get_user_broker_accounts(user_id)
                     ]
                 except Exception:
