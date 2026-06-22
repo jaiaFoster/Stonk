@@ -49,12 +49,19 @@ ARG OPEND_VERSION=10.7.6728
 RUN groupadd -r futu && useradd -r -g futu -m -d /home/futu futu
 
 RUN mkdir -p /opt/opend /home/futu/.com.futunn.FutuOpenD && \
-    curl -k -L \
-        -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
-        -o /tmp/opend.tar.gz \
-        "https://softwaredownload.futunn.com/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04.tar.gz" && \
-    tar -xzf /tmp/opend.tar.gz -C /opt/opend --strip-components=1 && \
-    rm /tmp/opend.tar.gz && \
+    for i in 1 2 3; do \
+        curl -k \
+            -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
+            -H 'accept-language: en-US,en;q=0.9' \
+            -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36' \
+            -o /tmp/opend.tar.gz \
+            "https://softwaredownload.futunn.com/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04.tar.gz" \
+        && break || sleep 2; \
+    done && \
+    test -s /tmp/opend.tar.gz || (echo "ERROR: OpenD download failed after 3 attempts" && exit 1) && \
+    tar -xzf /tmp/opend.tar.gz -C /tmp && \
+    cp -a /tmp/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04/. /opt/opend/ && \
+    rm -rf /tmp/opend.tar.gz /tmp/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04 && \
     chmod +x /opt/opend/FutuOpenD && \
     chown -R futu:futu /opt/opend /home/futu
 
