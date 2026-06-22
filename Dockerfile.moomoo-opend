@@ -1,80 +1,29 @@
 # Dockerfile.moomoo-opend — Moomoo OpenD gateway for ASA broker integration.
 #
-# Adapted from manhinhang/futu-opend-docker (actively maintained reference).
-# OpenD is the mandatory local gateway for moomoo-api SDK connections.
+# Uses the pre-built image from manhinhang/futu-opend-docker (ghcr.io).
+# Avoids downloading OpenD at build time from Futu's CDN (unreliable from
+# Railway's build servers). The pre-built image has OpenD baked in.
 #
-# ARCHITECTURE:
-# Each OpenD instance authenticates ONE moomoo account. Multi-user requires
-# multiple OpenD processes. SMS/CAPTCHA 2FA is required on first login —
-# subsequent restarts reuse cached session tokens (persisted in volume).
+# FIRST-LOGIN 2FA:
+#   After first deploy, OpenD will wait for SMS/CAPTCHA verification.
+#   In Railway's service shell (or via telnet to port 22222):
+#     SMS:    echo "input_phone_verify_code -code=123456" | telnet localhost 22222
+#     CAPTCHA: extract PicVerifyCode.png from volume, then:
+#              echo "input_pic_verify_code -code=ABCD" | telnet localhost 22222
+#   Session is cached in the mounted volume — 2FA not required again unless
+#   Futu's server-side whitelist expires (hours to days).
 #
-# FIRST-LOGIN 2FA PROCEDURE:
-#   1. Start the container. OpenD will prompt for verification.
-#   2. You will receive an SMS code on the registered phone number.
-#   3. Telnet into the container's 2FA port:
-#        telnet <host> 22222
-#   4. Enter the SMS verification code:
-#        input_phone_verify_code -code=123456
-#   5. If a CAPTCHA image is required instead, extract it from the volume:
-#        docker cp <container>:/home/futu/.com.futunn.FutuOpenD/F3CNN/PicVerifyCode.png .
-#      Then submit via telnet:
-#        input_pic_verify_code -code=ABCD
-#   6. After successful 2FA, session tokens are cached in the volume.
-#      Subsequent container restarts will NOT require 2FA again.
-#
-# DEPLOYMENT (Railway):
-#   Add as a separate service in the same project.
-#   Use Railway private networking for internal TCP communication.
-#   The ASA app connects via MOOMOO_OPEND_HOST (internal Railway hostname)
-#   on MOOMOO_OPEND_PORT (default 11111).
-#   Mount a persistent volume to /home/futu/.com.futunn.FutuOpenD to preserve
-#   session tokens across deploys.
-#
-# ENV VARS:
-#   FUTU_ACCOUNT_ID          — Moomoo/Futu account ID
-#   FUTU_ACCOUNT_PWD_MD5     — MD5 hash of account password (32 hex chars)
-#   FUTU_OPEND_IP            — Bind address (default 0.0.0.0)
-#   FUTU_OPEND_PORT          — TCP port for SDK connections (default 11111)
-#   FUTU_OPEND_TELNET_PORT   — TCP port for 2FA code injection (default 22222)
+# ENV VARS (set in Railway):
+#   FUTU_ACCOUNT_ID        — Moomoo account number
+#   FUTU_ACCOUNT_PWD_MD5   — MD5 hash of password (never plaintext)
+#                            Compute: echo -n 'yourpassword' | md5sum | awk '{print $1}'
 
-FROM ubuntu:22.04
-
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        curl ca-certificates libssl3 telnet && \
-    rm -rf /var/lib/apt/lists/*
-
-ARG OPEND_VERSION=10.7.6728
-
-RUN groupadd -r futu && useradd -r -g futu -m -d /home/futu futu
-
-RUN mkdir -p /opt/opend /home/futu/.com.futunn.FutuOpenD && \
-    for i in 1 2 3; do \
-        curl -k \
-            -H 'accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7' \
-            -H 'accept-language: en-US,en;q=0.9' \
-            -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36' \
-            -o /tmp/opend.tar.gz \
-            "https://softwaredownload.futunn.com/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04.tar.gz" \
-        && break || sleep 2; \
-    done && \
-    test -s /tmp/opend.tar.gz || (echo "ERROR: OpenD download failed after 3 attempts" && exit 1) && \
-    tar -xzf /tmp/opend.tar.gz -C /tmp && \
-    cp -a /tmp/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04/. /opt/opend/ && \
-    rm -rf /tmp/opend.tar.gz /tmp/Futu_OpenD_${OPEND_VERSION}_Ubuntu18.04 && \
-    chmod +x /opt/opend/FutuOpenD && \
-    chown -R futu:futu /opt/opend /home/futu
+FROM ghcr.io/manhinhang/futu-opend-docker:latest
 
 ENV FUTU_ACCOUNT_ID=""
 ENV FUTU_ACCOUNT_PWD_MD5=""
-ENV FUTU_OPEND_IP=0.0.0.0
 ENV FUTU_OPEND_PORT=11111
 ENV FUTU_OPEND_TELNET_PORT=22222
 
-EXPOSE ${FUTU_OPEND_PORT}
-EXPOSE ${FUTU_OPEND_TELNET_PORT}
-
-USER futu
-
-ENTRYPOINT ["/opt/opend/FutuOpenD"]
-CMD ["-cfg_file", "/opt/opend/FutuOpenD.xml"]
+EXPOSE 11111
+EXPOSE 22222
