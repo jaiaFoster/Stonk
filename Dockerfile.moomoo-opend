@@ -67,8 +67,6 @@ ENV FUTU_OPEND_TELNET_PORT=22222
 EXPOSE ${FUTU_OPEND_PORT}
 EXPOSE ${FUTU_OPEND_TELNET_PORT}
 
-VOLUME /home/futu/.com.futunn.FutuOpenD
-
 USER futu
 
 ENTRYPOINT ["/opt/opend/FutuOpenD"]
