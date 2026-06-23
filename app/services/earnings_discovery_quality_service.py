@@ -184,6 +184,7 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         "session_label": event.get("session_label") or "Unknown",
         "days_until_earnings": event.get("days_until_earnings"),
         "source": event.get("source"),
+        "earnings_date_confidence": event.get("earnings_date_confidence") or "unknown",
         "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
         "quote": quote,
         "underlying_price": price,

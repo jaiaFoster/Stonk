@@ -470,7 +470,22 @@ def _merge_dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 ev_a["earnings_source_conflict"] = True
                 ev_b["earnings_source_conflict"] = True
 
+    for ev in result:
+        ev["earnings_date_confidence"] = _compute_earnings_confidence(ev)
+
     return sorted(result, key=lambda item: (str(item.get("earnings_date") or "9999-99-99"), str(item.get("ticker") or "")))
+
+
+def _compute_earnings_confidence(event: dict[str, Any]) -> str:
+    sources = event.get("sources_seen") or []
+    has_conflict = bool(event.get("earnings_source_conflict"))
+    if has_conflict:
+        return "disputed"
+    if len(sources) >= 2:
+        return "confirmed"
+    if len(sources) == 1:
+        return "single_source"
+    return "no_data"
 
 
 def _safe_alpha_horizon(value: str | None) -> str:
