@@ -132,7 +132,7 @@ def discover_upcoming_earnings_for_calendar_trades(
             "ticker_count": 0,
             "window_start_days": int(config.EARNINGS_DISCOVERY_START_DAYS or 2),
             "window_end_days": int(config.EARNINGS_DISCOVERY_END_DAYS or 4),
-            "raw_limit": int(getattr(config, "EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 100) or 100),
+            "raw_limit": int(getattr(config, "EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 200) or 200),
         },
     }
 
@@ -159,7 +159,7 @@ def discover_upcoming_earnings_for_calendar_trades(
     result["window_start"] = start.isoformat()
     result["window_end"] = end.isoformat()
 
-    raw_limit = max(1, int(getattr(config, "EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 100) or 100))
+    raw_limit = max(1, int(getattr(config, "EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 200) or 200))
     if clean_mode == "dev":
         raw_limit = max(1, int(getattr(config, "EARNINGS_DISCOVERY_DEV_RAW_EVENT_LIMIT", raw_limit) or raw_limit))
 

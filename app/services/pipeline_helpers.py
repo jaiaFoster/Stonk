@@ -8,6 +8,7 @@ fallback structures.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from app import config
@@ -144,6 +145,7 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"ROBINHOOD_OPTIONS_DETECTOR_ENABLED: {snapshot.get('robinhood_options_detector_enabled')}",
         f"ROBINHOOD_OPTIONS_INFER_CALENDARS: {snapshot.get('robinhood_options_infer_calendars')}",
     ]
+    _warn_env_overrides(lines)
     if snapshot.get("run_mode") == "dev":
         lines.extend(
             [
@@ -152,6 +154,27 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
             ]
         )
     return lines
+
+
+_DISCOVERY_CAP_DEFAULTS: list[tuple[str, int]] = [
+    ("EARNINGS_DISCOVERY_RAW_EVENT_LIMIT", 200),
+    ("EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 40),
+    ("EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES", 20),
+]
+
+
+def _warn_env_overrides(lines: list[str]) -> None:
+    for env_name, code_default in _DISCOVERY_CAP_DEFAULTS:
+        env_val = os.environ.get(env_name)
+        if env_val is not None:
+            try:
+                actual = int(env_val)
+            except (TypeError, ValueError):
+                continue
+            if actual < code_default:
+                lines.append(
+                    f"ENV OVERRIDE: {env_name}={actual} (Railway env var overrides code default {code_default})"
+                )
 
 
 def merge_provider_ticker_sets(primary: list[str], secondary: list[str]) -> list[str]:
