@@ -35,10 +35,10 @@ def filter_earnings_discovery_for_calendar_scan(
     discovery = earnings_trade_discovery or {}
     raw_items = [item for item in (discovery.get("items") or []) if isinstance(item, dict)]
 
-    max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 12) or 12))
+    max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 40) or 40))
     if clean_mode == "dev":
         max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK", max_to_check) or max_to_check))
-    max_final = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES", 6) or 6))
+    max_final = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_FINAL_CANDIDATES", 20) or 20))
 
     result: dict[str, Any] = {
         "source": "earnings_discovery_quality_filter_v1",

@@ -108,18 +108,37 @@ def discover_accounts() -> list[dict[str, Any]]:
         return []
 
 
+_BROKERAGE_ACCOUNT_TYPE_MAP: dict[str, str] = {
+    "individual": "Individual",
+    "ira_roth": "Roth IRA",
+    "roth_ira": "Roth IRA",
+    "ira_traditional": "Traditional IRA",
+    "traditional_ira": "Traditional IRA",
+    "ira_rollover": "Rollover IRA",
+    "rollover_ira": "Rollover IRA",
+    "ira_sep": "SEP IRA",
+    "sep_ira": "SEP IRA",
+    "joint_tenancy_with_ros": "Joint",
+    "joint": "Joint",
+}
+
+
 def _classify_account_type(acct: dict) -> str:
     """Derive human-readable label from Robinhood account profile dict.
 
-    Checks fields in priority order. The `type` field from the Robinhood
-    accounts API describes trading capability (cash/margin), NOT tax
-    treatment. IRA accounts have type="cash" because IRAs cannot use margin.
-
-    `is_pinnacle_account` is a documented robin_stocks field — Pinnacle is
-    Robinhood's internal name for their retirement/IRA product line.
-    When True, the account is an IRA but we cannot distinguish Roth vs
-    Traditional from the accounts endpoint alone.
+    `brokerage_account_type` is the authoritative field for tax treatment
+    (individual, ira_roth, joint_tenancy_with_ros, etc.). The `type` field
+    describes trading capability (cash/margin), NOT account classification —
+    IRA accounts have type="cash" because IRAs cannot use margin.
     """
+    brokerage_type = str(acct.get("brokerage_account_type") or "").lower().strip()
+    if brokerage_type:
+        mapped = _BROKERAGE_ACCOUNT_TYPE_MAP.get(brokerage_type)
+        if mapped:
+            return mapped
+        if "ira" in brokerage_type:
+            return "IRA"
+
     acct_type = str(acct.get("type") or "").lower().strip()
     if "roth" in acct_type:
         return "Roth IRA"
@@ -128,8 +147,6 @@ def _classify_account_type(acct: dict) -> str:
     if "traditional" in acct_type or "trad_ira" in acct_type:
         return "Traditional IRA"
     if "ira" in acct_type:
-        return "IRA"
-    if acct.get("is_pinnacle_account"):
         return "IRA"
     if acct_type in ("cash", "margin"):
         return "Individual"

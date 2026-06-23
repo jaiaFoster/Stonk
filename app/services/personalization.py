@@ -302,6 +302,30 @@ def _normalize_options_positions_for_storage(
             "account_number": acct_num,
         })
 
+    for leg in single_legs:
+        ticker = str(leg.get("underlying") or "").upper().strip()
+        if not ticker or covered_tickers.get(ticker, 0) > 0:
+            continue
+        covered_tickers[ticker] = covered_tickers.get(ticker, 0) + 1
+        result.append({
+            "ticker": ticker,
+            "strategy_type": "single_option",
+            "option_type": leg.get("option_type"),
+            "strike": leg.get("strike"),
+            "expiration": leg.get("expiration") or leg.get("expiration_date"),
+            "dte": leg.get("dte"),
+            "quantity": leg.get("quantity"),
+            "legs": [],
+            "net_debit": leg.get("avg_cost_per_share"),
+            "current_value": leg.get("mid"),
+            "unrealized_pnl_pct": None,
+            "max_profit": None,
+            "max_loss": None,
+            "pct_of_max_profit": None,
+            "account_type": "options",
+            "account_number": str(leg.get("account_id") or ""),
+        })
+
     return result
 
 

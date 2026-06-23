@@ -2002,7 +2002,7 @@ def _calendar_scanner_breadth_warning(
         getattr(
             config,
             "EARNINGS_DISCOVERY_DEV_MAX_OPTIONABLE_TO_CHECK" if run_mode == "dev" else "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK",
-            6 if run_mode == "dev" else 12,
+            6 if run_mode == "dev" else 40,
         )
         or 1
     )
