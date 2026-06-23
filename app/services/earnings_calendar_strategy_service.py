@@ -183,6 +183,7 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
     score = _apply_candidate_risk_caps(score, candidate, risks)
     score = round(max(0.0, min(100.0, score)), 1)
 
+    compact_earnings = _compact_event(event)
     return {
         "ticker": ticker,
         "strategy": "Earnings Long Call Calendar",
@@ -206,7 +207,9 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         "iv_edge": candidate.get("iv_edge"),
         "short_front_leg": candidate.get("short_front_leg") or {},
         "long_back_leg": candidate.get("long_back_leg") or {},
-        "earnings": _compact_event(event),
+        "earnings": compact_earnings,
+        "earnings_date_confidence": compact_earnings.get("earnings_date_confidence"),
+        "earnings_date_warning": compact_earnings.get("earnings_date_warning"),
         "earnings_relation": relation,
         "event_captured_by_back_leg": event_captured,
         "short_leg_spans_earnings": short_spans_event,
@@ -255,7 +258,8 @@ def _summary(items: list[dict[str, Any]]) -> dict[str, Any]:
 def _compact_event(event: dict[str, Any] | None) -> dict[str, Any]:
     if not event:
         return {"has_data": False, "error": "No earnings event available."}
-    return {
+    confidence = event.get("earnings_date_confidence") or "unknown"
+    result = {
         "has_data": bool(event.get("has_data")),
         "ticker": event.get("ticker") or event.get("symbol"),
         "earnings_date": event.get("earnings_date") or event.get("date"),
@@ -263,10 +267,14 @@ def _compact_event(event: dict[str, Any] | None) -> dict[str, Any]:
         "time_of_day": event.get("time_of_day"),
         "session_label": event.get("session_label"),
         "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
+        "earnings_date_confidence": confidence,
         "days_until_earnings": event.get("days_until_earnings"),
         "source": event.get("source"),
         "error": event.get("error"),
     }
+    if confidence == "disputed":
+        result["earnings_date_warning"] = "date disputed between providers"
+    return result
 
 
 def _parse_date(value: Any) -> date | None:

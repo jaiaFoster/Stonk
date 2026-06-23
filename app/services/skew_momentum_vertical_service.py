@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from typing import Any, Callable
 
@@ -33,6 +34,34 @@ def _compute_exit_signal(position: dict[str, Any]) -> tuple[str, str | None]:
     if isinstance(dte, int) and dte <= exit_dte:
         return "EXIT_EXPIRY", f"Near expiration ({dte} DTE)"
     return "HOLD", None
+
+
+STALE_STRUCTURE_MOVE_THRESHOLD = float(os.environ.get("SKEW_STALE_STRUCTURE_THRESHOLD_PCT", "0.03"))
+
+
+def _is_structure_stale(long_strike: float, current_price: float, threshold: float = STALE_STRUCTURE_MOVE_THRESHOLD) -> bool:
+    if not long_strike or not current_price:
+        return False
+    move = abs(current_price - long_strike) / long_strike
+    return move > threshold
+
+
+def _staleness_note(long_strike: float, current_price: float) -> str:
+    move_pct = (current_price - long_strike) / long_strike * 100
+    direction = "above" if move_pct > 0 else "below"
+    return f"Stock now {abs(move_pct):.1f}% {direction} long strike — structure may need rebuilding"
+
+
+def _has_conflicting_open_vertical(ticker: str, expiration: str, open_verticals: list[dict[str, Any]]) -> bool:
+    if not open_verticals:
+        return False
+    for pos in open_verticals:
+        pos_ticker = str(pos.get("underlying") or pos.get("ticker") or "").upper().strip()
+        pos_exp = str(pos.get("expiration") or "")[:10]
+        if (pos_ticker == ticker and pos_exp == expiration[:10] and
+                pos.get("strategy_type") in ("skew_vertical", "vertical")):
+            return True
+    return False
 
 
 def build_skew_momentum_vertical_strategy(
@@ -78,6 +107,18 @@ def build_skew_momentum_vertical_strategy(
             row = dict(v)
             row["exit_signal"] = exit_signal
             row["exit_reason"] = exit_reason
+            # TKT-057: staleness check — flag if underlying moved significantly from long strike
+            vticker = str(v.get("underlying") or v.get("ticker") or "").upper().strip()
+            long_strike = _first_num(v.get("long_strike"))
+            current_price = _first_num(v.get("underlying_price"))
+            if current_price is None and vticker:
+                vmetrics = (market_metrics or {}).get(vticker) or {}
+                current_price = _first_num(vmetrics.get("last_price"), vmetrics.get("close"), vmetrics.get("current_price"))
+            if long_strike and current_price and _is_structure_stale(long_strike, current_price):
+                row["stale_structure"] = True
+                row["stale_structure_note"] = _staleness_note(long_strike, current_price)
+            else:
+                row["stale_structure"] = False
             active_rows.append(row)
         result["active_items"] = active_rows
         result["active_rows"] = active_rows
@@ -173,6 +214,31 @@ def build_skew_momentum_vertical_strategy(
             result["errors"].append(f"{ticker}: {safe_error}")
             result["items"].append(_blocked_data_row(ticker, direction, f"Tradier options data unavailable: {safe_error}"))
     result["items"].sort(key=lambda row: (0 if str(row.get("verdict")).startswith("PASS") else 1, -float(row.get("score") or 0)))
+
+    # TKT-056: Conflict check — downgrade PASS to WATCH if user has open vertical in same ticker+expiry
+    open_verticals = (open_options or {}).get("verticals") or []
+    if open_verticals:
+        for row in result["items"]:
+            if not str(row.get("verdict") or "").startswith("PASS"):
+                continue
+            spread = row.get("possible_spread") or {}
+            exp = str(spread.get("expiration") or "")
+            ticker = str(row.get("ticker") or "")
+            if _has_conflicting_open_vertical(ticker, exp, open_verticals):
+                row["verdict"] = "WATCH / OPEN VERTICAL CONFLICT"
+                row["display_state"] = "WATCH_OPEN_VERTICAL_CONFLICT"
+                row["display_state_label"] = "Watch Open Vertical Conflict"
+                row["display_tone"] = "warn"
+                row["conflict_note"] = "Open vertical already exists in this ticker/expiry — new structure would create overlapping legs"
+                row["primary_blocker"] = row["conflict_note"]
+                row["next_action"] = "Wait for existing vertical to close before entering a new one."
+                logger(f"[skew] {ticker}: PASS downgraded to WATCH — open vertical conflict detected")
+    elif not (open_options or {}).get("has_open_options"):
+        _conflict_check_skipped = getattr(build_skew_momentum_vertical_strategy, "_conflict_skip_logged", False)
+        if not _conflict_check_skipped:
+            logger("[skew] conflict check skipped — no options data available (broker may not support options)")
+            build_skew_momentum_vertical_strategy._conflict_skip_logged = True
+
     logger(f"Strategy 2 produced {len(result['items'])} decision row(s).")
     return _finalize(result)
 
