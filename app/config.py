@@ -232,6 +232,19 @@ EARNINGS_DISCOVERY_MIN_UNDERLYING_PRICE = _int_env("EARNINGS_DISCOVERY_MIN_UNDER
 EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME = _int_env("EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME", 500000)
 EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN = _int_env("EARNINGS_DISCOVERY_MAX_TICKERS_PER_RUN", 6)
 
+# --- Universe discovery (expanded ticker universe) ---
+UNIVERSE_DISCOVERY_ENABLED = _bool_env("UNIVERSE_DISCOVERY_ENABLED", True)
+UNIVERSE_DISCOVERY_CONSTITUENT_REFRESH_DAYS = _int_env("UNIVERSE_DISCOVERY_CONSTITUENT_REFRESH_DAYS", 7)
+UNIVERSE_DISCOVERY_CACHE_TTL_HOURS = _int_env("UNIVERSE_DISCOVERY_CACHE_TTL_HOURS", 20)
+EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES = _int_env("EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES", 50)
+UNIVERSE_MIN_PRICE = _float_env("UNIVERSE_MIN_PRICE", 10.0)
+UNIVERSE_MAX_PRICE = _float_env("UNIVERSE_MAX_PRICE", 1000.0)
+UNIVERSE_MIN_AVG_VOLUME = _int_env("UNIVERSE_MIN_AVG_VOLUME", 500000)
+UNIVERSE_DISCOVERY_DB_PATH = os.environ.get(
+    "UNIVERSE_DISCOVERY_DB_PATH",
+    "/app/data/universe_discovery.sqlite3" if os.path.isdir("/app/data") else "data/universe_discovery.sqlite3",
+)
+
 # --- Earnings calendar timing / ranking defaults ---
 # Calendar discovery now scans farther ahead than the original +2..+4 day
 # window. The strategy should find candidates early enough to review, then

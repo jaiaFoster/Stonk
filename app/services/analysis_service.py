@@ -782,6 +782,11 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "event_count": len((earnings_trade_discovery or {}).get("items", []) or []),
     }
 
+    _held_tickers = list(dict.fromkeys(
+        str(p.get("ticker") or "").upper().strip()
+        for p in (positions or [])
+        if str(p.get("ticker") or "").strip()
+    ))
     earnings_discovery_quality = run_optional_step(
         "earnings_quality_filter",
         "Running Earnings Discovery Quality Filter v1...",
@@ -789,9 +794,15 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             earnings_trade_discovery=earnings_trade_discovery,
             log_print=log_print,
             run_mode=clean_mode,
+            held_tickers=_held_tickers,
+            earnings_events=earnings_events,
         ),
         EMPTY_EARNINGS_QUALITY,
-        lambda result: f"Quality filter passed {len((result or {}).get('passed_items', []) or [])} optionable ticker(s).",
+        lambda result: (
+            f"Quality filter passed {len((result or {}).get('passed_items', []) or [])} optionable ticker(s)"
+            + (f" ({((result or {}).get('summary', {}) or {}).get('universe_added_count', 0)} from universe discovery)" if ((result or {}).get('summary', {}) or {}).get('universe_added_count', 0) else "")
+            + "."
+        ),
     )
 
     tradier_snapshot = run_optional_step(
