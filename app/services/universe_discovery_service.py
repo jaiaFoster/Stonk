@@ -468,6 +468,184 @@ def _parse_date(value: Any) -> date | None:
         return None
 
 
+def get_skew_candidates(
+    exclude_held: list[str] | None = None,
+    max_tickers: int | None = None,
+    log_print: LogFn | None = None,
+) -> list[str]:
+    """Return liquid constituent tickers ranked for skew scanning.
+
+    No earnings requirement — returns any constituent that passes the
+    price/volume filter, ranked by IV proxy (MarketDataHub implied_volatility
+    field, falling back to avg_volume as a liquidity proxy).
+    """
+    logger = log_print or (lambda msg: print(msg, flush=True))
+    max_tickers = max_tickers or int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30) or 30)
+
+    if not getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True):
+        logger("[universe_discovery] skew candidates disabled by UNIVERSE_DISCOVERY_ENABLED=false")
+        return []
+
+    try:
+        constituents = _get_constituent_tickers(logger)
+    except Exception as exc:
+        logger(f"[universe_discovery] skew constituent fetch failed (non-fatal): {exc}")
+        return []
+
+    exclude_set = {t.upper().strip() for t in (exclude_held or []) if t}
+    min_price = float(getattr(config, "UNIVERSE_MIN_PRICE", 10.0) or 10.0)
+    max_price = float(getattr(config, "UNIVERSE_MAX_PRICE", 1000.0) or 1000.0)
+    min_avg_vol = int(getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000) or 500000)
+
+    scored: list[tuple[str, float, float]] = []
+    for ticker in constituents:
+        t = ticker.upper().strip()
+        if t in exclude_set:
+            continue
+        price, avg_volume = _get_price_volume(t, logger)
+        price_val = price or 0.0
+        vol_val = avg_volume or 0
+        if price is not None and (price_val < min_price or price_val > max_price):
+            continue
+        if avg_volume is not None and vol_val < min_avg_vol:
+            continue
+        iv = _get_iv_proxy(t)
+        scored.append((t, iv or 0.0, vol_val))
+
+    scored.sort(key=lambda x: (x[1], x[2]), reverse=True)
+    result = [t for t, _iv, _vol in scored[:max_tickers]]
+    logger(
+        f"[universe_discovery] skew candidates: {len(result)} of {len(scored)} eligible "
+        f"({len(exclude_set)} held excluded, cap {max_tickers})"
+    )
+    return result
+
+
+def get_ff_candidates(
+    existing_tickers: list[str] | None = None,
+    max_tickers: int | None = None,
+    log_print: LogFn | None = None,
+) -> list[str]:
+    """Return constituent tickers for Forward Factor scanning.
+
+    Established names (previously observed in FF journal) are prioritised.
+    New discovery tickers are interleaved at a 1-in-5 ratio so the FF
+    scanner gradually explores fresh names without overwhelming the budget.
+    """
+    logger = log_print or (lambda msg: print(msg, flush=True))
+    max_tickers = max_tickers or int(getattr(config, "FF_UNIVERSE_MAX_TICKERS", 40) or 40)
+
+    if not getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True):
+        logger("[universe_discovery] FF candidates disabled by UNIVERSE_DISCOVERY_ENABLED=false")
+        return list(dict.fromkeys(existing_tickers or []))[:max_tickers]
+
+    existing_set = set()
+    ordered: list[str] = []
+    for t in (existing_tickers or []):
+        tu = t.upper().strip()
+        if tu and tu not in existing_set:
+            existing_set.add(tu)
+            ordered.append(tu)
+
+    try:
+        constituents = _get_constituent_tickers(logger)
+    except Exception as exc:
+        logger(f"[universe_discovery] FF constituent fetch failed (non-fatal): {exc}")
+        return ordered[:max_tickers]
+
+    journal_scores = _load_ff_journal_scores(logger)
+
+    min_price = float(getattr(config, "UNIVERSE_MIN_PRICE", 10.0) or 10.0)
+    max_price = float(getattr(config, "UNIVERSE_MAX_PRICE", 1000.0) or 1000.0)
+    min_avg_vol = int(getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000) or 500000)
+
+    established: list[tuple[str, float]] = []
+    new_discovery: list[tuple[str, float]] = []
+
+    for ticker in constituents:
+        t = ticker.upper().strip()
+        if t in existing_set:
+            continue
+        price, avg_volume = _get_price_volume(t, logger)
+        price_val = price or 0.0
+        vol_val = avg_volume or 0
+        if price is not None and (price_val < min_price or price_val > max_price):
+            continue
+        if avg_volume is not None and vol_val < min_avg_vol:
+            continue
+        if t in journal_scores:
+            established.append((t, journal_scores[t]))
+        else:
+            new_discovery.append((t, vol_val))
+
+    established.sort(key=lambda x: x[1], reverse=True)
+    new_discovery.sort(key=lambda x: x[1], reverse=True)
+
+    remaining = max_tickers - len(ordered)
+    if remaining <= 0:
+        logger(f"[universe_discovery] FF candidates: existing tickers fill budget ({len(ordered)}/{max_tickers})")
+        return ordered[:max_tickers]
+
+    est_iter = iter(established)
+    new_iter = iter(new_discovery)
+    count = 0
+    while remaining > 0:
+        if count > 0 and count % 5 == 0:
+            item = next(new_iter, None)
+            if item:
+                ordered.append(item[0])
+                remaining -= 1
+                count += 1
+                continue
+        item = next(est_iter, None)
+        if item is None:
+            item = next(new_iter, None)
+        if item is None:
+            break
+        ordered.append(item[0])
+        remaining -= 1
+        count += 1
+
+    logger(
+        f"[universe_discovery] FF candidates: {len(ordered)} total "
+        f"({len(existing_set)} existing + {len(established)} established + {len(new_discovery)} new discovery, cap {max_tickers})"
+    )
+    return ordered[:max_tickers]
+
+
+def _get_iv_proxy(ticker: str) -> float | None:
+    try:
+        from app.services.market_data_hub_service import MarketDataHub
+        hub = MarketDataHub.instance()
+        cached = hub.get("quote", ticker)
+        if cached:
+            return _first_num(
+                cached.get("implied_volatility"),
+                cached.get("iv"),
+                cached.get("greeks", {}).get("iv") if isinstance(cached.get("greeks"), dict) else None,
+            )
+    except Exception:
+        pass
+    return None
+
+
+def _load_ff_journal_scores(logger: LogFn) -> dict[str, float]:
+    try:
+        db_path = str(getattr(config, "FF_JOURNAL_DB_PATH", None) or "")
+        if not db_path or not Path(db_path).exists():
+            return {}
+        with _connect(db_path) as conn:
+            rows = conn.execute(
+                "SELECT ticker, AVG(signal_score) AS avg_score, COUNT(*) AS obs "
+                "FROM ff_journal WHERE signal_score IS NOT NULL "
+                "GROUP BY ticker ORDER BY avg_score DESC"
+            ).fetchall()
+        return {r["ticker"]: float(r["avg_score"]) for r in rows if r["ticker"]}
+    except Exception as exc:
+        logger(f"[universe_discovery] FF journal score load failed (non-fatal): {exc}")
+        return {}
+
+
 def _empty_result(reason: str) -> dict[str, Any]:
     return {
         "source": "universe_discovery_v1",

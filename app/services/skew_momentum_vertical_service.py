@@ -135,7 +135,7 @@ def build_skew_momentum_vertical_strategy(
         result["errors"].append("Tradier token unavailable; Strategy 2 requires live option-chain data.")
         return _finalize(result)
 
-    universe = build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode)
+    universe = build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode, log_print=logger)
     result["scanned_tickers"] = list(universe)
     logger(f"Strategy 2 Skew Momentum Vertical scanning {len(universe)} capped ticker(s): {universe}")
     for ticker in universe:
@@ -243,20 +243,39 @@ def build_skew_momentum_vertical_strategy(
     return _finalize(result)
 
 
-def build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode="prod") -> list[str]:
+def build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_analysis, market_metrics, run_mode="prod", log_print=None) -> list[str]:
+    crypto = {"BTC", "ETH", "SOL", "DOGE"}
     ordered: list[str] = []
-    sources: list[Any] = []
-    if config.SKEW_VERTICAL_INCLUDE_HOLDINGS:
-        sources.extend((positions or []))
+
+    def _add(rows: list[Any]) -> None:
+        for row in rows:
+            ticker = str((row or {}).get("ticker") or "").upper().strip()
+            if ticker and ticker not in crypto and ticker not in ordered:
+                ordered.append(ticker)
+
     if config.SKEW_VERTICAL_INCLUDE_WATCHLIST:
-        sources.extend((watchlist_candidates or {}).get("items", []) or [])
+        _add((watchlist_candidates or {}).get("items", []) or [])
+
+    if getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True):
+        try:
+            from app.services.universe_discovery_service import get_skew_candidates
+            logger = log_print or (lambda msg: None)
+            held_tickers = [str((p or {}).get("ticker") or "").upper().strip() for p in (positions or [])]
+            discovery = get_skew_candidates(
+                exclude_held=held_tickers,
+                max_tickers=int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30) or 30),
+                log_print=logger,
+            )
+            _add([{"ticker": t} for t in discovery])
+        except Exception:
+            pass
+
+    if config.SKEW_VERTICAL_INCLUDE_HOLDINGS:
+        _add(positions or [])
     if config.SKEW_VERTICAL_INCLUDE_PORTFOLIO_GAP:
-        sources.extend((portfolio_gap_analysis or {}).get("suggestions", []) or [])
-    sources.extend({"ticker": ticker} for ticker in (market_metrics or {}))
-    for row in sources:
-        ticker = str((row or {}).get("ticker") or "").upper().strip()
-        if ticker and ticker not in {"BTC", "ETH", "SOL", "DOGE"} and ticker not in ordered:
-            ordered.append(ticker)
+        _add((portfolio_gap_analysis or {}).get("suggestions", []) or [])
+    _add([{"ticker": ticker} for ticker in (market_metrics or {})])
+
     cap = int(config.SKEW_VERTICAL_DEV_MAX_TICKERS_PER_RUN if str(run_mode).lower() == "dev" else config.SKEW_VERTICAL_MAX_TICKERS_PER_RUN)
     return ordered[: max(1, cap)]
 

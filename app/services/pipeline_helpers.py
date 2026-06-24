@@ -73,6 +73,8 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "universe_discovery_enabled": getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True),
         "universe_discovery_max_candidates": getattr(config, "EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES", 50),
         "universe_min_avg_volume": getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000),
+        "skew_universe_max_candidates": getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30),
+        "ff_universe_max_tickers": getattr(config, "FF_UNIVERSE_MAX_TICKERS", 40),
         "dev_tickers": list(config.DEV_TICKERS),
         "dev_max_tickers": config.DEV_MAX_TICKERS,
     }
@@ -150,6 +152,8 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"UNIVERSE_DISCOVERY_ENABLED: {snapshot.get('universe_discovery_enabled')}",
         f"EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES: {snapshot.get('universe_discovery_max_candidates')}",
         f"UNIVERSE_MIN_AVG_VOLUME: {snapshot.get('universe_min_avg_volume')}",
+        f"SKEW_UNIVERSE_MAX_CANDIDATES: {snapshot.get('skew_universe_max_candidates')}",
+        f"FF_UNIVERSE_MAX_TICKERS: {snapshot.get('ff_universe_max_tickers')}",
     ]
     _warn_env_overrides(lines)
     if snapshot.get("run_mode") == "dev":
