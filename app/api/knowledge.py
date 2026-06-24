@@ -315,9 +315,14 @@ def knowledge_status():
             "notes": "PASS rows enter Daily Opportunity. Lottery-call filter active.",
         },
         "forward_factor_calendar": {
-            "actionable": False,
+            "actionable": not bool(config.FORWARD_FACTOR_DRY_RUN),
             "dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
-            "notes": "Research only. Never enters Daily Opportunity regardless of FF value.",
+            "source_qualification_enabled": True,
+            "notes": (
+                "FF can produce PASS/WATCH verdicts for source-qualified readings (no earnings contamination). "
+                "Earnings-contaminated readings remain diagnostic only. "
+                "FF_DRY_RUN=True means signals are real but execution is gated — treat PASS/WATCH as actionable for manual review."
+            ),
         },
         "sector_rotation": {
             "actionable": False,
@@ -371,8 +376,9 @@ def knowledge_agent_prompt():
                 "Structure may be valid, only sizing is constrained."
             ),
             (
-                "FF (forward_factor_calendar) output is NEVER actionable. Dry-run only, "
-                "regardless of FF value shown. Never recommend entry."
+                "FF (forward_factor_calendar) source-qualified PASS/WATCH readings are actionable for manual review. "
+                "Earnings-contaminated readings (source_qualification='earnings_contaminated') are diagnostic only — do not treat as entry signals. "
+                "FF_DRY_RUN=True means trade execution is gated, but the signal quality is real."
             ),
             (
                 "Skew WATCH rows with SKEW_NOT_RICH_ENOUGH have confirmed momentum but "

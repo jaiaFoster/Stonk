@@ -1,4 +1,4 @@
-"""Forward Factor Calendar v1 source math and staged dry-run scanner."""
+"""Forward Factor Calendar v1 source math and staged scanner."""
 
 from __future__ import annotations
 
@@ -13,6 +13,29 @@ from app.services.forward_factor_data_eligibility_service import validate_requir
 from app.services.forward_factor_ranking_service import rank_forward_factor
 from app.services.forward_factor_signal_gate_service import evaluate_forward_factor_signal_gate
 from app.services.forward_factor_verdict_service import apply_forward_factor_verdict
+
+
+def _is_earnings_contaminated(
+    expiration_date: str,
+    earnings_date_str: str | None,
+    window_days: int | None = None,
+) -> tuple[bool, str | None]:
+    """Check if an expiration is within the earnings contamination window.
+
+    Bidirectional: IV stays elevated 1-2 days post-earnings and builds ~5 days before.
+    """
+    if not earnings_date_str:
+        return False, None
+    window = window_days if window_days is not None else int(getattr(config, "FF_EARNINGS_CONTAMINATION_WINDOW_DAYS", 4) or 4)
+    try:
+        exp_dt = date.fromisoformat(str(expiration_date)[:10])
+        earn_dt = date.fromisoformat(str(earnings_date_str)[:10])
+        delta = abs((exp_dt - earn_dt).days)
+        if delta <= window:
+            return True, str(earnings_date_str)[:10]
+    except (ValueError, TypeError):
+        return False, None
+    return False, None
 
 
 def calculate_forward_factor(front_iv: float, back_iv: float, front_dte: int, back_dte: int) -> dict[str, float]:
@@ -138,7 +161,7 @@ def build_forward_factor_strategy(
         "chain_approved": 0, "chain_fetch": 0, "chain_sets": 0, "expiration_coverage_pass": 0,
         "expiration_pairs": 0, "valid_forward_variance": 0, "ff_calculated": 0,
         "source_ff_calculated": 0, "diagnostic_formula_calculated": 0, "structures": 0,
-        "structure_attempts": 0, "liquidity_complete": 0, "diagnostic_only": 0,
+        "structure_attempts": 0, "liquidity_complete": 0, "diagnostic_only": 0, "earnings_contaminated": 0, "earnings_clean": 0,
         "planner_blocked": 0, "recent_fail_skipped": 0,
         "prefilter_supported_equities": len(supported),
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
@@ -286,6 +309,9 @@ def build_forward_factor_strategy(
             ticker, lookahead_days=config.FF_EARNINGS_LOOKAHEAD_DAYS,
             required=False, strategy_id="forward_factor_calendar",
         )
+        _earn_payload = _payload(earnings_record)
+        _earn_date_str = _earn_payload.get("earnings_date") or _earn_payload.get("event_date") or _earn_payload.get("date")
+        _earn_date_str = str(_earn_date_str)[:10] if _earn_date_str else None
         ticker_rows = []
         for pair in pairs:
             front, back = pair["front_expiration"], pair["back_expiration"]
@@ -298,9 +324,26 @@ def build_forward_factor_strategy(
                 pair_audit.append(_pair_audit(row, "not selected — chain data quality"))
                 continue
             iv = _expiration_iv_inputs(payload, front, back, front_chain, back_chain)
+            front_contaminated, front_earn = _is_earnings_contaminated(front, _earn_date_str)
+            back_contaminated, back_earn = _is_earnings_contaminated(back, _earn_date_str)
+            is_contaminated = front_contaminated or back_contaminated
+            contamination_reason = None
+            if front_contaminated:
+                contamination_reason = f"front expiry {front} within {config.FF_EARNINGS_CONTAMINATION_WINDOW_DAYS}d of earnings {front_earn}"
+            elif back_contaminated:
+                contamination_reason = f"back expiry {back} within {config.FF_EARNINGS_CONTAMINATION_WINDOW_DAYS}d of earnings {back_earn}"
+            if is_contaminated:
+                stage["earnings_contaminated"] += 1
+            else:
+                stage["earnings_clean"] += 1
+            source_qualification = "earnings_contaminated" if is_contaminated else "clean"
+            log_print(f"[FF] {ticker}: front={front} back={back} → {'earnings_contaminated' if is_contaminated else 'source_qualified=True'}{' (' + contamination_reason + ')' if contamination_reason else ' (no earnings contamination)'}")
             base = {
                 **pair, "data_eligibility": eligibility, "earnings_context": _earnings_context(earnings_record, front, back),
                 **iv,
+                "earnings_contaminated": is_contaminated,
+                "earnings_contamination_reason": contamination_reason,
+                "source_qualification": source_qualification,
             }
             raw_formula = _try_formula(iv.get("front_raw_iv"), iv.get("back_raw_iv"), front_dte, back_dte)
             if raw_formula:
@@ -394,10 +437,10 @@ def build_forward_factor_strategy(
         gated["ff_gates"] = _ff_gates(gated)
         gated_rows.append(gated)
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
-    log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']}")
-    log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} dry pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
+    log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']} earnings_clean={stage['earnings_clean']} earnings_contaminated={stage['earnings_contaminated']}")
+    log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
     log_print(f"FF chain reconciliation: cheap_pass={stage['cheap_pass']} chain_approved={stage['chain_approved']} chain_skipped_budget={max(0, stage['cheap_pass'] - stage['chain_approved'])} chain_sets={stage['chain_sets']}")
-    if config.FF_JOURNAL_ENABLED and config.FORWARD_FACTOR_DRY_RUN:
+    if config.FF_JOURNAL_ENABLED:
         from app.db.ff_journal import write_run, journal_summary
         _journal_run_id = run_id or "unknown"
         _journal_run_date = run_date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -509,7 +552,7 @@ def _candidate_rank(ticker: str, metrics: dict[str, Any]) -> tuple[Any, ...]:
 def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
     def verdict(row): return str(row.get("verdict") or "").upper()
     summary = {
-        "pass_count": sum("DRY RUN PASS" in verdict(row) for row in rows),
+        "pass_count": sum("PASS" in verdict(row) and "SKIPPED" not in verdict(row) for row in rows),
         "watch_count": sum(verdict(row).startswith("WATCH") for row in rows),
         "skipped_count": sum(verdict(row).startswith("SKIPPED") for row in rows),
     }
@@ -531,7 +574,7 @@ def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
     summary["pair_audit"] = pair_audit
     summary["candidate_selection_audit"] = candidate_audit or []
     summary["best_near_positive_ticker"] = _best_near_positive(rows)
-    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": True, "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness}
+    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": bool(config.FORWARD_FACTOR_DRY_RUN), "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness}
 
 
 def _readiness(stage, summary):
@@ -551,7 +594,7 @@ def _readiness(stage, summary):
 
 
 def _base(ticker):
-    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "ticker": ticker, "dry_run": True, "formula_version": config.FF_FORMULA_VERSION, "source_spec_version": config.FF_SOURCE_SPEC_VERSION}
+    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "ticker": ticker, "dry_run": bool(config.FORWARD_FACTOR_DRY_RUN), "formula_version": config.FF_FORMULA_VERSION, "source_spec_version": config.FF_SOURCE_SPEC_VERSION}
 
 
 def _blocked(ticker: str, verdict: str, blocker: str, ff_candidate_stage: str = "", **fields: Any) -> dict[str, Any]:
@@ -572,6 +615,7 @@ def _ff_gates(row: dict[str, Any]) -> dict[str, Any]:
     sq = row.get("front_ex_earnings_iv") is not None and row.get("back_ex_earnings_iv") is not None
     dm = row.get("diagnostic_raw_iv_forward_factor") is not None
     sb = row.get("structure_status") == "COMPLETE"
+    contaminated = bool(row.get("earnings_contaminated"))
     reason = None
     if not cheap:
         reason = "cheap_eligible"
@@ -579,10 +623,15 @@ def _ff_gates(row: dict[str, Any]) -> dict[str, Any]:
         reason = "chain_approved"
     elif not sb:
         reason = "structure_built"
+    elif contaminated:
+        reason = "earnings_contaminated"
     return {
         "cheap_eligible": cheap, "chain_approved": chain,
-        "source_qualified": bool(sq), "diagnostic_model": bool(dm),
+        "source_qualified": bool(sq) and not contaminated, "diagnostic_model": bool(dm),
         "structure_built": bool(sb), "gate_fail_reason": reason,
+        "earnings_contaminated": contaminated,
+        "source_qualification": row.get("source_qualification"),
+        "contamination_reason": row.get("earnings_contamination_reason"),
     }
 def _pair_audit(row, disposition): return {"ticker": row.get("ticker"), "front_expiration": row.get("front_expiration"), "back_expiration": row.get("back_expiration"), "forward_factor": row.get("forward_factor"), "diagnostic_raw_iv_forward_factor": row.get("diagnostic_raw_iv_forward_factor"), "verdict": row.get("verdict"), "disposition": disposition}
 def _try_formula(front, back, front_dte, back_dte):

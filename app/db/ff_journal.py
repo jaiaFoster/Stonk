@@ -36,6 +36,9 @@ CREATE TABLE IF NOT EXISTS ff_journal (
     back_iv REAL,
     underlying_price REAL,
     is_diagnostic_only INTEGER,
+    source_qualification TEXT,
+    earnings_contaminated INTEGER,
+    contamination_reason TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS ff_journal_ticker_date ON ff_journal (ticker, run_date);
@@ -93,6 +96,9 @@ def _row_from_candidate(run_id: str, run_date: str, row: dict[str, Any]) -> dict
         "back_iv": _float(row.get("back_raw_iv")),
         "underlying_price": _float(row.get("underlying_price") or row.get("current_price")),
         "is_diagnostic_only": int(bool(row.get("is_diagnostic_only"))),
+        "source_qualification": row.get("source_qualification"),
+        "earnings_contaminated": int(bool(row.get("earnings_contaminated"))),
+        "contamination_reason": row.get("earnings_contamination_reason") or row.get("contamination_reason"),
     }
 
 
@@ -106,8 +112,6 @@ def _float(v) -> float | None:
 def write_run(run_id: str, run_date: str, candidates: list[dict[str, Any]], db_path: str | None = None) -> int:
     """Write one row per candidate. Returns rows written. Swallows all errors."""
     if not config.FF_JOURNAL_ENABLED:
-        return 0
-    if not config.FORWARD_FACTOR_DRY_RUN:
         return 0
     path = db_path or config.FF_JOURNAL_DB_PATH
     try:
@@ -124,14 +128,16 @@ def write_run(run_id: str, run_date: str, candidates: list[dict[str, Any]], db_p
                     structure_built, gate_fail_reason, verdict, signal_score,
                     put_short_expiration, put_long_expiration, call_short_expiration, call_long_expiration,
                     put_short_delta, put_long_delta, call_short_delta, call_long_delta,
-                    front_iv, back_iv, underlying_price, is_diagnostic_only
+                    front_iv, back_iv, underlying_price, is_diagnostic_only,
+                    source_qualification, earnings_contaminated, contamination_reason
                 ) VALUES (
                     :run_id, :run_date, :ticker, :ff_candidate_stage,
                     :cheap_eligible, :chain_approved, :source_qualified, :diagnostic_model,
                     :structure_built, :gate_fail_reason, :verdict, :signal_score,
                     :put_short_expiration, :put_long_expiration, :call_short_expiration, :call_long_expiration,
                     :put_short_delta, :put_long_delta, :call_short_delta, :call_long_delta,
-                    :front_iv, :back_iv, :underlying_price, :is_diagnostic_only
+                    :front_iv, :back_iv, :underlying_price, :is_diagnostic_only,
+                    :source_qualification, :earnings_contaminated, :contamination_reason
                 )
                 """,
                 rows,

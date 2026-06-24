@@ -75,6 +75,8 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "universe_min_avg_volume": getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000),
         "skew_universe_max_candidates": getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30),
         "ff_universe_max_tickers": getattr(config, "FF_UNIVERSE_MAX_TICKERS", 40),
+        "ff_earnings_contamination_window_days": getattr(config, "FF_EARNINGS_CONTAMINATION_WINDOW_DAYS", 4),
+        "forward_factor_dry_run": config.FORWARD_FACTOR_DRY_RUN,
         "dev_tickers": list(config.DEV_TICKERS),
         "dev_max_tickers": config.DEV_MAX_TICKERS,
     }
@@ -154,6 +156,8 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"UNIVERSE_MIN_AVG_VOLUME: {snapshot.get('universe_min_avg_volume')}",
         f"SKEW_UNIVERSE_MAX_CANDIDATES: {snapshot.get('skew_universe_max_candidates')}",
         f"FF_UNIVERSE_MAX_TICKERS: {snapshot.get('ff_universe_max_tickers')}",
+        f"FF_EARNINGS_CONTAMINATION_WINDOW_DAYS: {snapshot.get('ff_earnings_contamination_window_days')}",
+        f"FF_DRY_RUN: {snapshot.get('forward_factor_dry_run')} (signals live, execution gated)",
     ]
     _warn_env_overrides(lines)
     if snapshot.get("run_mode") == "dev":
