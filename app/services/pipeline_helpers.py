@@ -70,6 +70,9 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "skew_vertical_dte_range": f"{config.SKEW_VERTICAL_MIN_DTE}..{config.SKEW_VERTICAL_MAX_DTE}",
         "robinhood_options_detector_enabled": getattr(config, "ROBINHOOD_OPTIONS_DETECTOR_ENABLED", True),
         "robinhood_options_infer_calendars": getattr(config, "ROBINHOOD_OPTIONS_INFER_CALENDARS", True),
+        "universe_discovery_enabled": getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True),
+        "universe_discovery_max_candidates": getattr(config, "EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES", 50),
+        "universe_min_avg_volume": getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000),
         "dev_tickers": list(config.DEV_TICKERS),
         "dev_max_tickers": config.DEV_MAX_TICKERS,
     }
@@ -144,6 +147,9 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"SKEW_VERTICAL_DTE_RANGE: {snapshot.get('skew_vertical_dte_range')}",
         f"ROBINHOOD_OPTIONS_DETECTOR_ENABLED: {snapshot.get('robinhood_options_detector_enabled')}",
         f"ROBINHOOD_OPTIONS_INFER_CALENDARS: {snapshot.get('robinhood_options_infer_calendars')}",
+        f"UNIVERSE_DISCOVERY_ENABLED: {snapshot.get('universe_discovery_enabled')}",
+        f"EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES: {snapshot.get('universe_discovery_max_candidates')}",
+        f"UNIVERSE_MIN_AVG_VOLUME: {snapshot.get('universe_min_avg_volume')}",
     ]
     _warn_env_overrides(lines)
     if snapshot.get("run_mode") == "dev":

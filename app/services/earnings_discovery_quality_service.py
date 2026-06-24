@@ -23,6 +23,8 @@ def filter_earnings_discovery_for_calendar_scan(
     earnings_trade_discovery: dict[str, Any] | None,
     log_print: LogFn | None = None,
     run_mode: str = "prod",
+    held_tickers: list[str] | None = None,
+    earnings_events: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Return optionable/liquid-enough earnings events for calendar scanning.
 
@@ -34,6 +36,11 @@ def filter_earnings_discovery_for_calendar_scan(
     clean_mode = str(run_mode or "prod").strip().lower()
     discovery = earnings_trade_discovery or {}
     raw_items = [item for item in (discovery.get("items") or []) if isinstance(item, dict)]
+
+    raw_only_count = len(raw_items)
+    raw_items = _merge_universe_discovery(
+        raw_items, held_tickers, earnings_events, logger,
+    )
 
     max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 40) or 40))
     if clean_mode == "dev":
@@ -51,6 +58,8 @@ def filter_earnings_discovery_for_calendar_scan(
         "events_by_ticker": {},
         "summary": {
             "raw_event_count": len(raw_items),
+            "raw_only_count": raw_only_count,
+            "universe_added_count": len(raw_items) - raw_only_count,
             "checked_count": 0,
             "passed_count": 0,
             "rejected_count": 0,
@@ -184,6 +193,7 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         "session_label": event.get("session_label") or "Unknown",
         "days_until_earnings": event.get("days_until_earnings"),
         "source": event.get("source"),
+        "universe_source": event.get("universe_source"),
         "earnings_date_confidence": event.get("earnings_date_confidence") or "unknown",
         "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
         "quote": quote,
@@ -406,3 +416,55 @@ def _dte(raw_date: Any, today: date | None = None) -> int | None:
         return None
     today = today or date.today()
     return (d - today).days
+
+
+def _merge_universe_discovery(
+    raw_items: list[dict[str, Any]],
+    held_tickers: list[str] | None,
+    earnings_events: dict[str, dict[str, Any]] | None,
+    logger: LogFn,
+) -> list[dict[str, Any]]:
+    if not getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True):
+        return raw_items
+    try:
+        from app.services.universe_discovery_service import get_earnings_candidates
+        universe = get_earnings_candidates(
+            earnings_events=earnings_events,
+            exclude_held=held_tickers,
+            max_tickers=int(getattr(config, "EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES", 50) or 50),
+            log_print=logger,
+        )
+    except Exception as exc:
+        logger(f"[universe_discovery] merge failed (non-fatal): {exc}")
+        return raw_items
+
+    if not universe.get("has_data"):
+        return raw_items
+
+    existing_tickers = {
+        str(item.get("ticker") or item.get("symbol") or "").upper().strip()
+        for item in raw_items
+    }
+    new_count = 0
+    for uitem in universe.get("items") or []:
+        ticker = str(uitem.get("ticker") or "").upper().strip()
+        if not ticker or ticker in existing_tickers:
+            continue
+        raw_items.append({
+            "ticker": ticker,
+            "symbol": ticker,
+            "earnings_date": uitem.get("earnings_date"),
+            "date": uitem.get("earnings_date"),
+            "source": "universe_discovery",
+            "universe_source": "universe_discovery",
+            "has_data": True,
+            "days_until_earnings": _dte(uitem.get("earnings_date")),
+        })
+        existing_tickers.add(ticker)
+        new_count += 1
+
+    logger(
+        f"[universe_discovery] merged with raw events: {len(raw_items)} unique candidates; "
+        f"{new_count} new tickers added vs raw-only run"
+    )
+    return raw_items
