@@ -20,7 +20,7 @@ from app.services.forward_factor_service import (
     _ff_gates,
 )
 
-FF_GATES_KEYS = {"cheap_eligible", "chain_approved", "source_qualified", "diagnostic_model", "structure_built", "gate_fail_reason"}
+FF_GATES_KEYS = {"cheap_eligible", "chain_approved", "source_qualified", "diagnostic_model", "structure_built", "gate_fail_reason", "earnings_contaminated", "source_qualification", "contamination_reason"}
 
 
 def _now():

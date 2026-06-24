@@ -20,9 +20,18 @@ def evaluate_forward_factor_signal_gate(row: dict[str, Any]) -> dict[str, Any]:
 
     source_ff = _number(row.get("forward_factor"))
     diagnostic_ff = _number(row.get("diagnostic_raw_iv_forward_factor"))
-    source_qualified = source_ff is not None and row.get("front_ex_earnings_iv") is not None and row.get("back_ex_earnings_iv") is not None
-    signal = source_ff if source_qualified else diagnostic_ff
-    source_iv_status = "SOURCE_QUALIFIED" if source_qualified else "SOURCE_UNAVAILABLE" if diagnostic_ff is not None else "SOURCE_UNSPECIFIED"
+    has_source_iv = source_ff is not None and row.get("front_ex_earnings_iv") is not None and row.get("back_ex_earnings_iv") is not None
+    earnings_contaminated = bool(row.get("earnings_contaminated"))
+    source_qualified = has_source_iv and not earnings_contaminated
+    signal = source_ff if has_source_iv else diagnostic_ff
+    if earnings_contaminated:
+        source_iv_status = "EARNINGS_CONTAMINATED"
+    elif has_source_iv:
+        source_iv_status = "SOURCE_QUALIFIED"
+    elif diagnostic_ff is not None:
+        source_iv_status = "SOURCE_UNAVAILABLE"
+    else:
+        source_iv_status = "SOURCE_UNSPECIFIED"
     structure_complete = row.get("structure_status") == "COMPLETE"
     liquidity_status = str(row.get("liquidity_status") or "NOT_EVALUATED").upper()
     debit_at_risk = _number(row.get("debit_at_risk"))
@@ -32,7 +41,9 @@ def evaluate_forward_factor_signal_gate(row: dict[str, Any]) -> dict[str, Any]:
     warnings = []
     blockers = []
 
-    if not source_qualified:
+    if earnings_contaminated:
+        warnings.append(f"Earnings contamination: {row.get('earnings_contamination_reason') or 'expiration overlaps earnings window'}.")
+    if not has_source_iv:
         warnings.append("Source-correct ex-earnings IV is unavailable; diagnostic raw-IV FF is not source-qualified.")
     if not above_threshold:
         blockers.append("Forward Factor is below configured threshold or unavailable.")
@@ -86,7 +97,10 @@ def _gate(
     return {
         "signal_tier": tier, "is_positive_signal": positive, "is_source_qualified": source_qualified,
         "is_diagnostic_only": bool(not source_qualified and row.get("diagnostic_raw_iv_forward_factor") is not None),
-        "is_trade_review_candidate": positive, "can_enter_daily_opportunity": False,
+        "is_trade_review_candidate": positive and not bool(row.get("earnings_contaminated")),
+        "can_enter_daily_opportunity": False,
+        "earnings_contaminated": bool(row.get("earnings_contaminated")),
+        "source_qualification": row.get("source_qualification"),
         "source_iv_status": source_iv_status, "confidence": confidence, "verdict": verdict,
         "signal_score": signal_score, "actionability_score": 0.0,
         "positive_reasons": positive_reasons or [], "warnings": warnings or [], "blockers": blockers,
@@ -96,7 +110,7 @@ def _gate(
             "checks": [
                 "Confirm live four-leg bid/ask before entry.",
                 "Confirm debit at risk fits account sizing.",
-                "Diagnostic raw-IV FF is not source-qualified." if not source_qualified else "Confirm source-qualified IV inputs remain current.",
+                "Earnings contamination — signal is diagnostic only." if bool(row.get("earnings_contaminated")) else "Diagnostic raw-IV FF is not source-qualified." if not source_qualified else "Confirm source-qualified IV inputs remain current.",
             ],
         },
         "primary_blocker": blockers[0] if blockers else row.get("primary_blocker"),

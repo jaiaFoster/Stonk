@@ -175,13 +175,13 @@ class TestWriteRun(unittest.TestCase):
                 conn.close()
                 self.assertEqual(count, 0)
 
-    def test_no_op_when_dry_run_false(self):
+    def test_writes_when_dry_run_false(self):
         from app import config
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ff.db")
             with patch.object(config, "FORWARD_FACTOR_DRY_RUN", False):
                 written = write_run("run-004", "2026-06-16", [_candidate("ELF")], db_path=path)
-            self.assertEqual(written, 0)
+            self.assertEqual(written, 1)
 
     def test_empty_candidates_returns_zero(self):
         with tempfile.TemporaryDirectory() as d:
