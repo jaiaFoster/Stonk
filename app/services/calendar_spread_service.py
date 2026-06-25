@@ -87,10 +87,12 @@ def scan_calendar_spreads_for_positions(
                 if earnings_event:
                     tried = pair_diagnostics.get("tried_front_expirations", [])
                     reason = pair_diagnostics.get("no_valid_pair_reason", "NO_VALID_EXPIRATION_PAIR")
+                    near_miss = pair_diagnostics.get("near_miss_gap")
+                    near_miss_detail = f" near_miss_gap={near_miss['gap_days']}d (need {near_miss['min_gap']}d, short by {near_miss['shortfall_days']}d)" if near_miss else ""
                     logger(
                         f"Calendar {ticker}: {reason}; "
                         f"earnings_date={pair_diagnostics.get('event_date')}; "
-                        f"tried_front_expirations={tried}"
+                        f"tried_front_expirations={tried}{near_miss_detail}"
                     )
                 else:
                     logger(f"Calendar {ticker}: no front/back expiration pair matched scanner settings.")
@@ -514,7 +516,12 @@ def _select_earnings_expiration_pairs(
     }
 
     if not scored_pairs:
-        diagnostics["no_valid_pair_reason"] = "NO_VALID_EXPIRATION_PAIR"
+        near_miss_gap = _check_near_miss_gap(all_before_event, parsed, event_date, min_gap, back_min_after_event, back_max, event_dte)
+        if near_miss_gap:
+            diagnostics["no_valid_pair_reason"] = "NEAR_MISS_EXPIRY_GAP"
+            diagnostics["near_miss_gap"] = near_miss_gap
+        else:
+            diagnostics["no_valid_pair_reason"] = "NO_VALID_EXPIRATION_PAIR"
         return [], diagnostics
 
     scored_pairs.sort(key=lambda item: item[0])
@@ -548,6 +555,32 @@ def _select_generic_expiration_pairs(parsed: list[tuple[int, str]]) -> list[tupl
             break
 
     return pairs
+
+
+def _check_near_miss_gap(
+    front_candidates: list[tuple[int, str]],
+    all_parsed: list[tuple[int, str]],
+    event_date: date,
+    min_gap: int,
+    back_min_after_event: int,
+    back_max: int,
+    event_dte: int,
+) -> dict[str, Any] | None:
+    near_miss_threshold = 5
+    best: dict[str, Any] | None = None
+    for front_dte, front_exp in front_candidates:
+        for back_dte, back_exp in all_parsed:
+            back_date = _parse_date(back_exp)
+            if not back_date or back_date <= event_date:
+                continue
+            if back_dte > back_max or back_dte < event_dte + back_min_after_event:
+                continue
+            gap = back_dte - front_dte
+            shortfall = min_gap - gap
+            if 0 < shortfall <= near_miss_threshold:
+                if best is None or shortfall < best["shortfall_days"]:
+                    best = {"front_exp": front_exp, "back_exp": back_exp, "gap_days": gap, "min_gap": min_gap, "shortfall_days": shortfall}
+    return best
 
 
 def _event_for_ticker(positions: list[dict[str, Any]], ticker: str) -> dict[str, Any] | None:

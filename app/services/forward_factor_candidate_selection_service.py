@@ -108,15 +108,29 @@ def select_forward_factor_candidates(
     scored.sort(key=lambda row: (row["hard_blocked"], not row["planner_approved"], -row["score"], row["ticker"]))
     pool = [row for row in scored if not row["hard_blocked"]][:max(1, discovery_pool_size)]
     selected = [row["ticker"] for row in pool if row["planner_approved"]][:max(1, final_cap)]
+    discovery_slots = int(getattr(config, "FF_DEV_CAP_DISCOVERY_SLOTS", 0) or 0)
+    if discovery_slots > 0 and len(selected) < final_cap:
+        dev_cap_blocked = [
+            row for row in pool
+            if not row["hard_blocked"] and not row["planner_approved"]
+            and row["planner_state"] == "SKIPPED_DEV_CAP"
+        ]
+        dev_cap_blocked.sort(key=lambda row: -row["score"])
+        remaining = min(discovery_slots, final_cap - len(selected))
+        for row in dev_cap_blocked[:remaining]:
+            selected.append(row["ticker"])
+            row["planner_approved"] = True
+            row["discovery_override"] = True
     pool_names = {row["ticker"] for row in pool}
     for row in scored:
         row["selected_for_discovery_pool"] = row["ticker"] in pool_names
         row["selected_for_cheap_eval"] = row["ticker"] in selected
         row["selected_for_chain_eval"] = False
         row["chain_selection_rank"] = None
+        row.setdefault("discovery_override", False)
         if row["hard_blocked"]:
             row["not_selected_reason"] = "; ".join(row["blockers"]) or "Failed cheap eligibility."
-        elif not row["planner_approved"]:
+        elif not row["planner_approved"] and not row.get("discovery_override"):
             row["not_selected_reason"] = f"Planner {row['planner_state']} — excluded before final FF selection."
         elif row["ticker"] not in pool_names:
             row["not_selected_reason"] = "Outside FF candidate discovery pool."
