@@ -207,7 +207,7 @@ def build_forward_factor_strategy(
         "expiration_pairs": 0, "valid_forward_variance": 0, "ff_calculated": 0,
         "source_ff_calculated": 0, "diagnostic_formula_calculated": 0, "structures": 0,
         "structure_attempts": 0, "liquidity_complete": 0, "diagnostic_only": 0, "earnings_contaminated": 0, "earnings_clean": 0,
-        "planner_blocked": 0, "recent_fail_skipped": 0,
+        "planner_blocked": 0, "recent_fail_skipped": 0, "discovery_overrides": 0, "near_miss_ff": 0,
         "prefilter_supported_equities": len(supported),
         "prefilter_price_pass": sum(_known_price_pass(market_metrics.get(ticker) or {}) for ticker in supported),
         "prefilter_volume_pass": sum(_known_volume_pass(market_metrics.get(ticker) or {}) for ticker in supported),
@@ -262,12 +262,16 @@ def build_forward_factor_strategy(
                 rows.append(_blocked(ticker, verdict, f"Ticker was outside the deterministic FF {cap_label} cap.", data_state="SKIPPED_DEV_CAP" if is_dev else "SKIPPED_STRATEGY_CAP", ff_candidate_stage="cap_skip"))
             continue
         planned_state = (plan_by_ticker.get(ticker) or {}).get("state")
-        if planned_state == "SKIPPED_DEV_CAP":
+        is_discovery_override = bool((audit_by_ticker.get(ticker) or {}).get("discovery_override"))
+        if planned_state == "SKIPPED_DEV_CAP" and not is_discovery_override:
             stage["planner_blocked"] += 1
             stage["pre_eval_skipped"] += 1
             log_print(f"FF {ticker} skipped before evaluation: state={planned_state} reason=global dev planner cap DEV_MAX_TICKERS={config.DEV_MAX_TICKERS}")
             rows.append(_blocked(ticker, "SKIPPED / DEV CAP", "Shared planner did not approve required cheap facts.", data_state=planned_state, ff_candidate_stage="cap_skip"))
             continue
+        if is_discovery_override:
+            log_print(f"FF {ticker} discovery override: planner_state={planned_state} score={(audit_by_ticker.get(ticker) or {}).get('score', 0)}")
+            stage["discovery_overrides"] = stage.get("discovery_overrides", 0) + 1
         if planned_state == "SKIPPED_PROVIDER_BUDGET":
             stage["planner_blocked"] += 1
             stage["pre_eval_skipped"] += 1
@@ -447,9 +451,13 @@ def build_forward_factor_strategy(
                 stage["structures"] += 1
                 stage["liquidity_complete"] += 1
             if formula["forward_factor"] + 1e-12 < config.FF_MIN_FORWARD_FACTOR:
-                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, ff_candidate_stage="fetched")
+                near_miss = formula["forward_factor"] >= config.FF_MIN_FORWARD_FACTOR - config.FF_NEAR_MISS_WINDOW
+                if near_miss:
+                    stage["near_miss_ff"] += 1
+                    log_print(f"FF {ticker} {front}/{back}: near-miss FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f} window={config.FF_NEAR_MISS_WINDOW:.2f}")
+                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, near_miss_ff=near_miss, ff_candidate_stage="fetched")
                 ticker_rows.append(row)
-                pair_audit.append(_pair_audit(row, "selected — below threshold"))
+                pair_audit.append(_pair_audit(row, "selected — below threshold (near miss)" if near_miss else "selected — below threshold"))
                 continue
             if structure.get("structure_status") != "COMPLETE":
                 row = _blocked(ticker, _source_structure_verdict(structure), structure.get("structure_reason") or "Double-calendar structure unavailable.", **{**base, **formula, **structure}, ff_candidate_stage="fetched")
@@ -495,7 +503,7 @@ def build_forward_factor_strategy(
         gated_rows.append(gated)
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']} earnings_clean={stage['earnings_clean']} earnings_contaminated={stage['earnings_contaminated']}")
-    log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']}")
+    log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']} near_miss_ff={stage['near_miss_ff']} discovery_overrides={stage['discovery_overrides']}")
     log_print(f"FF chain reconciliation: cheap_pass={stage['cheap_pass']} chain_approved={stage['chain_approved']} chain_skipped_budget={max(0, stage['cheap_pass'] - stage['chain_approved'])} chain_sets={stage['chain_sets']}")
     if config.FF_JOURNAL_ENABLED:
         from app.db.ff_journal import write_run, journal_summary
@@ -613,7 +621,7 @@ def _market_number(metrics: dict[str, Any], *keys: str) -> float | None:
 
 def _supported_equity(ticker: str, metrics: dict[str, Any]) -> bool:
     asset_type = str(metrics.get("asset_type") or metrics.get("security_type") or "equity").lower()
-    return ticker.upper() not in {"BTC", "SOL", "ETH", "DOGE", "LTC", "BCH", "AVAX", "LINK", "SHIB"} and asset_type not in {"crypto", "cryptocurrency", "otc", "forex"}
+    return ticker.upper() not in config.FF_EXCLUDED_TICKERS and asset_type not in {"crypto", "cryptocurrency", "otc", "forex"}
 
 
 def _known_price_pass(metrics: dict[str, Any]) -> bool:
@@ -822,12 +830,22 @@ def _liquidity_result(legs, package_slippage):
     status = "FAIL" if blockers else "WATCH" if warnings else "PASS"
     numeric_oi = [float(leg["open_interest"]) for leg in legs.values() if leg.get("open_interest") is not None]
     numeric_volume = [float(leg["volume"]) for leg in legs.values() if leg.get("volume") is not None]
+    legs_passing = sum(1 for item in checks.values() if item["pass"])
+    if status == "PASS" and legs_passing == len(checks):
+        liquidity_quality = "GOOD" if package_slippage <= config.FF_WARN_PACKAGE_SLIPPAGE_PCT else "ACCEPTABLE"
+    elif status == "WATCH":
+        liquidity_quality = "MARGINAL"
+    else:
+        liquidity_quality = "POOR"
     return {
         "status": status, "blockers": blockers, "warnings": warnings, "leg_checks": checks,
         "min_open_interest": min(numeric_oi) if numeric_oi else None,
         "min_volume": min(numeric_volume) if numeric_volume else None,
         "max_leg_spread_pct": max((item["spread_pct"] for item in checks.values()), default=None),
         "package_slippage_pct": round(package_slippage, 2),
+        "liquidity_quality": liquidity_quality,
+        "legs_passing": legs_passing,
+        "legs_total": len(checks),
     }
 def _terminal_rank(row):
     verdict = str(row.get("verdict") or "")

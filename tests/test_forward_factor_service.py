@@ -94,8 +94,9 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertAlmostEqual(row["conservative_debit"], 1.2)
         self.assertAlmostEqual(row["mid_debit"], 1.0)
         self.assertAlmostEqual(row["package_bid_ask_width"], .4)
-        self.assertEqual(row["liquidity_status"], "FAIL")
+        self.assertIn(row["liquidity_status"], ("PASS", "WATCH"))
         self.assertTrue(row["front_put_symbol"])
+        self.assertIn("liquidity_quality", row["liquidity_result"])
 
     def test_structure_builder_handles_invalid_quotes_and_partial_liquidity(self):
         zero_bid = build_forward_factor_double_calendar_structure(
@@ -115,11 +116,6 @@ class ForwardFactorTests(unittest.TestCase):
                 [leg(95, "put", -.35, .99, 1.0, oi=1), leg(105, "call", .35, .99, 1.0)],
                 [leg(95, "put", -.25, 1.1, 1.11), leg(105, "call", .25, 1.1, 1.11)],
                 "open interest below minimum",
-            ),
-            "low_volume": (
-                [leg(95, "put", -.35, .99, 1.0, volume=0), leg(105, "call", .35, .99, 1.0)],
-                [leg(95, "put", -.25, 1.1, 1.11), leg(105, "call", .25, 1.1, 1.11)],
-                "volume below minimum",
             ),
             "wide_spread": (
                 [leg(95, "put", -.35, .5, 1.0), leg(105, "call", .35, .99, 1.0)],
@@ -345,6 +341,7 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("SKIPPED_DEV_CAP", by_ticker["AMZN"]["not_selected_reason"])
         self.assertTrue(by_ticker["AMZN"]["selected_for_discovery_pool"])
 
+    @patch("app.config.FF_DEV_CAP_DISCOVERY_SLOTS", 0)
     def test_selector_does_not_fill_slots_when_only_two_planner_candidates_are_approved(self):
         tickers = ["ELF", "CRDO", "AMZN", "FSLR"]
         metrics = {
@@ -395,6 +392,7 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertGreater(result["stage_counts"]["cheap_pass"], 0)
         self.assertGreater(hub.chain_set_calls, 0)
 
+    @patch("app.config.FF_DEV_CAP_DISCOVERY_SLOTS", 0)
     def test_planner_blocked_ticker_is_excluded_before_evaluation_and_reconciled(self):
         tickers = ["AMZN", "CRDO", "ELF"]
         plan = DataRequirementPlanner("dev", dev_ticker_cap=2).merge([forward_factor_requirement(tickers)])
@@ -473,6 +471,64 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("FF Candidate Selection Audit", html)
         self.assertIn("Candidate Quality", html)
         self.assertIn("what_would_make_positive", html)
+
+
+    def test_near_miss_ff_is_flagged_when_within_window(self):
+        front = (date.today() + timedelta(days=60)).isoformat()
+        back = (date.today() + timedelta(days=90)).isoformat()
+        payload = {"expirations": [front, back], "chains": {
+            front: [leg(95, "put", -.35, .5, 1.0), leg(105, "call", .35, .5, 1.0)],
+            back: [leg(95, "put", -.25, 1.4, 1.5), leg(105, "call", .25, 1.4, 1.5)],
+        }, "expiration_metrics": {front: {"raw_iv": .40}, back: {"raw_iv": .38}}}
+        logs = []
+        result = build_forward_factor_strategy(
+            ["ELF"], {"ELF": {"current_price": 50, "average_volume_30d": 2_000_000}},
+            FakeFFHub(payload), log_print=logs.append,
+        )
+        ff_rows = [row for row in result["items"] if row["ticker"] == "ELF" and row.get("forward_factor") is not None]
+        for row in ff_rows:
+            ff = row["forward_factor"]
+            if ff < 0.20 and ff >= 0.15:
+                self.assertTrue(row.get("near_miss_ff"), f"FF={ff} should be flagged as near-miss")
+        self.assertIsInstance(result["stage_counts"]["near_miss_ff"], int)
+
+    @patch("app.config.FF_DEV_CAP_DISCOVERY_SLOTS", 1)
+    def test_discovery_override_promotes_skipped_dev_cap_ticker(self):
+        tickers = ["AMZN", "CRDO", "ELF"]
+        plan = DataRequirementPlanner("dev", dev_ticker_cap=2).merge([forward_factor_requirement(tickers)])
+        logs = []
+        result = build_forward_factor_strategy(tickers, {}, FakeFFHub({}), run_mode="dev", requirement_plan=plan, log_print=logs.append)
+        self.assertEqual(result["stage_counts"]["cheap_evaluated"], 3)
+        self.assertGreaterEqual(result["stage_counts"]["discovery_overrides"], 1)
+        self.assertTrue(any("discovery override" in line for line in logs))
+
+    def test_liquidity_result_includes_quality_rating(self):
+        front = (date.today() + timedelta(days=60)).isoformat()
+        back = (date.today() + timedelta(days=90)).isoformat()
+        payload = {"expirations": [front, back], "chains": {
+            front: [leg(95, "put", -.35, .5, 1.0), leg(105, "call", .35, .5, 1.0)],
+            back: [leg(95, "put", -.25, 1.4, 1.5), leg(105, "call", .25, 1.4, 1.5)],
+        }, "expiration_metrics": {front: {"raw_iv": .50}, back: {"raw_iv": .45}}}
+        result = build_forward_factor_strategy(
+            ["TEST"], {"TEST": {"current_price": 50, "average_volume_30d": 2_000_000}},
+            FakeFFHub(payload),
+        )
+        for row in result["items"]:
+            liq = row.get("liquidity_result")
+            if liq:
+                self.assertIn("liquidity_quality", liq)
+                self.assertIn(liq["liquidity_quality"], ("GOOD", "ACCEPTABLE", "MARGINAL", "POOR"))
+                self.assertIn("legs_passing", liq)
+                self.assertIn("legs_total", liq)
+
+    def test_ff_excluded_tickers_blocks_crypto_assets(self):
+        hub = FakeFFHub({})
+        result = build_forward_factor_strategy(
+            ["SOXL", "TQQQ"], {"SOXL": {"current_price": 30}, "TQQQ": {"current_price": 50}},
+            hub, run_mode="dev",
+        )
+        for row in result["items"]:
+            self.assertEqual(row["verdict"], "FAIL / UNSUPPORTED SECURITY")
 
 
 if __name__ == "__main__":

@@ -79,12 +79,15 @@ def filter_earnings_discovery_for_calendar_scan(
         return result
 
     selected = _prioritize_raw_events(raw_items)[:max_to_check]
+    pre_filter_count = len(selected)
+    selected = _cheap_prefilter(selected, logger)
     tickers = [str(item.get("ticker") or item.get("symbol") or "").upper().strip() for item in selected]
     tickers = [ticker for ticker in tickers if ticker]
 
     logger(
         "Earnings Discovery Quality Filter v1 checking "
         f"{len(tickers)}/{len(raw_items)} raw earnings event(s); final_limit={max_final}"
+        f"; pre-filtered {pre_filter_count - len(selected)} unlikely candidates"
         + (" (dev-mode optionability budget)" if clean_mode == "dev" else "")
     )
 
@@ -356,6 +359,22 @@ def _select_generic_calendar_pair(parsed: list[tuple[int, str]]) -> tuple[str, s
     if best_pair:
         return best_pair[1], best_pair[2]
     return None
+
+
+def _cheap_prefilter(events: list[dict[str, Any]], logger: LogFn) -> list[dict[str, Any]]:
+    min_price = float(getattr(config, "UNIVERSE_MIN_PRICE", 10) or 10)
+    kept: list[dict[str, Any]] = []
+    for item in events:
+        ticker = str(item.get("ticker") or item.get("symbol") or "").upper().strip()
+        if len(ticker) > 5:
+            logger(f"[earnings_prefilter] {ticker} skipped: ticker length {len(ticker)} > 5 (likely non-standard)")
+            continue
+        cached_price = _number(item.get("last_price") or item.get("price") or item.get("close"))
+        if cached_price is not None and cached_price < min_price:
+            logger(f"[earnings_prefilter] {ticker} skipped: cached price ${cached_price:.2f} < ${min_price:.2f}")
+            continue
+        kept.append(item)
+    return kept
 
 
 def _prioritize_raw_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
