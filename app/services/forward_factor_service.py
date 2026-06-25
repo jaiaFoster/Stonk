@@ -38,6 +38,51 @@ def _is_earnings_contaminated(
     return False, None
 
 
+def _find_atm_straddle(chain: list[dict[str, Any]], underlying_price: float) -> dict[str, float] | None:
+    """Find ATM call+put mid prices closest to underlying price."""
+    calls = [c for c in chain if str(c.get("option_type") or "").lower() == "call" and c.get("strike") is not None and c.get("bid") is not None and c.get("ask") is not None]
+    puts = [c for c in chain if str(c.get("option_type") or "").lower() == "put" and c.get("strike") is not None and c.get("bid") is not None and c.get("ask") is not None]
+    if not calls or not puts:
+        return None
+    atm_call = min(calls, key=lambda c: abs(float(c["strike"]) - underlying_price))
+    atm_put = min(puts, key=lambda c: abs(float(c["strike"]) - underlying_price))
+    call_mid = (float(atm_call["bid"]) + float(atm_call["ask"])) / 2
+    put_mid = (float(atm_put["bid"]) + float(atm_put["ask"])) / 2
+    if call_mid <= 0 and put_mid <= 0:
+        return None
+    return {"call_mid": call_mid, "put_mid": put_mid, "call_strike": float(atm_call["strike"]), "put_strike": float(atm_put["strike"]), "straddle_mid": call_mid + put_mid}
+
+
+def _derive_ex_earnings_iv(
+    raw_iv: float | None,
+    dte: int,
+    is_contaminated: bool,
+    chain: list[dict[str, Any]],
+    underlying_price: float,
+) -> tuple[float | None, str]:
+    """Two-stage ex-earnings IV derivation.
+
+    Returns (ex_earnings_iv, derivation_method).
+    Path B (clean): raw_iv passthrough.
+    Path A (contaminated): ATM straddle variance stripping, haircut fallback.
+    """
+    if raw_iv is None:
+        return None, "raw_iv_unavailable"
+    if not is_contaminated:
+        return raw_iv, "path_b_clean"
+    straddle = _find_atm_straddle(chain, underlying_price)
+    if straddle and underlying_price > 0 and dte > 0:
+        implied_move = 0.85 * straddle["straddle_mid"] / underlying_price
+        front_total_var = (raw_iv ** 2) * (dte / 252.0)
+        earnings_var = implied_move ** 2
+        ex_var = front_total_var - earnings_var
+        if ex_var > 1e-12:
+            ex_iv = sqrt(ex_var / (dte / 252.0))
+            return ex_iv, "path_a_straddle_strip"
+    haircut = config.FF_EARNINGS_IV_HAIRCUT_PCT
+    return raw_iv * (1.0 - haircut), "path_a_haircut_fallback"
+
+
 def calculate_forward_factor(front_iv: float, back_iv: float, front_dte: int, back_dte: int) -> dict[str, float]:
     sigma1, sigma2 = float(front_iv), float(back_iv)
     if not (0 < sigma1 <= 5 and 0 < sigma2 <= 5):
@@ -323,7 +368,6 @@ def build_forward_factor_strategy(
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — chain data quality"))
                 continue
-            iv = _expiration_iv_inputs(payload, front, back, front_chain, back_chain)
             front_contaminated, front_earn = _is_earnings_contaminated(front, _earn_date_str)
             back_contaminated, back_earn = _is_earnings_contaminated(back, _earn_date_str)
             is_contaminated = front_contaminated or back_contaminated
@@ -337,7 +381,12 @@ def build_forward_factor_strategy(
             else:
                 stage["earnings_clean"] += 1
             source_qualification = "earnings_contaminated" if is_contaminated else "clean"
-            log_print(f"[FF] {ticker}: front={front} back={back} → {'earnings_contaminated' if is_contaminated else 'source_qualified=True'}{' (' + contamination_reason + ')' if contamination_reason else ' (no earnings contamination)'}")
+            iv = _expiration_iv_inputs(
+                payload, front, back, front_chain, back_chain,
+                front_contaminated=front_contaminated, back_contaminated=back_contaminated,
+                underlying_price=eligibility["price"], front_dte=front_dte, back_dte=back_dte,
+            )
+            log_print(f"[FF] {ticker}: front={front} back={back} → {'earnings_contaminated' if is_contaminated else 'source_qualified=True'}{' (' + contamination_reason + ')' if contamination_reason else ' (no earnings contamination)'} front_iv_method={iv.get('front_iv_derivation_method')} back_iv_method={iv.get('back_iv_derivation_method')}")
             base = {
                 **pair, "data_eligibility": eligibility, "earnings_context": _earnings_context(earnings_record, front, back),
                 **iv,
@@ -346,6 +395,14 @@ def build_forward_factor_strategy(
                 "source_qualification": source_qualification,
             }
             raw_formula = _try_formula(iv.get("front_raw_iv"), iv.get("back_raw_iv"), front_dte, back_dte)
+            if raw_formula and is_contaminated:
+                haircut_front_iv = (iv.get("front_raw_iv") or 0) * (1.0 - config.FF_EARNINGS_IV_HAIRCUT_PCT)
+                haircut_ff = _try_formula(haircut_front_iv, iv.get("back_raw_iv"), front_dte, back_dte)
+                if haircut_ff and haircut_ff["forward_factor"] + 1e-12 < config.FF_MIN_FORWARD_FACTOR * config.FF_HAIRCUT_GATE_MULTIPLIER:
+                    row = _blocked(ticker, "FAIL / HAIRCUT GATE", f"Even with {config.FF_EARNINGS_IV_HAIRCUT_PCT:.0%} IV haircut, FF {haircut_ff['forward_factor']:.4f} < gate {config.FF_MIN_FORWARD_FACTOR * config.FF_HAIRCUT_GATE_MULTIPLIER:.4f}.", **base, haircut_forward_factor=haircut_ff["forward_factor"], ff_candidate_stage="haircut_gate_fail")
+                    ticker_rows.append(row)
+                    pair_audit.append(_pair_audit(row, "not selected — haircut gate fail"))
+                    continue
             if raw_formula:
                 base["diagnostic_raw_iv_forward_factor"] = raw_formula["forward_factor"]
                 base["diagnostic_raw_iv_formula"] = raw_formula
@@ -461,19 +518,58 @@ def build_scenario_grid(underlying: float, put_strike: float, call_strike: float
     return rows
 
 
-def _expiration_iv_inputs(payload, front, back, front_chain, back_chain) -> dict[str, Any]:
+def _expiration_iv_inputs(
+    payload, front, back, front_chain, back_chain,
+    front_contaminated: bool = False, back_contaminated: bool = False,
+    underlying_price: float = 0.0, front_dte: int = 0, back_dte: int = 0,
+) -> dict[str, Any]:
     metadata = payload.get("expiration_metrics", {}) or {}
     front_meta, back_meta = metadata.get(front, {}) or {}, metadata.get(back, {}) or {}
+    front_raw = front_meta.get("raw_iv") or _median_field(front_chain, "iv")
+    back_raw = back_meta.get("raw_iv") or _median_field(back_chain, "iv")
     front_ex = front_meta.get("ex_earnings_iv") or _median_field(front_chain, "ex_earnings_iv")
     back_ex = back_meta.get("ex_earnings_iv") or _median_field(back_chain, "ex_earnings_iv")
+    front_method, back_method = "explicit_source_field" if front_ex is not None else None, "explicit_source_field" if back_ex is not None else None
+    front_implied_move, back_implied_move = None, None
+    if front_ex is None and front_raw is not None:
+        derived, method = _derive_ex_earnings_iv(front_raw, front_dte, front_contaminated, front_chain, underlying_price)
+        front_ex = derived
+        front_method = method
+        if method == "path_a_straddle_strip":
+            straddle = _find_atm_straddle(front_chain, underlying_price)
+            if straddle and underlying_price > 0:
+                front_implied_move = 0.85 * straddle["straddle_mid"] / underlying_price
+    if back_ex is None and back_raw is not None:
+        derived, method = _derive_ex_earnings_iv(back_raw, back_dte, back_contaminated, back_chain, underlying_price)
+        back_ex = derived
+        back_method = method
+        if method == "path_a_straddle_strip":
+            straddle = _find_atm_straddle(back_chain, underlying_price)
+            if straddle and underlying_price > 0:
+                back_implied_move = 0.85 * straddle["straddle_mid"] / underlying_price
+    has_derived = front_ex is not None and back_ex is not None
+    adj_method = front_meta.get("adjustment_method") or back_meta.get("adjustment_method") or _first_field(front_chain + back_chain, "iv_adjustment_method")
+    if not adj_method:
+        adj_method = front_method or back_method or ("SOURCE_UNAVAILABLE" if not has_derived else "derived")
+    adj_confidence = front_meta.get("adjustment_confidence") or back_meta.get("adjustment_confidence")
+    if not adj_confidence:
+        if has_derived and (front_method or "").startswith("path_a"):
+            adj_confidence = "medium"
+        elif has_derived:
+            adj_confidence = "high"
+        else:
+            adj_confidence = "unavailable"
     return {
-        "front_raw_iv": front_meta.get("raw_iv") or _median_field(front_chain, "iv"),
-        "back_raw_iv": back_meta.get("raw_iv") or _median_field(back_chain, "iv"),
+        "front_raw_iv": front_raw, "back_raw_iv": back_raw,
         "front_ex_earnings_iv": front_ex, "back_ex_earnings_iv": back_ex,
         "earnings_variance_removed": front_meta.get("earnings_variance_removed") or back_meta.get("earnings_variance_removed"),
-        "adjustment_method": front_meta.get("adjustment_method") or back_meta.get("adjustment_method") or _first_field(front_chain + back_chain, "iv_adjustment_method") or ("explicit_source_field" if front_ex is not None and back_ex is not None else "SOURCE_UNAVAILABLE"),
+        "adjustment_method": adj_method,
         "adjustment_version": front_meta.get("adjustment_version") or back_meta.get("adjustment_version") or _first_field(front_chain + back_chain, "iv_adjustment_version") or "SOURCE_UNSPECIFIED",
-        "adjustment_confidence": front_meta.get("adjustment_confidence") or back_meta.get("adjustment_confidence") or ("high" if front_ex is not None and back_ex is not None else "unavailable"),
+        "adjustment_confidence": adj_confidence,
+        "front_iv_derivation_method": front_method,
+        "back_iv_derivation_method": back_method,
+        "front_implied_earnings_move": front_implied_move,
+        "back_implied_earnings_move": back_implied_move,
     }
 
 
@@ -579,7 +675,7 @@ def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
 
 def _readiness(stage, summary):
     return {
-        "formula_fixtures": "pass", "ex_earnings_iv_fixtures": "partial — source screener missing",
+        "formula_fixtures": "pass", "ex_earnings_iv_fixtures": "pass — two-stage derivation active",
         "multi_expiration_retrieval": "pass", "delta_structure_construction": "pass", "liquidity_checks": "pass",
         "live_dry_run_observations": int((stage or {}).get("cheap_evaluated", 0)),
         "calculation_complete_observations": summary.get("calculation_complete_observations", 0),

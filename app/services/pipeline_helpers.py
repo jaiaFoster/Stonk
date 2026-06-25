@@ -76,6 +76,8 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "skew_universe_max_candidates": getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30),
         "ff_universe_max_tickers": getattr(config, "FF_UNIVERSE_MAX_TICKERS", 40),
         "ff_earnings_contamination_window_days": getattr(config, "FF_EARNINGS_CONTAMINATION_WINDOW_DAYS", 4),
+        "ff_earnings_iv_haircut_pct": getattr(config, "FF_EARNINGS_IV_HAIRCUT_PCT", 0.20),
+        "ff_haircut_gate_multiplier": getattr(config, "FF_HAIRCUT_GATE_MULTIPLIER", 0.85),
         "forward_factor_dry_run": config.FORWARD_FACTOR_DRY_RUN,
         "dev_tickers": list(config.DEV_TICKERS),
         "dev_max_tickers": config.DEV_MAX_TICKERS,
@@ -157,6 +159,8 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"SKEW_UNIVERSE_MAX_CANDIDATES: {snapshot.get('skew_universe_max_candidates')}",
         f"FF_UNIVERSE_MAX_TICKERS: {snapshot.get('ff_universe_max_tickers')}",
         f"FF_EARNINGS_CONTAMINATION_WINDOW_DAYS: {snapshot.get('ff_earnings_contamination_window_days')}",
+        f"FF_EARNINGS_IV_HAIRCUT_PCT: {snapshot.get('ff_earnings_iv_haircut_pct')}",
+        f"FF_HAIRCUT_GATE_MULTIPLIER: {snapshot.get('ff_haircut_gate_multiplier')}",
         f"FF_DRY_RUN: {snapshot.get('forward_factor_dry_run')} (signals live, execution gated)",
     ]
     _warn_env_overrides(lines)
