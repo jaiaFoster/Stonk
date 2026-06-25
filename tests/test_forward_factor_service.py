@@ -175,7 +175,7 @@ class ForwardFactorTests(unittest.TestCase):
         self.assertIn("Forward Factor Calendar Candidates", html)
         self.assertIn("Copy Forward Factor Report", html)
 
-    def test_missing_ex_earnings_iv_keeps_raw_iv_diagnostic_separate(self):
+    def test_clean_expiration_derives_ex_iv_from_raw_iv_path_b(self):
         front = (date.today() + timedelta(days=60)).isoformat()
         back = (date.today() + timedelta(days=90)).isoformat()
         payload = {"expirations": [front, back], "chains": {
@@ -184,22 +184,21 @@ class ForwardFactorTests(unittest.TestCase):
         }, "expiration_metrics": {front: {"raw_iv": .50}, back: {"raw_iv": .45}}}
         result = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))
         row = result["items"][0]
-        self.assertEqual(row["verdict"], "DIAGNOSTIC POSITIVE FF SIGNAL / REVIEW ONLY")
-        self.assertIsNotNone(row["diagnostic_raw_iv_forward_factor"])
-        self.assertIsNone(row.get("forward_factor"))
+        self.assertEqual(row["verdict"], "SOURCE-QUALIFIED POSITIVE FF SIGNAL / REVIEW ENTRY")
+        self.assertIsNotNone(row.get("forward_factor"))
+        self.assertEqual(row["front_iv_derivation_method"], "path_b_clean")
+        self.assertEqual(row["back_iv_derivation_method"], "path_b_clean")
         self.assertEqual(row["structure_status"], "COMPLETE")
         self.assertIsNotNone(row["put_strike"])
         self.assertEqual(row["actionability_score"], 0)
-        self.assertTrue(row["diagnostic_only"])
         self.assertIsNotNone(row["T1"])
         self.assertEqual(result["stage_counts"]["structure_attempts"], 1)
         self.assertEqual(result["stage_counts"]["structures"], 1)
-        self.assertEqual(result["readiness"]["diagnostic_only_observations"], 1)
-        self.assertEqual(result["summary"]["diagnostic_positive_count"], 1)
+        self.assertEqual(result["stage_counts"]["source_ff_calculated"], 1)
         self.assertEqual(result["stage_counts"]["ff_calculated"], 1)
         self.assertTrue(result["summary"]["counts_reconcile"])
 
-    def test_diagnostic_missing_delta_is_explicit_failure_not_pass(self):
+    def test_derived_iv_equal_front_back_below_threshold_when_no_delta(self):
         front = (date.today() + timedelta(days=60)).isoformat()
         back = (date.today() + timedelta(days=90)).isoformat()
         payload = {"expirations": [front, back], "chains": {
@@ -207,7 +206,7 @@ class ForwardFactorTests(unittest.TestCase):
             back: [leg(95, "put", None), leg(105, "call", None)],
         }}
         row = build_forward_factor_strategy(["SPY"], {}, FakeFFHub(payload))["items"][0]
-        self.assertEqual(row["verdict"], "FAIL / DELTA DATA UNAVAILABLE")
+        self.assertEqual(row["verdict"], "FAIL / FORWARD FACTOR BELOW THRESHOLD")
         self.assertEqual(row["actionability_score"], 0)
 
     def test_source_qualified_below_threshold_reaches_numeric_terminal_result(self):
