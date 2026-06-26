@@ -38,7 +38,7 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     result = {
         "snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(),
         "source_run_id": snapshot.get("run_id"), "source_status": snapshot.get("status"), "app_mode": snapshot.get("mode"),
-        "available_detail_sections": ["daily_opportunity", "data_coverage", "lifecycle", "pipeline", "portfolio", "providers", "provider_raw", "strategies", "strategy"],
+        "available_detail_sections": ["daily_opportunity", "data_coverage", "lifecycle", "open_options_positions", "pipeline", "portfolio", "providers", "provider_raw", "strategies", "strategy"],
         "git_commit": commit_identity["source_of_truth"],
         "git_branch": commit_identity["git_branch"],
         "deploy_label": commit_identity["deploy_label"],
@@ -102,6 +102,7 @@ def build_snapshot_detail(
             "portfolio_gap": tradier.get("_portfolio_gap"),
         },
         "providers": tradier.get("_provider_status"),
+        "open_options_positions": tradier.get("_open_options_positions"),
         "strategies": strategies,
     }
     if section == "strategy":
