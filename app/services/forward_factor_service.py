@@ -8,7 +8,7 @@ from statistics import median
 from typing import Any
 
 from app import config
-from app.services.forward_factor_candidate_selection_service import select_forward_factor_candidates, what_would_make_positive
+from app.services.forward_factor_candidate_selection_service import score_forward_factor_candidate, select_forward_factor_candidates, what_would_make_positive
 from app.services.forward_factor_data_eligibility_service import validate_required_data
 from app.services.forward_factor_ranking_service import rank_forward_factor
 from app.services.forward_factor_signal_gate_service import evaluate_forward_factor_signal_gate
@@ -181,7 +181,12 @@ def build_forward_factor_strategy(
     log_print = log_print or (lambda message: None)
     if not config.FORWARD_FACTOR_STRATEGY_ENABLED:
         return _finalize([], [], {}, [], False)
-    ordered = sorted(set(str(ticker).upper() for ticker in universe if ticker))
+    unique_tickers = sorted(set(str(ticker).upper() for ticker in universe if ticker))
+    _prescore = {
+        t: score_forward_factor_candidate(t, market_metrics.get(t), (observation_history or {}).get(t)).get("score", 0.0)
+        for t in unique_tickers
+    }
+    ordered = sorted(unique_tickers, key=lambda t: (-_prescore.get(t, 0.0), t))
     is_dev = run_mode == "dev"
     cap_label = "dev" if is_dev else "strategy"
     selection_label = "dev" if is_dev else "production"
@@ -223,6 +228,9 @@ def build_forward_factor_strategy(
     }
     selected_states = ", ".join(f"{ticker}={(plan_by_ticker.get(ticker) or {}).get('state', 'UNPLANNED')}" for ticker in selected)
     log_print(f"FF service universe count={len(ordered)} selected={selected}")
+    _score_labels = ", ".join(f"{t}({_prescore.get(t, 0.0):.0f})" for t in selected)
+    _excluded_count = max(0, len(supported) - len(selected))
+    log_print(f"FF dev cap: selected [{_score_labels}] by score; excluded {_excluded_count} others")
     log_print(f"FF selected ticker planner states: {selected_states or 'none'}")
     log_print(
         "FF candidate selection: pool="

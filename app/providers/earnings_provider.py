@@ -472,6 +472,9 @@ def _merge_dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     for ev in result:
         ev["earnings_date_confidence"] = _compute_earnings_confidence(ev)
+        ev["date_confidence"] = ev["earnings_date_confidence"]
+        ev["date_conflict"] = bool(ev.get("earnings_source_conflict"))
+        ev["date_sources"] = list(ev.get("sources_seen") or [])
 
     return sorted(result, key=lambda item: (str(item.get("earnings_date") or "9999-99-99"), str(item.get("ticker") or "")))
 

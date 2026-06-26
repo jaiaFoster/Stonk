@@ -5,7 +5,10 @@ from app import config
 
 def apply_forward_factor_verdict(row: dict) -> dict:
     blocker = ""
-    if row.get("liquidity_status") == "WATCH":
+    _fv = row.get("forward_variance")
+    if _fv is not None and float(_fv) <= 0:
+        verdict, blocker = "FAIL / IV_RELATIONSHIP_ADVERSE", "Implied forward variance is non-positive — front IV exceeds back IV, indicating adverse term structure."
+    elif row.get("liquidity_status") == "WATCH":
         verdict, blocker = "WATCH / LIQUIDITY DATA PARTIAL", "Four-leg package has usable quotes but incomplete liquidity fields."
     elif not row.get("liquidity_pass"):
         verdict, blocker = "FAIL / OPTIONS ILLIQUID", "Four-leg package failed configured liquidity or execution-width gates."

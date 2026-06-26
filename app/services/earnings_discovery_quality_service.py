@@ -90,6 +90,10 @@ def filter_earnings_discovery_for_calendar_scan(
         f"; pre-filtered {pre_filter_count - len(selected)} unlikely candidates"
         + (" (dev-mode optionability budget)" if clean_mode == "dev" else "")
     )
+    logger(
+        f"Earnings date gate: EARNINGS_DATE_REQUIRE_MULTI_SOURCE="
+        f"{bool(getattr(config, 'EARNINGS_DATE_REQUIRE_MULTI_SOURCE', False))}"
+    )
 
     try:
         quotes = provider.get_quotes(tickers, greeks=False) if tickers else {}
@@ -188,6 +192,19 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         checks.append(_check("Earnings timestamp", "PASS", "Provider marked timestamp/session as confirmed."))
     else:
         checks.append(_check("Earnings timestamp", "WARN", "Earnings date/session is unconfirmed or unknown."))
+
+    confidence = event.get("earnings_date_confidence") or "unknown"
+    has_conflict = bool(event.get("earnings_source_conflict"))
+    sources_seen = event.get("sources_seen") or []
+    require_multi = bool(getattr(config, "EARNINGS_DATE_REQUIRE_MULTI_SOURCE", False))
+    if has_conflict:
+        conflict_status = "FAIL" if require_multi else "WARN"
+        checks.append(_check("Earnings date agreement", conflict_status, f"Cross-source date conflict detected (confidence={confidence}, sources={sources_seen})."))
+    elif len(sources_seen) >= 2:
+        checks.append(_check("Earnings date agreement", "PASS", f"Date confirmed by {len(sources_seen)} sources (confidence={confidence})."))
+    elif len(sources_seen) == 1:
+        single_status = "FAIL" if require_multi else "WARN"
+        checks.append(_check("Earnings date agreement", single_status, f"Single-source earnings date — only {sources_seen[0]} (confidence={confidence})."))
 
     return {
         "ticker": ticker,
