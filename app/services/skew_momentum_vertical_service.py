@@ -390,7 +390,7 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         _req("Data quality", bool(long_leg.get("iv") is not None and short_leg.get("iv") is not None), "Tradier quotes and IV present for both legs.", "data_quality"),
     ]
     if account_risk_pct is not None:
-        requirements.append(_req("Account risk", account_risk_pct <= float(config.SKEW_VERTICAL_MAX_ACCOUNT_RISK_PCT), f"Max risk is {account_risk_pct:.2f}% of estimated account value.", "debit"))
+        requirements.append(_req("Account risk", account_risk_pct <= float(config.SKEW_VERTICAL_MAX_ACCOUNT_RISK_PCT), f"Max risk is {account_risk_pct:.2f}% of estimated account value.", "account_risk"))
     breakeven = float(long_leg["strike"]) + conservative_debit if option_type == "call" else float(long_leg["strike"]) - conservative_debit
     spread = {
         "expiration": expiration,

@@ -204,7 +204,7 @@ def _build_new_trade_row(
 
     no_structure_blocker = "" if has_candidate else _no_structure_blocker(quality_row, requirements)
     final = build_final_calendar_verdict(candidate, ranking, None, account_context) if has_candidate else {}
-    verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy))
+    verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy, quality_row))
     entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)
 
@@ -231,7 +231,7 @@ def _build_new_trade_row(
         "account_risk_warning": final.get("account_risk_warning") or acct_risk.get("account_risk_warning") or "",
         "account_value_used": acct_risk.get("account_value_estimate"),
         "debit_pct_of_account": acct_risk.get("debit_pct_of_account"),
-        "raw_scanner_verdict": final.get("raw_scanner_verdict") or _new_trade_verdict(has_candidate, strategy),
+        "raw_scanner_verdict": final.get("raw_scanner_verdict") or _new_trade_verdict(has_candidate, strategy, quality_row),
         "entry_plan": entry_plan,
         "earnings": _compact_event(event),
         "candidate": candidate,
@@ -368,8 +368,10 @@ def _build_open_trade_rows(open_options: dict[str, Any], lifecycle_checks: dict[
     return rows
 
 
-def _new_trade_verdict(has_candidate: bool, strategy: dict[str, Any]) -> str:
+def _new_trade_verdict(has_candidate: bool, strategy: dict[str, Any], quality_row: dict[str, Any] | None = None) -> str:
     if not has_candidate:
+        if quality_row and quality_row.get("expiry_near_miss"):
+            return "NEAR_MISS / EXPIRY_GAP"
         return "FAIL / NO VALID CALENDAR STRUCTURE"
     action = str(strategy.get("action") or "").upper()
     if strategy.get("is_preferred_setup"):

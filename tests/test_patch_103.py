@@ -191,7 +191,7 @@ class TestC1SingleLegDetection(unittest.TestCase):
         legs = [
             {"underlying": "NVDA", "option_type": "call", "strike": 207.5,
              "expiration": "2026-06-26", "side": "short", "abs_quantity": 1,
-             "mid": 3.0, "average_price": 2.5, "broker": "tradier"},
+             "mid": 3.0, "avg_cost_per_share": 2.5, "broker": "tradier"},
         ]
         result = _collect_unmatched_legs(legs, [], [])
         self.assertEqual(len(result), 1)
@@ -235,7 +235,7 @@ class TestC1SingleLegDetection(unittest.TestCase):
         legs = [
             {"underlying": "NVDA", "option_type": "call", "strike": 210,
              "expiration": "2026-06-26", "side": "long", "abs_quantity": 2,
-             "mid": 5.0, "average_price": 3.0, "broker": "robinhood"},
+             "mid": 5.0, "avg_cost_per_share": 3.0, "broker": "robinhood"},
         ]
         result = _collect_unmatched_legs(legs, [], [])
         self.assertEqual(len(result), 1)
@@ -299,6 +299,172 @@ class TestCalendarStrategyDateConflictRisk(unittest.TestCase):
         self.assertLessEqual(result["score"], 40.0)
         disputed_risks = [r for r in result["risks"] if "disputed" in r.lower()]
         self.assertTrue(len(disputed_risks) > 0)
+
+
+class TestC1aSideIndependentMatching(unittest.TestCase):
+    """C1a: legs with side='unknown' still match detected structures."""
+
+    def test_unknown_side_vertical_leg_excluded(self):
+        from app.services.open_options_service import _collect_unmatched_legs
+        legs = [
+            {"underlying": "SPY", "option_type": "call", "strike": 450,
+             "expiration": "2026-07-18", "side": "unknown", "abs_quantity": 1},
+            {"underlying": "SPY", "option_type": "call", "strike": 460,
+             "expiration": "2026-07-18", "side": "unknown", "abs_quantity": 1},
+        ]
+        verticals = [{
+            "ticker": "SPY", "option_type": "call",
+            "long_strike": 450, "short_strike": 460,
+            "expiration": "2026-07-18",
+        }]
+        result = _collect_unmatched_legs(legs, [], verticals)
+        self.assertEqual(len(result), 0)
+
+
+class TestC1bAvgCostPerShare(unittest.TestCase):
+    """C1b: P&L uses avg_cost_per_share, not raw cost_basis."""
+
+    def test_pnl_uses_per_share_cost(self):
+        from app.services.open_options_service import _collect_unmatched_legs
+        legs = [
+            {"underlying": "NVDA", "option_type": "call", "strike": 210,
+             "expiration": "2026-06-26", "side": "long", "abs_quantity": 1,
+             "mid": 5.0, "avg_cost_per_share": 3.0, "cost_basis": 300.0,
+             "broker": "robinhood"},
+        ]
+        result = _collect_unmatched_legs(legs, [], [])
+        self.assertEqual(result[0]["unrealized_pnl"], 200.0)
+
+    def test_fallback_to_avg_cost_per_contract_with_scaling(self):
+        from app.services.open_options_service import _collect_unmatched_legs
+        legs = [
+            {"underlying": "NVDA", "option_type": "call", "strike": 210,
+             "expiration": "2026-06-26", "side": "long", "abs_quantity": 1,
+             "mid": 5.0, "avg_cost_per_contract": 300.0,
+             "broker": "robinhood"},
+        ]
+        result = _collect_unmatched_legs(legs, [], [])
+        self.assertEqual(result[0]["average_price"], 3.0)
+
+
+class TestC1cSingleLegDedup(unittest.TestCase):
+    """C1c: duplicate lot-level entries deduped on natural key."""
+
+    def test_duplicate_legs_deduped(self):
+        from app.services.open_options_service import _collect_unmatched_legs
+        leg = {"underlying": "NVDA", "option_type": "call", "strike": 210,
+               "expiration": "2026-06-26", "side": "long", "abs_quantity": 1,
+               "mid": 5.0, "avg_cost_per_share": 3.0, "broker": "robinhood"}
+        legs = [dict(leg, id="lot-1"), dict(leg, id="lot-2")]
+        result = _collect_unmatched_legs(legs, [], [])
+        self.assertEqual(len(result), 1)
+
+
+class TestA1ChainBudgetFloor(unittest.TestCase):
+    """A1: FF_MIN_CHAIN_SET_BUDGET floors reserve even when not reserved."""
+
+    def test_min_chain_set_budget_config(self):
+        from app import config
+        self.assertEqual(config.FF_MIN_CHAIN_SET_BUDGET, 4)
+
+
+class TestB1QualityRowDateFields(unittest.TestCase):
+    """B1: quality row includes date_confidence/date_conflict/date_sources."""
+
+    def test_quality_row_has_date_fields(self):
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {
+            "ticker": "AAPL",
+            "earnings_date": "2026-07-20",
+            "earnings_date_confidence": "confirmed",
+            "earnings_source_conflict": False,
+            "sources_seen": ["finnhub", "alphavantage"],
+        }
+        row = _quality_row(event, {})
+        self.assertEqual(row["date_confidence"], "confirmed")
+        self.assertFalse(row["date_conflict"])
+        self.assertEqual(row["date_sources"], ["finnhub", "alphavantage"])
+
+    def test_quality_row_conflict_fields(self):
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {
+            "ticker": "TSLA",
+            "earnings_date": "2026-08-01",
+            "earnings_date_confidence": "disputed",
+            "earnings_source_conflict": True,
+            "sources_seen": ["finnhub"],
+        }
+        row = _quality_row(event, {})
+        self.assertEqual(row["date_confidence"], "disputed")
+        self.assertTrue(row["date_conflict"])
+
+
+class TestB3NearMissVerdictLabel(unittest.TestCase):
+    """B3: NEAR_MISS verdict surfaces through unified engine."""
+
+    def test_near_miss_verdict_from_quality_row(self):
+        from app.services.unified_calendar_trade_engine_service import _new_trade_verdict
+        quality_row = {"expiry_near_miss": True}
+        verdict = _new_trade_verdict(False, {}, quality_row)
+        self.assertEqual(verdict, "NEAR_MISS / EXPIRY_GAP")
+
+    def test_no_structure_verdict_without_near_miss(self):
+        from app.services.unified_calendar_trade_engine_service import _new_trade_verdict
+        verdict = _new_trade_verdict(False, {}, None)
+        self.assertEqual(verdict, "FAIL / NO VALID CALENDAR STRUCTURE")
+
+
+class TestD1AccountRiskLabel(unittest.TestCase):
+    """D1: account risk code produces ACCOUNT RISK TOO HIGH, not DEBIT TOO LARGE."""
+
+    def test_account_risk_verdict(self):
+        from app.services.skew_momentum_vertical_verdict_service import apply_skew_momentum_vertical_verdict
+        candidate = {
+            "strategy_id": "skew_momentum_vertical",
+            "momentum_confirmed": True,
+            "skew_pass": True,
+            "requirements": [
+                {"name": "Account risk", "status": "FAIL", "detail": "Max risk 5.2%", "code": "account_risk"},
+            ],
+        }
+        result = apply_skew_momentum_vertical_verdict(candidate)
+        self.assertIn("ACCOUNT RISK", result["verdict"])
+        self.assertNotIn("DEBIT", result["verdict"])
+
+
+class TestD2HighMoveWarning(unittest.TestCase):
+    """D2: high-move stock warning gate."""
+
+    def test_high_move_config_exists(self):
+        from app import config
+        self.assertEqual(config.CALENDAR_HIGH_MOVE_WARNING_THRESHOLD, 0.08)
+
+    def test_high_move_warning_set(self):
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {
+            "ticker": "MU",
+            "earnings_date": "2026-07-20",
+            "avg_historical_earnings_move": 0.12,
+        }
+        row = _quality_row(event, {})
+        self.assertTrue(row["high_move_warning"])
+        self.assertIn("12.0%", row["high_move_note"])
+
+    def test_no_warning_below_threshold(self):
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {
+            "ticker": "AAPL",
+            "earnings_date": "2026-07-20",
+            "avg_historical_earnings_move": 0.04,
+        }
+        row = _quality_row(event, {})
+        self.assertFalse(row["high_move_warning"])
+
+    def test_no_warning_when_data_missing(self):
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {"ticker": "XYZ", "earnings_date": "2026-07-20"}
+        row = _quality_row(event, {})
+        self.assertFalse(row["high_move_warning"])
 
 
 if __name__ == "__main__":

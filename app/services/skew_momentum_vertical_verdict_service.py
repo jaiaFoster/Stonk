@@ -16,6 +16,7 @@ def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str,
         "liquidity": ("FAIL / OPTIONS ILLIQUID", "BLOCKED_ILLIQUID_OPTIONS", "Wait for tighter bid/ask spreads and stronger volume/open interest."),
         "spread_width": ("FAIL / SPREAD TOO WIDE", "BLOCKED_SPREAD_TOO_WIDE", "Wait for tighter option markets."),
         "debit": ("FAIL / DEBIT TOO LARGE", "BLOCKED_DEBIT_TOO_LARGE", "A lower-debit structure must pass risk limits."),
+        "account_risk": ("FAIL / ACCOUNT RISK TOO HIGH", "BLOCKED_ACCOUNT_RISK_TOO_HIGH", "Max risk exceeds configured percentage of estimated account value."),
         "reward_risk": ("FAIL / REWARD RISK TOO WEAK", "BLOCKED_REWARD_RISK_TOO_WEAK", "Reward/risk must improve after conservative pricing."),
     }
     if code in verdicts:
