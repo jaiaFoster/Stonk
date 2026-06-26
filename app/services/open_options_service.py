@@ -708,7 +708,8 @@ def _collect_unmatched_legs(
     calendars: list[dict[str, Any]],
     verticals: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    matched: set[tuple[str, str, float, str, str]] = set()
+    _ALL_SIDES = ("long", "short", "unknown")
+    matched: set[tuple[str, str, float, str]] = set()
     for cal in calendars:
         underlying = str(cal.get("underlying") or "").upper()
         otype = str(cal.get("option_type") or "").lower()
@@ -716,15 +717,14 @@ def _collect_unmatched_legs(
         for exp_key in ("front_expiration", "back_expiration"):
             exp = str(cal.get(exp_key) or "")
             if exp:
-                matched.add((underlying, otype, strike, exp, "long"))
-                matched.add((underlying, otype, strike, exp, "short"))
+                matched.add((underlying, otype, strike, exp))
     for vert in verticals:
         ticker = str(vert.get("ticker") or "").upper()
         otype = str(vert.get("option_type") or "").lower()
         exp = str(vert.get("expiration") or "")
-        for strike_key, side in (("long_strike", "long"), ("short_strike", "short")):
+        for strike_key in ("long_strike", "short_strike"):
             strike = round(float(vert.get(strike_key) or 0), 4)
-            matched.add((ticker, otype, strike, exp, side))
+            matched.add((ticker, otype, strike, exp))
     single: list[dict[str, Any]] = []
     for leg in option_legs:
         underlying = str(leg.get("underlying") or "").upper()
@@ -732,10 +732,14 @@ def _collect_unmatched_legs(
         strike = round(float(leg.get("strike") or 0), 4)
         exp = str(leg.get("expiration") or "")
         side = str(leg.get("side") or "unknown").lower()
-        key = (underlying, otype, strike, exp, side)
+        key = (underlying, otype, strike, exp)
         if key in matched:
             continue
-        avg_price = _float_or_none(leg.get("average_price") or leg.get("cost_basis"))
+        avg_price = _float_or_none(leg.get("avg_cost_per_share"))
+        if avg_price is None:
+            avg_price = _float_or_none(leg.get("avg_cost_per_contract"))
+            if avg_price is not None and abs(avg_price) >= 25.0:
+                avg_price = avg_price / 100.0
         cur_price = _float_or_none(leg.get("mid") or leg.get("mark") or leg.get("last"))
         qty = float(leg.get("abs_quantity") or leg.get("quantity") or 1)
         unrealized_pnl = None
@@ -756,7 +760,20 @@ def _collect_unmatched_legs(
             "unrealized_pnl": unrealized_pnl,
             "broker": str(leg.get("broker") or leg.get("source") or "unknown"),
         })
-    return single
+    seen_keys: set[tuple] = set()
+    deduped: list[dict[str, Any]] = []
+    for s in single:
+        dk = (
+            str(s.get("ticker") or "").upper(),
+            str(s.get("option_type") or "").lower(),
+            float(s.get("strike") or 0),
+            str(s.get("expiration") or ""),
+            str(s.get("position") or ""),
+        )
+        if dk not in seen_keys:
+            seen_keys.add(dk)
+            deduped.append(s)
+    return deduped
 
 
 def _build_calendar_summary(

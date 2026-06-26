@@ -215,6 +215,12 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         single_status = "FAIL" if require_multi else "WARN"
         checks.append(_check("Earnings date agreement", single_status, f"Single-source earnings date — only {sources_seen[0]} (confidence={confidence})."))
 
+    historical_move = _number(event.get("avg_historical_earnings_move"))
+    high_move_threshold = float(getattr(config, "CALENDAR_HIGH_MOVE_WARNING_THRESHOLD", 0.08) or 0.08)
+    high_move_warning = bool(historical_move is not None and historical_move >= high_move_threshold)
+    if high_move_warning:
+        checks.append(_check("Historical earnings move", "WARN", f"Avg historical earnings move {historical_move*100:.1f}% — large moves reduce calendar edge."))
+
     return {
         "ticker": ticker,
         "event": event,
@@ -224,6 +230,11 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         "source": event.get("source"),
         "universe_source": event.get("universe_source"),
         "earnings_date_confidence": event.get("earnings_date_confidence") or "unknown",
+        "date_confidence": event.get("earnings_date_confidence") or event.get("date_confidence") or "unknown",
+        "date_conflict": bool(event.get("earnings_source_conflict") or event.get("date_conflict")),
+        "date_sources": event.get("sources_seen") or event.get("date_sources") or [],
+        "high_move_warning": high_move_warning,
+        "high_move_note": f"Historical earnings move avg {historical_move*100:.1f}% — large moves reduce calendar edge. Structure cost likely high relative to max profit." if high_move_warning else None,
         "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
         "quote": quote,
         "underlying_price": price,
