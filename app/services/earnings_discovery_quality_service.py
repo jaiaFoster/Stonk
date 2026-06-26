@@ -119,7 +119,16 @@ def filter_earnings_discovery_for_calendar_scan(
                 row["back_expiration"] = pair[1]
                 row["front_dte"] = _dte(pair[0])
                 row["back_dte"] = _dte(pair[1])
-                row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
+                is_near_miss = len(pair) > 2 and pair[2]
+                if is_near_miss:
+                    earnings_dt = _parse_date(item.get("earnings_date") or item.get("date"))
+                    front_dt = _parse_date(pair[0])
+                    gap_days = (front_dt - earnings_dt).days if earnings_dt and front_dt else "?"
+                    row["expiry_near_miss"] = True
+                    row["expiry_gap_note"] = f"Nearest expiry {pair[0]} is {gap_days}d after earnings — holiday or weekly gap. Manual evaluation recommended."
+                    row["checks"].append(_check("Option expirations", "WARN", f"Near-miss: {pair[0]} / {pair[1]} — front leg expires after earnings ({gap_days}d gap)."))
+                else:
+                    row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
             else:
                 row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
         except Exception as e:
@@ -293,7 +302,10 @@ def _select_calendar_expiration_pair(expirations: list[str], event: dict[str, An
     if bool(getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True)) and event:
         event_pair = _select_event_aware_pair(parsed, event, today)
         if event_pair:
-            return event_pair
+            front, back, near_miss = event_pair[0], event_pair[1], event_pair[2] if len(event_pair) > 2 else False
+            if near_miss:
+                return front, back, True
+            return front, back
 
     return _select_generic_calendar_pair(parsed)
 
@@ -330,8 +342,19 @@ def _select_event_aware_pair(
         if front_min <= dte <= front_max:
             front_candidates.append((dte, exp))
 
+    near_miss_front = False
     if not front_candidates:
-        return None
+        step_window = int(getattr(config, "CALENDAR_SHORT_LEG_STEP_WINDOW_DAYS", 10) or 10)
+        for dte, exp in parsed_expirations:
+            exp_date = _parse_date(exp)
+            if not exp_date:
+                continue
+            gap_after = (exp_date - event_date).days
+            if 0 < gap_after <= step_window and front_min <= dte <= front_max:
+                front_candidates.append((dte, exp))
+                near_miss_front = True
+        if not front_candidates:
+            return None
 
     best_pair: tuple[float, str, str] | None = None
     for front_dte, front_exp in front_candidates:
@@ -350,7 +373,7 @@ def _select_event_aware_pair(
                 best_pair = (score, front_exp, back_exp)
 
     if best_pair:
-        return best_pair[1], best_pair[2]
+        return best_pair[1], best_pair[2], near_miss_front
     return None
 
 
@@ -380,11 +403,19 @@ def _select_generic_calendar_pair(parsed: list[tuple[int, str]]) -> tuple[str, s
 
 def _cheap_prefilter(events: list[dict[str, Any]], logger: LogFn) -> list[dict[str, Any]]:
     min_price = float(getattr(config, "UNIVERSE_MIN_PRICE", 10) or 10)
+    excluded_fund_tickers = set(
+        t.strip().upper()
+        for t in str(getattr(config, "EARNINGS_EXCLUDED_FUND_TICKERS", "NAD,NEA,NMZ,NUV,NVG,ACP,AOD,FAX,NZF") or "").split(",")
+        if t.strip()
+    )
     kept: list[dict[str, Any]] = []
     for item in events:
         ticker = str(item.get("ticker") or item.get("symbol") or "").upper().strip()
         if len(ticker) > 5:
             logger(f"[earnings_prefilter] {ticker} skipped: ticker length {len(ticker)} > 5 (likely non-standard)")
+            continue
+        if ticker in excluded_fund_tickers:
+            logger(f"[calendar] pre-filter: {ticker} rejected (fund exclusion list)")
             continue
         cached_price = _number(item.get("last_price") or item.get("price") or item.get("close"))
         if cached_price is not None and cached_price < min_price:

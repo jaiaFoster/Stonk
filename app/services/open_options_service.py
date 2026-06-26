@@ -171,12 +171,16 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
         upnl_s = f"${_upnl:.0f}" if _upnl is not None else "null"
         logger(f"[open_options] {_tk} ${_ls}/{_ss}{_ot} {_exp}: current_value={cv_s} pct_of_max={pom_s}% unrealized_pnl={upnl_s} signal={_sig}")
 
-    result["has_data"] = bool(raw_positions or option_legs or calendars or verticals)
+    single_legs = _collect_unmatched_legs(option_legs, calendars, verticals)
+    result["single_legs"] = single_legs
+
+    result["has_data"] = bool(raw_positions or option_legs or calendars or verticals or single_legs)
 
     logger(
         "Open Options Position Detector v2: "
         f"{len(raw_positions)} total position(s), {len(option_legs)} option leg(s), "
-        f"{len(calendars)} calendar spread(s), {len(verticals)} vertical spread(s) detected."
+        f"{len(calendars)} calendar spread(s), {len(verticals)} vertical spread(s), "
+        f"{len(single_legs)} unmatched single leg(s) detected."
     )
 
     return _finalize_result(result)
@@ -697,6 +701,62 @@ def _detect_vertical_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
             seen.add(key)
             deduped.append(v)
     return deduped
+
+
+def _collect_unmatched_legs(
+    option_legs: list[dict[str, Any]],
+    calendars: list[dict[str, Any]],
+    verticals: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    matched: set[tuple[str, str, float, str, str]] = set()
+    for cal in calendars:
+        underlying = str(cal.get("underlying") or "").upper()
+        otype = str(cal.get("option_type") or "").lower()
+        strike = round(float(cal.get("strike") or 0), 4)
+        for exp_key in ("front_expiration", "back_expiration"):
+            exp = str(cal.get(exp_key) or "")
+            if exp:
+                matched.add((underlying, otype, strike, exp, "long"))
+                matched.add((underlying, otype, strike, exp, "short"))
+    for vert in verticals:
+        ticker = str(vert.get("ticker") or "").upper()
+        otype = str(vert.get("option_type") or "").lower()
+        exp = str(vert.get("expiration") or "")
+        for strike_key, side in (("long_strike", "long"), ("short_strike", "short")):
+            strike = round(float(vert.get(strike_key) or 0), 4)
+            matched.add((ticker, otype, strike, exp, side))
+    single: list[dict[str, Any]] = []
+    for leg in option_legs:
+        underlying = str(leg.get("underlying") or "").upper()
+        otype = str(leg.get("option_type") or "").lower()
+        strike = round(float(leg.get("strike") or 0), 4)
+        exp = str(leg.get("expiration") or "")
+        side = str(leg.get("side") or "unknown").lower()
+        key = (underlying, otype, strike, exp, side)
+        if key in matched:
+            continue
+        avg_price = _float_or_none(leg.get("average_price") or leg.get("cost_basis"))
+        cur_price = _float_or_none(leg.get("mid") or leg.get("mark") or leg.get("last"))
+        qty = float(leg.get("abs_quantity") or leg.get("quantity") or 1)
+        unrealized_pnl = None
+        if avg_price is not None and cur_price is not None:
+            multiplier = 1 if side == "long" else -1
+            unrealized_pnl = round((cur_price - avg_price) * qty * 100 * multiplier, 2)
+        single.append({
+            "strategy_type": "single_leg",
+            "ticker": underlying,
+            "option_type": otype,
+            "position": side,
+            "strike": float(leg.get("strike") or 0),
+            "expiration": exp,
+            "dte": leg.get("dte"),
+            "quantity": qty,
+            "average_price": avg_price,
+            "current_price": cur_price,
+            "unrealized_pnl": unrealized_pnl,
+            "broker": str(leg.get("broker") or leg.get("source") or "unknown"),
+        })
+    return single
 
 
 def _build_calendar_summary(

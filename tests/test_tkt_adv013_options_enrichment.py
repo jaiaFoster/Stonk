@@ -171,7 +171,7 @@ class TestMainDetectorIncludesVerticals:
              patch("app.config.OPEN_OPTIONS_DETECTOR_ENABLED", True), \
              patch("app.config.ROBINHOOD_OPTIONS_DETECTOR_ENABLED", False):
             detect_open_options_positions(log_print=logs.append)
-        summary_logs = [l for l in logs if "vertical spread(s) detected" in l]
+        summary_logs = [l for l in logs if "vertical spread(s)" in l and "detected" in l]
         assert len(summary_logs) == 1
 
 

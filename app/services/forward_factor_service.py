@@ -298,7 +298,7 @@ def build_forward_factor_strategy(
         cheap_pass.append((ticker, eligibility))
         stage["cheap_pass"] += 1
     chain_cap = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if is_dev else config.FF_MAX_CHAIN_TICKERS_PER_RUN
-    reserve = int((requirement_plan or {}).get("forward_factor_chain_reserve", chain_cap))
+    reserve = max(chain_cap, int((requirement_plan or {}).get("forward_factor_chain_reserve", chain_cap)))
     if config.FF_SKIP_IF_ALREADY_FAILED_RECENTLY:
         non_repeat_pass = []
         for ticker, eligibility in cheap_pass:
@@ -480,6 +480,14 @@ def build_forward_factor_strategy(
                     structure["conservative_debit"], max(back_dte - front_dte, 1), formula["forward_iv"],
                 ),
             }
+            _net_debit = float(structure.get("conservative_debit") or 0)
+            _fwd_iv = float(formula.get("forward_iv") or 0)
+            if _net_debit > 0 and _fwd_iv > 0 and front_ex:
+                _margin = _net_debit * 100
+                _edge = max(0, (float(front_ex) - _fwd_iv) / _fwd_iv) * _net_debit * 100
+                row["edge_on_margin"] = round(_edge / _margin * 100, 2) if _margin > 0 else None
+            else:
+                row["edge_on_margin"] = None
             row["ranking"] = rank_forward_factor(row)
             row["signal_score"] = row["ranking"]["total_score"]
             row = apply_forward_factor_verdict(row)
