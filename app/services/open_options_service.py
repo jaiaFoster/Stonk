@@ -153,12 +153,30 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
         enriched = _attach_underlying_quotes(provider, calendars, logger)
         logger(f"Calendar Lifecycle: underlying quote enriched for {enriched}/{len(calendars)} active calendar(s).")
     result["calendars"] = calendars
-    result["has_data"] = bool(raw_positions or option_legs or calendars)
+
+    verticals = _detect_vertical_spreads(option_legs)
+    result["verticals"] = verticals
+    for v in verticals:
+        _cv = v.get("current_value")
+        _pom = v.get("pct_of_max_profit")
+        _upnl = v.get("unrealized_pnl")
+        _sig = v.get("exit_signal", "HOLD")
+        _tk = v.get("ticker", "?")
+        _ls = v.get("long_strike")
+        _ss = v.get("short_strike")
+        _ot = str(v.get("option_type", "?"))[0].upper()
+        _exp = str(v.get("expiration", ""))
+        cv_s = f"{_cv:.2f}" if _cv is not None else "null"
+        pom_s = f"{_pom:.1f}" if _pom is not None else "null"
+        upnl_s = f"${_upnl:.0f}" if _upnl is not None else "null"
+        logger(f"[open_options] {_tk} ${_ls}/{_ss}{_ot} {_exp}: current_value={cv_s} pct_of_max={pom_s}% unrealized_pnl={upnl_s} signal={_sig}")
+
+    result["has_data"] = bool(raw_positions or option_legs or calendars or verticals)
 
     logger(
         "Open Options Position Detector v2: "
         f"{len(raw_positions)} total position(s), {len(option_legs)} option leg(s), "
-        f"{len(calendars)} calendar spread(s) detected."
+        f"{len(calendars)} calendar spread(s), {len(verticals)} vertical spread(s) detected."
     )
 
     return _finalize_result(result)
@@ -605,7 +623,20 @@ def _detect_vertical_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
                 pct_of_max_profit = None
                 if current_value is not None and net_debit is not None and width > 0:
                     pct_of_max_profit = round(current_value / width * 100.0, 2)
+                unrealized_pnl = None
+                unrealized_pnl_pct = None
+                if current_value is not None and net_debit is not None:
+                    unrealized_pnl = round((current_value - net_debit) * 100.0 * qty, 2)
+                    if net_debit != 0:
+                        unrealized_pnl_pct = round((current_value - net_debit) / abs(net_debit) * 100.0, 2)
                 dte = long_leg.get("dte")
+                exit_signal = "HOLD"
+                if isinstance(dte, (int, float)) and dte <= getattr(config, "SKEW_EXIT_DTE_THRESHOLD", 3):
+                    exit_signal = "EXIT_EXPIRY"
+                elif pct_of_max_profit is not None and pct_of_max_profit >= getattr(config, "SKEW_PROFIT_TARGET_PCT", 50):
+                    exit_signal = "EXIT_TARGET"
+                elif unrealized_pnl_pct is not None and unrealized_pnl_pct <= -getattr(config, "SKEW_STOP_LOSS_PCT", 50):
+                    exit_signal = "EXIT_STOP"
                 verticals.append({
                     "strategy": "Debit Vertical Spread",
                     "strategy_type": "skew_vertical",
@@ -645,6 +676,9 @@ def _detect_vertical_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
                     "max_profit": max_profit,
                     "max_loss": max_loss,
                     "pct_of_max_profit": pct_of_max_profit,
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_pct": unrealized_pnl_pct,
+                    "exit_signal": exit_signal,
                     "source": str(long_leg.get("broker") or long_leg.get("source") or "robinhood"),
                     "broker": str(long_leg.get("broker") or long_leg.get("source") or "robinhood"),
                 })

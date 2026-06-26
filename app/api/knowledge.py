@@ -205,6 +205,13 @@ def knowledge_thresholds():
             "chain_dte_range": "50-105",
             "structure_delta_target": 0.35,
         },
+        "open_options_lifecycle": {
+            "profit_target_pct": config.SKEW_PROFIT_TARGET_PCT,
+            "stop_loss_pct": config.SKEW_STOP_LOSS_PCT,
+            "exit_dte_threshold": config.SKEW_EXIT_DTE_THRESHOLD,
+            "exit_signals": ["HOLD", "EXIT_TARGET", "EXIT_STOP", "EXIT_EXPIRY"],
+            "note": "Exit signals are advisory only. No broker action is ever triggered.",
+        },
         "run": {
             "earnings_discovery_window_days": config.EARNINGS_DISCOVERY_END_DAYS,
             "user_run_rate_limit_per_hour": config.USER_RUN_RATE_LIMIT_PER_HOUR,
@@ -331,6 +338,83 @@ def knowledge_status():
     })
 
 
+@knowledge_bp.route("/positions")
+@require_auth
+def knowledge_positions():
+    """Open options position summary for agent context. Read-only, no provider calls."""
+    from app.services.report_snapshot_service import ReportSnapshotRepository
+
+    repo = ReportSnapshotRepository()
+    snapshot = repo.latest_success(include_full=True)
+    if not snapshot:
+        return jsonify({
+            "has_open_verticals": False,
+            "has_open_calendars": False,
+            "vertical_count": 0,
+            "calendar_count": 0,
+            "verticals": [],
+            "calendars": [],
+        })
+
+    summary_data = repo.load_summary(snapshot, full=True)
+    report = summary_data.get("report_data", {}) or {}
+    tradier = report.get("tradier_snapshot", {}) or {}
+    open_opts = tradier.get("_open_options_positions", {}) or {}
+
+    raw_verticals = open_opts.get("verticals", []) or []
+    raw_calendars = open_opts.get("calendars", []) or []
+    opts_summary = open_opts.get("summary", {}) or {}
+
+    compact_verticals = []
+    for v in raw_verticals:
+        if not isinstance(v, dict):
+            continue
+        compact_verticals.append({
+            "ticker": v.get("ticker"),
+            "option_type": v.get("option_type"),
+            "long_strike": v.get("long_strike"),
+            "short_strike": v.get("short_strike"),
+            "expiration": v.get("expiration"),
+            "dte": v.get("dte"),
+            "quantity": v.get("quantity"),
+            "net_debit": v.get("net_debit"),
+            "current_value": v.get("current_value"),
+            "pct_of_max_profit": v.get("pct_of_max_profit"),
+            "unrealized_pnl": v.get("unrealized_pnl"),
+            "unrealized_pnl_pct": v.get("unrealized_pnl_pct"),
+            "exit_signal": v.get("exit_signal"),
+            "broker": v.get("broker"),
+        })
+
+    compact_calendars = []
+    for c in raw_calendars:
+        if not isinstance(c, dict):
+            continue
+        compact_calendars.append({
+            "ticker": c.get("ticker"),
+            "option_type": c.get("option_type"),
+            "strike": c.get("strike"),
+            "front_expiration": c.get("front_expiration"),
+            "back_expiration": c.get("back_expiration"),
+            "front_dte": c.get("front_dte"),
+            "back_dte": c.get("back_dte"),
+            "quantity": c.get("quantity"),
+            "current_mid_debit": c.get("current_mid_debit"),
+            "pnl_pct_estimate": c.get("pnl_pct_estimate"),
+            "action": c.get("action"),
+            "broker": c.get("broker"),
+        })
+
+    return jsonify({
+        "has_open_verticals": opts_summary.get("has_open_verticals", bool(raw_verticals)),
+        "has_open_calendars": opts_summary.get("has_open_calendars", bool(raw_calendars)),
+        "vertical_count": opts_summary.get("vertical_count", len(raw_verticals)),
+        "calendar_count": opts_summary.get("calendar_count", len(raw_calendars)),
+        "verticals": compact_verticals,
+        "calendars": compact_calendars,
+    })
+
+
 @knowledge_bp.route("/agent-prompt")
 @require_auth
 def knowledge_agent_prompt():
@@ -368,7 +452,8 @@ def knowledge_agent_prompt():
                 "action": "GET /api/advisor/positions",
                 "purpose": "Pull positions including open options/verticals",
             },
-            {"step": 5, "action": "GET /api/user/core-run-status", "purpose": "Check shared signal freshness"},
+            {"step": 5, "action": "GET /api/advisor/knowledge/positions", "purpose": "Load open options P&L and exit signals"},
+            {"step": 6, "action": "GET /api/user/core-run-status", "purpose": "Check shared signal freshness"},
         ],
         "interpretation_rules": [
             (
@@ -385,8 +470,8 @@ def knowledge_agent_prompt():
                 "insufficient wing financing -- report as 'worth monitoring', not as a directional miss."
             ),
             (
-                "Always check has_open_verticals/has_open_calendars in positions before recommending "
-                "a new position on the same ticker -- flag conflicts, do not suppress the recommendation."
+                "Always check has_open_verticals/has_open_calendars via GET /api/advisor/knowledge/positions "
+                "before recommending a new position on the same ticker -- flag conflicts, do not suppress the recommendation."
             ),
             (
                 "Exit signals (EXIT_TARGET, EXIT_STOP, EXIT_EXPIRY) are advisory only. "
