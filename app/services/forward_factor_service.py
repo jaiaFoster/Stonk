@@ -299,6 +299,7 @@ def build_forward_factor_strategy(
         stage["cheap_pass"] += 1
     chain_cap = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if is_dev else config.FF_MAX_CHAIN_TICKERS_PER_RUN
     reserve = max(chain_cap, int((requirement_plan or {}).get("forward_factor_chain_reserve", chain_cap)))
+    log_print(f"FF chain cap: chain_cap={chain_cap} reserve_from_plan={requirement_plan.get('forward_factor_chain_reserve') if requirement_plan else None} effective_reserve={reserve} cheap_pass_count={len(cheap_pass)}")
     if config.FF_SKIP_IF_ALREADY_FAILED_RECENTLY:
         non_repeat_pass = []
         for ticker, eligibility in cheap_pass:

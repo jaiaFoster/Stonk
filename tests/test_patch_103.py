@@ -467,5 +467,119 @@ class TestD2HighMoveWarning(unittest.TestCase):
         self.assertFalse(row["high_move_warning"])
 
 
+class TestPatch105PathADiagnostics(unittest.TestCase):
+    """Patch 105 Item 1: Path A emits diagnostic log lines."""
+
+    def test_path_a_diagnostic_log_lines(self):
+        from app.services.open_options_service import detect_open_options_positions
+        mock_provider = MagicMock()
+        mock_provider.is_configured = False
+        logs = []
+        with patch("app.services.open_options_service.TradierProvider", return_value=mock_provider), \
+             patch("app.config.OPEN_OPTIONS_DETECTOR_ENABLED", True), \
+             patch("app.config.ROBINHOOD_OPTIONS_DETECTOR_ENABLED", False):
+            detect_open_options_positions(log_print=logs.append)
+        path_a_logs = [l for l in logs if "Path A:" in l]
+        self.assertTrue(any("legs normalized" in l for l in path_a_logs))
+        self.assertTrue(any("quote attach complete" in l for l in path_a_logs))
+        self.assertTrue(any("detection complete" in l for l in path_a_logs))
+
+
+class TestPatch105PathBQuoteAttach(unittest.TestCase):
+    """Patch 105 Item 2: Path B attaches quotes via TradierProvider."""
+
+    def test_path_b_calls_attach_leg_quotes(self):
+        from app.services.open_options_service import detect_from_robinhood_raw_positions
+        mock_normalize = MagicMock(return_value={
+            "underlying": "NVDA", "option_type": "call", "strike": 210.0,
+            "expiration": "2026-07-18", "quantity": 1, "side": "long",
+            "symbol": "NVDA260718C00210000", "source": "robinhood",
+            "broker": "robinhood",
+        })
+        mock_provider = MagicMock()
+        mock_provider.is_configured = True
+        logs = []
+        raw = [{"id": "1", "option_type": "call"}]
+        with patch("app.services.open_options_service._robinhood_position_to_option_leg") as mock_leg, \
+             patch("app.services.open_options_service._attach_leg_quotes") as mock_attach, \
+             patch("app.config.OPEN_OPTIONS_QUOTE_LEGS", True), \
+             patch("app.providers.robinhood_provider._normalize_option_position", mock_normalize):
+            mock_leg.return_value = {
+                "underlying": "NVDA", "option_type": "call", "strike": 210.0,
+                "expiration": "2026-07-18", "quantity": 1, "abs_quantity": 1,
+                "side": "long", "symbol": "NVDA260718C00210000",
+                "source": "robinhood", "broker": "robinhood", "mid": None,
+            }
+            result = detect_from_robinhood_raw_positions(raw, log_print=logs.append, provider=mock_provider)
+            mock_attach.assert_called_once()
+        path_b_logs = [l for l in logs if "Path B:" in l]
+        self.assertTrue(any("quote attach applied" in l for l in path_b_logs))
+
+    def test_path_b_skips_when_provider_not_configured(self):
+        from app.services.open_options_service import detect_from_robinhood_raw_positions
+        mock_normalize = MagicMock(return_value={
+            "underlying": "NVDA", "option_type": "call", "strike": 210.0,
+            "expiration": "2026-07-18", "quantity": 1, "side": "long",
+            "symbol": "NVDA260718C00210000", "source": "robinhood",
+            "broker": "robinhood",
+        })
+        mock_provider = MagicMock()
+        mock_provider.is_configured = False
+        logs = []
+        raw = [{"id": "1", "option_type": "call"}]
+        with patch("app.services.open_options_service._robinhood_position_to_option_leg") as mock_leg, \
+             patch("app.services.open_options_service._attach_leg_quotes") as mock_attach, \
+             patch("app.config.OPEN_OPTIONS_QUOTE_LEGS", True), \
+             patch("app.providers.robinhood_provider._normalize_option_position", mock_normalize):
+            mock_leg.return_value = {
+                "underlying": "NVDA", "option_type": "call", "strike": 210.0,
+                "expiration": "2026-07-18", "quantity": 1, "abs_quantity": 1,
+                "side": "long", "symbol": "NVDA260718C00210000",
+                "source": "robinhood", "broker": "robinhood", "mid": None,
+            }
+            detect_from_robinhood_raw_positions(raw, log_print=logs.append, provider=mock_provider)
+            mock_attach.assert_not_called()
+        path_b_logs = [l for l in logs if "Path B:" in l]
+        self.assertTrue(any("quote attach skipped" in l for l in path_b_logs))
+
+    def test_path_b_includes_single_legs_key(self):
+        from app.services.open_options_service import detect_from_robinhood_raw_positions
+        logs = []
+        mock_normalize = MagicMock(return_value=None)
+        with patch("app.providers.robinhood_provider._normalize_option_position", mock_normalize):
+            result = detect_from_robinhood_raw_positions([], log_print=logs.append)
+        self.assertIn("single_legs", result)
+        self.assertIsInstance(result["single_legs"], list)
+
+
+class TestPatch105FinalizeIncludesSingleLegCount(unittest.TestCase):
+    """Patch 105: _finalize_result includes single_leg_count in summary."""
+
+    def test_summary_has_single_leg_count(self):
+        from app.services.open_options_service import _finalize_result
+        result = {
+            "account_ids": [],
+            "positions": [],
+            "option_legs": [],
+            "calendars": [],
+            "verticals": [],
+            "single_legs": [{"ticker": "NVDA"}],
+        }
+        finalized = _finalize_result(result)
+        self.assertEqual(finalized["summary"]["single_leg_count"], 1)
+
+    def test_summary_single_leg_count_zero(self):
+        from app.services.open_options_service import _finalize_result
+        result = {
+            "account_ids": [],
+            "positions": [],
+            "option_legs": [],
+            "calendars": [],
+            "verticals": [],
+        }
+        finalized = _finalize_result(result)
+        self.assertEqual(finalized["summary"]["single_leg_count"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
