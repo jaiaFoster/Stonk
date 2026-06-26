@@ -31,11 +31,10 @@ OCC_SYMBOL_RE = re.compile(r"^([A-Z0-9.]+?)(\d{6})([CP])(\d{8})$")
 
 
 def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, Any]:
-    """Fetch broker option positions and detect open calendars.
-
-    V2 detects Tradier option positions as before and also attempts to detect
-    Robinhood option positions automatically. This keeps the tool read-only and
-    avoids manual trade tracking/input workflows.
+    """Path A of the open options detection pipeline.
+    Both paths must produce identical schemas. Any field added to one path
+    must be added to the other. Long-term goal: merge into a single canonical
+    pipeline post-FF stabilization.
     """
     logger = log_print or (lambda msg: print(msg, flush=True))
     provider = TradierProvider()
@@ -143,10 +142,14 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
     result["positions"] = raw_positions
     result["option_legs"] = option_legs
 
+    logger(f"[open_options] Path A: {len(option_legs)} legs normalized | sides: {[(l.get('underlying'), l.get('side')) for l in option_legs]}")
+
     # Price all detected option legs through Tradier quotes when available. This
     # works for Robinhood legs too because they are normalized into OCC symbols.
     if option_legs and bool(config.OPEN_OPTIONS_QUOTE_LEGS) and provider.is_configured:
         _attach_leg_quotes(provider, option_legs, logger)
+
+    logger(f"[open_options] Path A: quote attach complete | mids: {[(l.get('underlying'), l.get('strike'), l.get('mid')) for l in option_legs]}")
 
     calendars = _detect_calendar_spreads(option_legs)
     if calendars and provider.is_configured and bool(getattr(config, "CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES", True)):
@@ -174,6 +177,8 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
     single_legs = _collect_unmatched_legs(option_legs, calendars, verticals)
     result["single_legs"] = single_legs
 
+    logger(f"[open_options] Path A: detection complete | verticals={len(verticals)} calendars={len(calendars)} singles={len(single_legs)}")
+
     result["has_data"] = bool(raw_positions or option_legs or calendars or verticals or single_legs)
 
     logger(
@@ -189,14 +194,13 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
 def detect_from_robinhood_raw_positions(
     raw_positions: list[dict[str, Any]],
     log_print: LogFn | None = None,
+    provider=None,
 ) -> dict[str, Any]:
     """
-    Process already-fetched raw Robinhood option positions without opening a new session.
-    Takes the raw API response from r.options.get_open_option_positions() and runs it
-    through the same normalization + calendar detection pipeline.
-
-    Use this when the Robinhood session is already open (personalization run) to avoid
-    opening a second authenticated session.
+    Path B of the open options detection pipeline.
+    Both paths must produce identical schemas. Any field added to one path
+    must be added to the other. Long-term goal: merge into a single canonical
+    pipeline post-FF stabilization.
     """
     from app.providers.robinhood_provider import _normalize_option_position  # type: ignore[attr-defined]
 
@@ -245,11 +249,28 @@ def detect_from_robinhood_raw_positions(
     result["positions"] = raw_normalized
     result["option_legs"] = option_legs
 
+    logger(f"[open_options] Path B: {len(option_legs)} legs normalized | sides: {[(l.get('underlying'), l.get('side')) for l in option_legs]}")
+
+    if option_legs:
+        try:
+            _prov = provider or TradierProvider()
+            if _prov.is_configured and bool(config.OPEN_OPTIONS_QUOTE_LEGS):
+                _attach_leg_quotes(_prov, option_legs, logger)
+                logger(f"[open_options] Path B: quote attach applied to {len(option_legs)} legs")
+            else:
+                logger(f"[open_options] Path B: quote attach skipped (provider not configured or OPEN_OPTIONS_QUOTE_LEGS=False)")
+        except Exception as e:
+            logger(f"[open_options] Path B: quote attach failed: {e}")
+
     calendars = _detect_calendar_spreads(option_legs)
     verticals = _detect_vertical_spreads(option_legs)
+    single_legs = _collect_unmatched_legs(option_legs, calendars, verticals)
     result["calendars"] = calendars
     result["verticals"] = verticals
-    result["has_data"] = bool(raw_normalized or option_legs or calendars or verticals)
+    result["single_legs"] = single_legs
+    result["has_data"] = bool(raw_normalized or option_legs or calendars or verticals or single_legs)
+
+    logger(f"[open_options] Path B: detection complete | verticals={len(verticals)} calendars={len(calendars)} singles={len(single_legs)}")
 
     logger(
         f"detect_from_robinhood_raw_positions: "
@@ -985,15 +1006,18 @@ def _finalize_result(result: dict[str, Any]) -> dict[str, Any]:
     option_legs = result.get("option_legs") or []
     calendars = result.get("calendars") or []
     verticals = result.get("verticals") or []
+    single_legs = result.get("single_legs") or []
     brokers = sorted({str((leg or {}).get("broker") or (leg or {}).get("source") or "unknown") for leg in option_legs if isinstance(leg, dict)})
     inferred_calendar_count = sum(1 for cal in calendars if isinstance(cal, dict) and cal.get("side_inferred"))
     result.setdefault("verticals", verticals)
+    result.setdefault("single_legs", single_legs)
     result["summary"] = {
         "account_count": len(result.get("account_ids") or []),
         "total_positions": len(result.get("positions") or []),
         "option_leg_count": len(option_legs),
         "calendar_count": len(calendars),
         "vertical_count": len(verticals),
+        "single_leg_count": len(single_legs),
         "inferred_calendar_count": inferred_calendar_count,
         "brokers": brokers,
         "has_open_options": bool(option_legs),

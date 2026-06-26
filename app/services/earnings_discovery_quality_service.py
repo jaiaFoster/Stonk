@@ -109,6 +109,7 @@ def filter_earnings_discovery_for_calendar_scan(
         if not ticker:
             continue
         quote = quotes.get(ticker) or {}
+        logger(f"[calendar] {ticker}: event fields include date_confidence={item.get('earnings_date_confidence')} sources={item.get('sources_seen')}")
         row = _quality_row(item, quote)
         try:
             expirations = provider.get_expirations(ticker)

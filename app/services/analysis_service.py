@@ -684,10 +684,12 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     log_print(f"StrategyRegistry: collecting requirements for {len(strategy_requirements)} strategy plugins")
     chain_cap_for_mode = config.FF_DEV_MAX_CHAIN_TICKERS_PER_RUN if clean_mode == "dev" else config.FF_MAX_CHAIN_TICKERS_PER_RUN
+    log_print(f"FF chain planning: budget_remaining={hub.budget.remaining} chain_cap={chain_cap_for_mode} FF_MIN_CHAIN_SET_BUDGET={config.FF_MIN_CHAIN_SET_BUDGET}")
     if config.FF_CHAIN_BUDGET_RESERVED and config.FORWARD_FACTOR_STRATEGY_ENABLED:
         ff_chain_reserve = min(chain_cap_for_mode, max(config.FF_MIN_CHAIN_SET_BUDGET, min(hub.budget.remaining, chain_cap_for_mode)))
     else:
         ff_chain_reserve = max(config.FF_MIN_CHAIN_SET_BUDGET, min(hub.budget.remaining, chain_cap_for_mode))
+    log_print(f"FF chain reserve: computed={ff_chain_reserve} | will reserve {ff_chain_reserve} slot(s) from budget")
     requirement_plan = planner.merge(strategy_requirements, provider_budget=max(0, hub.budget.remaining - ff_chain_reserve))
     requirement_plan["forward_factor_chain_reserve"] = ff_chain_reserve
     log_print(f"DataRequirementPlanner: received {len(strategy_requirements)} strategy requirement set(s)")

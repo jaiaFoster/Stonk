@@ -157,7 +157,7 @@ class TestMainDetectorIncludesVerticals:
              patch("app.config.OPEN_OPTIONS_DETECTOR_ENABLED", True), \
              patch("app.config.ROBINHOOD_OPTIONS_DETECTOR_ENABLED", False):
             result = detect_open_options_positions(log_print=logs.append)
-        vertical_logs = [l for l in logs if "[open_options]" in l]
+        vertical_logs = [l for l in logs if "[open_options]" in l and "signal=" in l]
         assert len(vertical_logs) == 1
         assert "NVDA" in vertical_logs[0]
         assert "signal=HOLD" in vertical_logs[0]
