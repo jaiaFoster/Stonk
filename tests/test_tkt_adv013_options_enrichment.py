@@ -345,6 +345,40 @@ class TestOverlayEnrichedMarks:
         _overlay_enriched_marks(options_positions, None)
         assert options_positions[0]["current_value"] is None
 
+    def test_overlay_matches_when_expiration_missing(self):
+        from app.api.advisor import _overlay_enriched_marks
+
+        options_positions = [{
+            "ticker": "NVDA", "strategy_type": "skew_vertical",
+            "legs": [
+                {"strike": 215.0, "position": "long", "current_price": None},
+                {"strike": 230.0, "position": "short", "current_price": None},
+            ],
+            "current_value": None, "exit_signal": None,
+        }]
+        report = {
+            "tradier_snapshot": {
+                "_open_options_positions": {
+                    "verticals": [{
+                        "ticker": "NVDA", "option_type": "call",
+                        "long_strike": 215.0, "short_strike": 230.0,
+                        "expiration": "2026-07-10",
+                        "current_value": 0.39, "unrealized_pnl": -211.0,
+                        "unrealized_pnl_pct": -84.4, "pct_of_max_profit": 2.6,
+                        "exit_signal": "EXIT_STOP",
+                        "legs": [
+                            {"strike": 215.0, "position": "long", "current_price": 6.10},
+                            {"strike": 230.0, "position": "short", "current_price": 5.71},
+                        ],
+                    }],
+                }
+            }
+        }
+        _overlay_enriched_marks(options_positions, report)
+        op = options_positions[0]
+        assert op["current_value"] == 0.39
+        assert op["exit_signal"] == "EXIT_STOP"
+
     def test_overlay_no_match_leaves_null(self):
         from app.api.advisor import _overlay_enriched_marks
 

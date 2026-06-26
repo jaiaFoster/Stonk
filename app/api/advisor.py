@@ -177,8 +177,10 @@ def _overlay_enriched_marks(options_positions: list[dict], report: dict | None) 
                 float(ev.get("long_strike") or 0),
                 float(ev.get("short_strike") or 0),
             ])
+            ev_exp = str(ev.get("expiration") or "")
+            exp_match = (not op_exp or not ev_exp or op_exp == ev_exp)
             if (op_ticker == str(ev.get("ticker") or "").upper()
-                    and op_exp == str(ev.get("expiration") or "")
+                    and exp_match
                     and op_strikes == ev_strikes):
                 op["current_value"] = ev.get("current_value")
                 op["unrealized_pnl"] = ev.get("unrealized_pnl")
@@ -378,6 +380,7 @@ def positions():
                             "ticker": p.get("ticker"),
                             "strategy_type": details.get("strategy_type") or "unknown",
                             "option_type": details.get("option_type"),
+                            "expiration": details.get("expiration"),
                             "legs": details.get("legs") or [],
                             "net_debit": details.get("net_debit"),
                             "current_value": details.get("current_value"),
