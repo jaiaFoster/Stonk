@@ -683,7 +683,20 @@ def _detect_vertical_spreads(option_legs: list[dict[str, Any]]) -> list[dict[str
                     "broker": str(long_leg.get("broker") or long_leg.get("source") or "robinhood"),
                 })
 
-    return verticals
+    seen: set[tuple[str, str, float, float, str]] = set()
+    deduped: list[dict[str, Any]] = []
+    for v in verticals:
+        key = (
+            str(v.get("ticker") or ""),
+            str(v.get("option_type") or ""),
+            float(v.get("long_strike") or 0),
+            float(v.get("short_strike") or 0),
+            str(v.get("expiration") or ""),
+        )
+        if key not in seen:
+            seen.add(key)
+            deduped.append(v)
+    return deduped
 
 
 def _build_calendar_summary(

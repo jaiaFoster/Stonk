@@ -156,6 +156,43 @@ def _pnl_dollars(net_debit: float | None, current_value: float | None, qty: floa
     return None
 
 
+def _overlay_enriched_marks(options_positions: list[dict], report: dict | None) -> None:
+    """Overlay live marks from core-run enriched verticals onto DB-sourced positions."""
+    if not report or not options_positions:
+        return
+    tradier = (report.get("tradier_snapshot") or {})
+    enriched = (tradier.get("_open_options_positions") or {}).get("verticals") or []
+    if not enriched:
+        return
+    for op in options_positions:
+        if op.get("strategy_type") != "skew_vertical":
+            continue
+        op_strikes = sorted(
+            float(l.get("strike") or 0) for l in (op.get("legs") or []) if l.get("strike")
+        )
+        op_ticker = str(op.get("ticker") or "").upper()
+        op_exp = str(op.get("expiration") or "")
+        for ev in enriched:
+            ev_strikes = sorted([
+                float(ev.get("long_strike") or 0),
+                float(ev.get("short_strike") or 0),
+            ])
+            if (op_ticker == str(ev.get("ticker") or "").upper()
+                    and op_exp == str(ev.get("expiration") or "")
+                    and op_strikes == ev_strikes):
+                op["current_value"] = ev.get("current_value")
+                op["unrealized_pnl"] = ev.get("unrealized_pnl")
+                op["unrealized_pnl_pct"] = ev.get("unrealized_pnl_pct")
+                op["pct_of_max_profit"] = ev.get("pct_of_max_profit")
+                op["exit_signal"] = ev.get("exit_signal", "HOLD")
+                for leg in (op.get("legs") or []):
+                    for ev_leg in (ev.get("legs") or []):
+                        if (leg.get("strike") == ev_leg.get("strike")
+                                and leg.get("position") == ev_leg.get("position")):
+                            leg["current_price"] = ev_leg.get("current_price")
+                break
+
+
 def _log_event(endpoint: str, token: str | None, run_id: str | None) -> None:
     """Fire-and-forget telemetry write. Never raises."""
     try:
@@ -362,6 +399,8 @@ def positions():
                     from app.db.users import log_user_error
                     log_user_error(user_id, "advisor.positions.options", type(exc).__name__, str(exc),
                                    run_id=user_run.get("run_id") if user_run else None)
+
+                _overlay_enriched_marks(options_positions, report)
 
                 has_open_verticals = any(p.get("strategy_type") == "skew_vertical" for p in options_positions)
                 has_open_calendars = any(p.get("strategy_type") == "earnings_calendar" for p in options_positions)

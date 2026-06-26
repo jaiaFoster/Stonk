@@ -271,3 +271,165 @@ class TestKnowledgeThresholdsLifecycle:
                 rules = data.get("interpretation_rules", [])
                 position_rules = [r for r in rules if "knowledge/positions" in r]
                 assert len(position_rules) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Gap 1: _overlay_enriched_marks overlays live marks from core run
+# ---------------------------------------------------------------------------
+
+class TestOverlayEnrichedMarks:
+
+    def test_overlay_populates_null_fields(self):
+        from app.api.advisor import _overlay_enriched_marks
+
+        options_positions = [{
+            "ticker": "NVDA", "strategy_type": "skew_vertical",
+            "expiration": "2026-07-10",
+            "legs": [
+                {"strike": 215.0, "position": "long", "current_price": None},
+                {"strike": 230.0, "position": "short", "current_price": None},
+            ],
+            "current_value": None, "exit_signal": None,
+        }]
+        report = {
+            "tradier_snapshot": {
+                "_open_options_positions": {
+                    "verticals": [{
+                        "ticker": "NVDA", "option_type": "call",
+                        "long_strike": 215.0, "short_strike": 230.0,
+                        "expiration": "2026-07-10",
+                        "current_value": 4.05, "unrealized_pnl": 155.0,
+                        "unrealized_pnl_pct": 62.0, "pct_of_max_profit": 27.0,
+                        "exit_signal": "EXIT_STOP",
+                        "legs": [
+                            {"strike": 215.0, "position": "long", "current_price": 6.10},
+                            {"strike": 230.0, "position": "short", "current_price": 2.05},
+                        ],
+                    }],
+                }
+            }
+        }
+        _overlay_enriched_marks(options_positions, report)
+        op = options_positions[0]
+        assert op["current_value"] == 4.05
+        assert op["unrealized_pnl"] == 155.0
+        assert op["exit_signal"] == "EXIT_STOP"
+        assert op["legs"][0]["current_price"] == 6.10
+        assert op["legs"][1]["current_price"] == 2.05
+
+    def test_overlay_skips_non_verticals(self):
+        from app.api.advisor import _overlay_enriched_marks
+
+        options_positions = [{
+            "ticker": "NVDA", "strategy_type": "earnings_calendar",
+            "expiration": "2026-07-10", "current_value": None, "legs": [],
+        }]
+        report = {
+            "tradier_snapshot": {
+                "_open_options_positions": {
+                    "verticals": [{
+                        "ticker": "NVDA", "long_strike": 215.0, "short_strike": 230.0,
+                        "expiration": "2026-07-10", "current_value": 4.05,
+                        "exit_signal": "HOLD", "legs": [],
+                    }],
+                }
+            }
+        }
+        _overlay_enriched_marks(options_positions, report)
+        assert options_positions[0]["current_value"] is None
+
+    def test_overlay_handles_no_report(self):
+        from app.api.advisor import _overlay_enriched_marks
+
+        options_positions = [{"ticker": "NVDA", "strategy_type": "skew_vertical", "current_value": None}]
+        _overlay_enriched_marks(options_positions, None)
+        assert options_positions[0]["current_value"] is None
+
+    def test_overlay_no_match_leaves_null(self):
+        from app.api.advisor import _overlay_enriched_marks
+
+        options_positions = [{
+            "ticker": "AAPL", "strategy_type": "skew_vertical",
+            "expiration": "2026-07-10",
+            "legs": [
+                {"strike": 200.0, "position": "long"},
+                {"strike": 210.0, "position": "short"},
+            ],
+            "current_value": None,
+        }]
+        report = {
+            "tradier_snapshot": {
+                "_open_options_positions": {
+                    "verticals": [{
+                        "ticker": "NVDA", "long_strike": 215.0, "short_strike": 230.0,
+                        "expiration": "2026-07-10", "current_value": 4.05,
+                        "exit_signal": "HOLD", "legs": [],
+                    }],
+                }
+            }
+        }
+        _overlay_enriched_marks(options_positions, report)
+        assert options_positions[0]["current_value"] is None
+
+
+# ---------------------------------------------------------------------------
+# Gap 2: _detect_vertical_spreads deduplicates by natural key
+# ---------------------------------------------------------------------------
+
+class TestVerticalDedup:
+
+    def test_dedup_removes_cross_broker_duplicates(self):
+        from app.services.open_options_service import _detect_vertical_spreads
+
+        legs = [
+            _make_leg("NVDA", "call", "2026-07-10", 215.0, "long",
+                      avg_cost_per_share=4.00, mid=6.00),
+            _make_leg("NVDA", "call", "2026-07-10", 230.0, "short",
+                      avg_cost_per_share=1.50, mid=2.00),
+            # Duplicate from second broker source
+            _make_leg("NVDA", "call", "2026-07-10", 215.0, "long",
+                      avg_cost_per_share=4.00, mid=6.00),
+            _make_leg("NVDA", "call", "2026-07-10", 230.0, "short",
+                      avg_cost_per_share=1.50, mid=2.00),
+        ]
+        legs[2]["broker"] = "tradier"
+        legs[3]["broker"] = "tradier"
+        verticals = _detect_vertical_spreads(legs)
+        assert len(verticals) == 1
+        assert verticals[0]["ticker"] == "NVDA"
+
+    def test_dedup_keeps_distinct_structures(self):
+        from app.services.open_options_service import _detect_vertical_spreads
+
+        legs = [
+            _make_leg("NVDA", "call", "2026-07-10", 215.0, "long",
+                      avg_cost_per_share=4.00, mid=6.00),
+            _make_leg("NVDA", "call", "2026-07-10", 235.0, "short",
+                      avg_cost_per_share=1.00, mid=1.50),
+            _make_leg("NVDA", "call", "2026-07-10", 215.0, "long",
+                      avg_cost_per_share=4.00, mid=6.00),
+            _make_leg("NVDA", "call", "2026-07-10", 230.0, "short",
+                      avg_cost_per_share=1.50, mid=2.00),
+        ]
+        verticals = _detect_vertical_spreads(legs)
+        short_strikes = sorted(v["short_strike"] for v in verticals)
+        assert len(verticals) == 2
+        assert short_strikes == [230.0, 235.0]
+
+    def test_cartesian_product_deduped_to_two(self):
+        """Simulates the NVDA scenario: 2 longs × 2 shorts = 4 raw, dedup to 2."""
+        from app.services.open_options_service import _detect_vertical_spreads
+
+        legs = [
+            _make_leg("NVDA", "call", "2026-07-10", 215.0, "long", qty=1,
+                      avg_cost_per_share=4.00, mid=6.00),
+            _make_leg("NVDA", "call", "2026-07-10", 215.0, "long", qty=1,
+                      avg_cost_per_share=4.00, mid=6.00),
+            _make_leg("NVDA", "call", "2026-07-10", 230.0, "short", qty=1,
+                      avg_cost_per_share=1.50, mid=2.00),
+            _make_leg("NVDA", "call", "2026-07-10", 235.0, "short", qty=1,
+                      avg_cost_per_share=1.00, mid=1.50),
+        ]
+        verticals = _detect_vertical_spreads(legs)
+        # 2 longs × 2 shorts = 4 raw, but dedup by (ticker, type, long, short, exp) → 2
+        assert len(verticals) == 2
