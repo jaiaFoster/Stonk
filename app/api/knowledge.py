@@ -350,10 +350,13 @@ def knowledge_positions():
         return jsonify({
             "has_open_verticals": False,
             "has_open_calendars": False,
+            "has_single_legs": False,
             "vertical_count": 0,
             "calendar_count": 0,
+            "single_leg_count": 0,
             "verticals": [],
             "calendars": [],
+            "single_legs": [],
         })
 
     summary_data = repo.load_summary(snapshot, full=True)
@@ -405,13 +408,35 @@ def knowledge_positions():
             "broker": c.get("broker"),
         })
 
+    raw_singles = open_opts.get("single_legs", []) or []
+    compact_singles = []
+    for s in raw_singles:
+        if not isinstance(s, dict):
+            continue
+        compact_singles.append({
+            "ticker": s.get("ticker"),
+            "option_type": s.get("option_type"),
+            "position": s.get("position"),
+            "strike": s.get("strike"),
+            "expiration": s.get("expiration"),
+            "dte": s.get("dte"),
+            "quantity": s.get("quantity"),
+            "average_price": s.get("average_price"),
+            "current_price": s.get("current_price"),
+            "unrealized_pnl": s.get("unrealized_pnl"),
+            "broker": s.get("broker"),
+        })
+
     return jsonify({
         "has_open_verticals": opts_summary.get("has_open_verticals", bool(raw_verticals)),
         "has_open_calendars": opts_summary.get("has_open_calendars", bool(raw_calendars)),
+        "has_single_legs": bool(raw_singles),
         "vertical_count": opts_summary.get("vertical_count", len(raw_verticals)),
         "calendar_count": opts_summary.get("calendar_count", len(raw_calendars)),
+        "single_leg_count": len(raw_singles),
         "verticals": compact_verticals,
         "calendars": compact_calendars,
+        "single_legs": compact_singles,
     })
 
 

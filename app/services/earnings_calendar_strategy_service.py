@@ -92,6 +92,15 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
     if candidate.get("score") is not None:
         reasons.append(f"Base calendar structure score from Tradier scanner: {base_score:.1f}.")
 
+    _evt_confidence = (event or {}).get("earnings_date_confidence") or (event or {}).get("date_confidence") or "unknown"
+    _evt_conflict = bool((event or {}).get("date_conflict") or (event or {}).get("earnings_source_conflict"))
+    _date_conflict_cap: float | None = None
+    if _evt_conflict:
+        _date_conflict_cap = 40.0
+        risks.append(f"Earnings date disputed between providers (confidence={_evt_confidence}); date may be incorrect.")
+    elif _evt_confidence == "single_source":
+        risks.append("Earnings date from single source only — confirm before entry.")
+
     if not event or not event.get("has_data") or earnings_date is None:
         relation = "earnings_unknown"
         score = min(score, float(config.EARNINGS_CALENDAR_UNKNOWN_TIMESTAMP_SCORE_CAP))
@@ -158,12 +167,21 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
                 next_check = "Use a front expiration before the earnings event or wait for another setup."
 
         elif earnings_date < front_exp:
-            relation = "short_leg_spans_earnings"
-            short_spans_event = True
-            score = min(score, float(config.EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP))
-            risks.append("Short front leg spans the earnings event; this is not the preferred long-calendar earnings structure.")
-            action = "AVOID / SHORT LEG EVENT RISK"
-            next_check = "Look for a front expiration before earnings, or explicitly treat this as a high-risk event-volatility trade."
+            expiry_gap = (front_exp - earnings_date).days
+            step_window = int(getattr(config, "CALENDAR_SHORT_LEG_STEP_WINDOW_DAYS", 10) or 10)
+            if expiry_gap <= step_window:
+                relation = "near_miss_expiry_gap"
+                score = min(score, 55.0)
+                risks.append(f"Nearest expiry {front_exp.isoformat()} is {expiry_gap}d after earnings — holiday or weekly gap. Manual evaluation recommended.")
+                action = "NEAR_MISS / EXPIRY_GAP"
+                next_check = "Verify whether the gap is due to a holiday; if so, this may still be a viable earnings calendar with elevated front-leg event risk."
+            else:
+                relation = "short_leg_spans_earnings"
+                short_spans_event = True
+                score = min(score, float(config.EARNINGS_CALENDAR_SHORT_SPANS_EVENT_SCORE_CAP))
+                risks.append("Short front leg spans the earnings event; this is not the preferred long-calendar earnings structure.")
+                action = "AVOID / SHORT LEG EVENT RISK"
+                next_check = "Look for a front expiration before earnings, or explicitly treat this as a high-risk event-volatility trade."
 
         else:
             relation = "unclassified"
@@ -181,6 +199,8 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
             next_check = "Manual review required before entry because earnings are very close."
 
     score = _apply_candidate_risk_caps(score, candidate, risks)
+    if _date_conflict_cap is not None:
+        score = min(score, _date_conflict_cap)
     score = round(max(0.0, min(100.0, score)), 1)
 
     compact_earnings = _compact_event(event)
@@ -209,6 +229,9 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         "long_back_leg": candidate.get("long_back_leg") or {},
         "earnings": compact_earnings,
         "earnings_date_confidence": compact_earnings.get("earnings_date_confidence"),
+        "date_confidence": compact_earnings.get("date_confidence"),
+        "date_conflict": compact_earnings.get("date_conflict", False),
+        "date_sources": compact_earnings.get("date_sources", []),
         "earnings_date_warning": compact_earnings.get("earnings_date_warning"),
         "earnings_relation": relation,
         "event_captured_by_back_leg": event_captured,
@@ -268,6 +291,9 @@ def _compact_event(event: dict[str, Any] | None) -> dict[str, Any]:
         "session_label": event.get("session_label"),
         "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
         "earnings_date_confidence": confidence,
+        "date_confidence": event.get("date_confidence") or confidence,
+        "date_conflict": bool(event.get("date_conflict") or event.get("earnings_source_conflict")),
+        "date_sources": list(event.get("date_sources") or event.get("sources_seen") or []),
         "days_until_earnings": event.get("days_until_earnings"),
         "source": event.get("source"),
         "error": event.get("error"),

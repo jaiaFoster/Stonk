@@ -135,7 +135,7 @@ def _compact(value: Any) -> Any:
         return value
     output = {}
     for key, item in value.items():
-        if key not in {"summary", "items", "actions", "calendars", "provider_status", "errors"}:
+        if key not in {"summary", "items", "actions", "calendars", "verticals", "single_legs", "provider_status", "errors"}:
             continue
         output[key] = item[:50] if isinstance(item, list) else item
     return output
