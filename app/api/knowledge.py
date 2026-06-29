@@ -294,6 +294,7 @@ def knowledge_thresholds():
             "earnings_discovery_window_days": config.EARNINGS_DISCOVERY_END_DAYS,
             "user_run_rate_limit_per_hour": config.USER_RUN_RATE_LIMIT_PER_HOUR,
         },
+        "ff_strategy": _ff_live_summary(),
     })
 
 
@@ -592,6 +593,13 @@ def knowledge_agent_prompt():
             ),
         ],
         "ff_strategy_context": _ff_agent_context(),
+        "ff_signal_instruction": (
+            "When ff_strategy_context is non-empty, always surface these in section 4 "
+            "(Strategy Signals) of the morning brief. These are source-qualified live "
+            "signals — present as actionable for manual review. FF_DRY_RUN=True means "
+            "execution is gated; the signal itself is real and reviewed."
+        ),
+        "active_ff_signals": _ff_agent_context(),
         "storage_guidance": (
             "Cache knowledge endpoint responses (strategies, signals, gates, sources) for the session "
             "-- static content. Re-fetch thresholds and status each session. Never cache positions or "
