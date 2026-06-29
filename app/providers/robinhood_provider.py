@@ -1286,6 +1286,13 @@ def _infer_robinhood_option_side(raw, quantity):
             return "long"
     if quantity < 0:
         return "short"
+    if quantity > 0:
+        print(
+            f"[side_inference] positive qty fallback → long — clearing_direction={raw.get('clearing_direction')!r} "
+            f"quantity={raw.get('quantity')!r}",
+            flush=True,
+        )
+        return "long"
     print(
         f"[side_inference] unknown side — clearing_direction={raw.get('clearing_direction')!r} "
         f"clearing_intraday_direction={raw.get('clearing_intraday_direction')!r} "

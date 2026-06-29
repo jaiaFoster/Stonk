@@ -297,6 +297,9 @@ def _finalize_quality_row(row: dict[str, Any]) -> None:
     hard_fail = any(str(check.get("status") or "").upper() == "FAIL" for check in row.get("checks", []) or [])
     row["passes_precheck"] = not hard_fail
     row["primary_rejection_reason"] = fail_reasons[0] if fail_reasons else None
+    if row.get("expiry_near_miss") and not row.get("passes_precheck"):
+        row["verdict"] = "NEAR_MISS / EXPIRY_GAP"
+        row["near_miss"] = True
 
 
 def _select_calendar_expiration_pair(expirations: list[str], event: dict[str, Any] | None = None) -> tuple[str, str] | None:

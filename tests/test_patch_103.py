@@ -887,5 +887,108 @@ class TestPatch107IVPercentile(unittest.TestCase):
         self.assertTrue(len(history) < 5)
 
 
+class TestPatch108FFStrategyInThresholds(unittest.TestCase):
+    """Patch 108 Item 1: ff_strategy top-level key in thresholds."""
+
+    @patch("app.services.report_snapshot_service.ReportSnapshotRepository")
+    def test_ff_strategy_key_exists_in_thresholds(self, mock_repo_cls):
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_repo.latest_success.return_value = None
+        from app.api.knowledge import _ff_live_summary
+        result = _ff_live_summary()
+        self.assertIn("ff_pass_tickers", result)
+        self.assertIn("ff_watch_tickers", result)
+        self.assertIn("ff_latest_pass", result)
+
+
+class TestPatch108FFSignalInstruction(unittest.TestCase):
+    """Patch 108 Item 1: ff_signal_instruction present in agent-prompt code."""
+
+    def test_agent_prompt_has_signal_instruction(self):
+        import inspect
+        from app.api import knowledge
+        source = inspect.getsource(knowledge.knowledge_agent_prompt)
+        self.assertIn("ff_signal_instruction", source)
+        self.assertIn("active_ff_signals", source)
+
+
+class TestPatch108NearMissVerdict(unittest.TestCase):
+    """Patch 108 Item 2: _finalize_quality_row sets NEAR_MISS verdict."""
+
+    def test_near_miss_sets_verdict(self):
+        from app.services.earnings_discovery_quality_service import _finalize_quality_row
+        row = {
+            "expiry_near_miss": True,
+            "checks": [
+                {"name": "Tradier quote", "status": "PASS", "detail": "ok"},
+                {"name": "Option expirations", "status": "WARN", "detail": "near miss"},
+                {"name": "Underlying price", "status": "FAIL", "detail": "too low"},
+            ],
+            "is_timestamp_confirmed": False,
+        }
+        _finalize_quality_row(row)
+        self.assertEqual(row["verdict"], "NEAR_MISS / EXPIRY_GAP")
+        self.assertTrue(row["near_miss"])
+        self.assertFalse(row["passes_precheck"])
+
+    def test_no_near_miss_no_verdict_override(self):
+        from app.services.earnings_discovery_quality_service import _finalize_quality_row
+        row = {
+            "expiry_near_miss": False,
+            "checks": [
+                {"name": "Tradier quote", "status": "PASS", "detail": "ok"},
+                {"name": "Option expirations", "status": "FAIL", "detail": "no pair"},
+            ],
+            "is_timestamp_confirmed": False,
+        }
+        _finalize_quality_row(row)
+        self.assertNotIn("verdict", row)
+        self.assertFalse(row["passes_precheck"])
+
+    def test_near_miss_passing_row_no_override(self):
+        from app.services.earnings_discovery_quality_service import _finalize_quality_row
+        row = {
+            "expiry_near_miss": True,
+            "checks": [
+                {"name": "Tradier quote", "status": "PASS", "detail": "ok"},
+                {"name": "Option expirations", "status": "WARN", "detail": "near miss"},
+                {"name": "Underlying price", "status": "PASS", "detail": "ok"},
+            ],
+            "is_timestamp_confirmed": True,
+        }
+        _finalize_quality_row(row)
+        self.assertTrue(row["passes_precheck"])
+        self.assertNotIn("verdict", row)
+
+
+class TestPatch108SideInferencePositiveQtyFallback(unittest.TestCase):
+    """Patch 108 Item 3: positive quantity defaults to long."""
+
+    def test_positive_qty_returns_long(self):
+        from app.providers.robinhood_provider import _infer_robinhood_option_side
+        raw = {"quantity": "5"}
+        result = _infer_robinhood_option_side(raw, 5)
+        self.assertEqual(result, "long")
+
+    def test_negative_qty_returns_short(self):
+        from app.providers.robinhood_provider import _infer_robinhood_option_side
+        raw = {"quantity": "-3"}
+        result = _infer_robinhood_option_side(raw, -3)
+        self.assertEqual(result, "short")
+
+    def test_explicit_side_takes_precedence(self):
+        from app.providers.robinhood_provider import _infer_robinhood_option_side
+        raw = {"side": "short", "quantity": "5"}
+        result = _infer_robinhood_option_side(raw, 5)
+        self.assertEqual(result, "short")
+
+    def test_zero_qty_returns_unknown(self):
+        from app.providers.robinhood_provider import _infer_robinhood_option_side
+        raw = {"quantity": "0"}
+        result = _infer_robinhood_option_side(raw, 0)
+        self.assertEqual(result, "unknown")
+
+
 if __name__ == "__main__":
     unittest.main()
