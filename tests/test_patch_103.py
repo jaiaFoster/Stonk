@@ -581,5 +581,172 @@ class TestPatch105FinalizeIncludesSingleLegCount(unittest.TestCase):
         self.assertEqual(finalized["summary"]["single_leg_count"], 0)
 
 
+class TestPatch106FFLiveSummary(unittest.TestCase):
+    """Patch 106 Item 1: _ff_live_summary extracts PASS/WATCH tickers from snapshot."""
+
+    @patch("app.services.report_snapshot_service.ReportSnapshotRepository")
+    def test_ff_live_summary_with_pass_row(self, mock_repo_cls):
+        from app.api.knowledge import _ff_live_summary
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_repo.latest_success.return_value = {"run_id": "r1"}
+        mock_repo.load_summary.return_value = {
+            "report_data": {
+                "tradier_snapshot": {
+                    "_strategy_results": {
+                        "forward_factor_calendar": {
+                            "rows": [
+                                {"ticker": "SBUX", "is_positive_signal": True,
+                                 "forward_factor": 0.91, "signal_score": 96,
+                                 "signal_tier": "SOURCE_QUALIFIED_POSITIVE",
+                                 "verdict": "SOURCE-QUALIFIED POSITIVE",
+                                 "front_expiration": "2026-08-21",
+                                 "back_expiration": "2026-09-18",
+                                 "conservative_debit": 1.79,
+                                 "edge_on_margin": 12.5},
+                                {"ticker": "XYZ", "is_positive_signal": False,
+                                 "verdict": "WATCH / NEAR MISS"},
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        result = _ff_live_summary()
+        self.assertEqual(result["ff_pass_tickers"], ["SBUX"])
+        self.assertEqual(result["ff_watch_tickers"], ["XYZ"])
+        self.assertIsNotNone(result["ff_latest_pass"])
+        self.assertEqual(result["ff_latest_pass"]["ticker"], "SBUX")
+        self.assertAlmostEqual(result["ff_latest_pass"]["forward_factor"], 0.91)
+
+    @patch("app.services.report_snapshot_service.ReportSnapshotRepository")
+    def test_ff_live_summary_no_snapshot(self, mock_repo_cls):
+        from app.api.knowledge import _ff_live_summary
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_repo.latest_success.return_value = None
+        result = _ff_live_summary()
+        self.assertEqual(result["ff_pass_tickers"], [])
+        self.assertIsNone(result["ff_latest_pass"])
+
+
+class TestPatch106FFAgentContext(unittest.TestCase):
+    """Patch 106 Item 1: _ff_agent_context produces readable signal lines."""
+
+    @patch("app.api.knowledge._ff_live_summary")
+    @patch("app.services.report_snapshot_service.ReportSnapshotRepository")
+    def test_ff_agent_context_with_pass(self, mock_repo_cls, mock_summary):
+        from app.api.knowledge import _ff_agent_context
+        mock_summary.return_value = {
+            "ff_pass_tickers": ["SBUX"],
+            "ff_latest_pass": {"ticker": "SBUX"},
+        }
+        mock_repo = MagicMock()
+        mock_repo_cls.return_value = mock_repo
+        mock_repo.latest_success.return_value = {"run_id": "r1"}
+        mock_repo.load_summary.return_value = {
+            "report_data": {
+                "tradier_snapshot": {
+                    "_strategy_results": {
+                        "forward_factor_calendar": {
+                            "rows": [
+                                {"ticker": "SBUX", "is_positive_signal": True,
+                                 "forward_factor": 0.907, "signal_score": 96,
+                                 "verdict": "SOURCE-QUALIFIED POSITIVE",
+                                 "front_expiration": "2026-08-21",
+                                 "back_expiration": "2026-09-18",
+                                 "conservative_debit": 1.79,
+                                 "edge_on_margin": 12.5},
+                            ],
+                        }
+                    }
+                }
+            }
+        }
+        lines = _ff_agent_context()
+        self.assertEqual(len(lines), 1)
+        self.assertIn("SBUX", lines[0])
+        self.assertIn("FF CALENDAR SIGNAL", lines[0])
+        self.assertIn("0.907", lines[0])
+
+    @patch("app.api.knowledge._ff_live_summary")
+    def test_ff_agent_context_no_pass(self, mock_summary):
+        from app.api.knowledge import _ff_agent_context
+        mock_summary.return_value = {
+            "ff_pass_tickers": [],
+            "ff_latest_pass": None,
+        }
+        lines = _ff_agent_context()
+        self.assertEqual(lines, [])
+
+
+class TestPatch106NearMissExpiry(unittest.TestCase):
+    """Patch 106 Item 2: _find_near_miss_expiry detects close expirations."""
+
+    def test_near_miss_found(self):
+        from app.services.earnings_discovery_quality_service import _find_near_miss_expiry
+        expirations = ["2026-07-10", "2026-07-17", "2026-08-21"]
+        event = {"earnings_date": "2026-07-08"}
+        result = _find_near_miss_expiry(expirations, event)
+        self.assertIsNotNone(result)
+        self.assertIn("2026-07-10", result["note"])
+        self.assertIn("2d", result["note"])
+
+    def test_no_near_miss_too_far(self):
+        from app.services.earnings_discovery_quality_service import _find_near_miss_expiry
+        expirations = ["2026-08-15", "2026-09-19"]
+        event = {"earnings_date": "2026-07-08"}
+        result = _find_near_miss_expiry(expirations, event)
+        self.assertIsNone(result)
+
+    def test_no_near_miss_before_earnings(self):
+        from app.services.earnings_discovery_quality_service import _find_near_miss_expiry
+        expirations = ["2026-07-03", "2026-07-04"]
+        event = {"earnings_date": "2026-07-08"}
+        result = _find_near_miss_expiry(expirations, event)
+        self.assertIsNone(result)
+
+    def test_no_event_date(self):
+        from app.services.earnings_discovery_quality_service import _find_near_miss_expiry
+        result = _find_near_miss_expiry(["2026-07-10"], {})
+        self.assertIsNone(result)
+
+    def test_quality_row_sets_near_miss_when_no_pair(self):
+        """When pair is None but near-miss expiry exists, expiry_near_miss=True."""
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {
+            "ticker": "CAG",
+            "earnings_date": "2026-07-08",
+        }
+        row = _quality_row(event, {})
+        self.assertFalse(row.get("expiry_near_miss", False))
+
+
+class TestPatch106VerticalDetectionRequiresSide(unittest.TestCase):
+    """Patch 106 Item 3: _detect_vertical_spreads requires explicit long/short."""
+
+    def test_unknown_sides_produce_zero_verticals(self):
+        from app.services.open_options_service import _detect_vertical_spreads
+        legs = [
+            {"underlying": "NVDA", "option_type": "call", "strike": 207.5,
+             "expiration": "2026-06-26", "side": "unknown", "abs_quantity": 1},
+            {"underlying": "NVDA", "option_type": "call", "strike": 215.0,
+             "expiration": "2026-06-26", "side": "unknown", "abs_quantity": 1},
+        ]
+        result = _detect_vertical_spreads(legs)
+        self.assertEqual(len(result), 0)
+
+    def test_explicit_sides_produce_vertical(self):
+        from app.services.open_options_service import _detect_vertical_spreads
+        legs = [
+            {"underlying": "NVDA", "option_type": "call", "strike": 207.5,
+             "expiration": "2026-06-26", "side": "long", "abs_quantity": 1},
+            {"underlying": "NVDA", "option_type": "call", "strike": 215.0,
+             "expiration": "2026-06-26", "side": "short", "abs_quantity": 1},
+        ]
+        result = _detect_vertical_spreads(legs)
+        self.assertEqual(len(result), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

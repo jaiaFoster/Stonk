@@ -131,7 +131,14 @@ def filter_earnings_discovery_for_calendar_scan(
                 else:
                     row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
             else:
-                row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
+                near_miss_exp = _find_near_miss_expiry(expirations, item)
+                if near_miss_exp:
+                    row["expiry_near_miss"] = True
+                    row["expiry_gap_note"] = near_miss_exp["note"]
+                    row["checks"].append(_check("Option expirations", "WARN", near_miss_exp["check_detail"]))
+                else:
+                    row["expiry_near_miss"] = False
+                    row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
         except Exception as e:
             safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
             row["checks"].append(_check("Option expirations", "FAIL", f"Expiration lookup failed: {safe_error}"))
@@ -411,6 +418,42 @@ def _select_generic_calendar_pair(parsed: list[tuple[int, str]]) -> tuple[str, s
     if best_pair:
         return best_pair[1], best_pair[2]
     return None
+
+
+def _find_near_miss_expiry(expirations: list[str], event: dict[str, Any]) -> dict[str, str] | None:
+    """Check if any available expiry falls within the step window after earnings.
+
+    Called when no valid front/back pair was found. If the nearest expiry is
+    close to earnings (within CALENDAR_SHORT_LEG_STEP_WINDOW_DAYS), flag as
+    near-miss rather than a hard structure failure.
+    """
+    earnings_date = _parse_date(event.get("earnings_date") or event.get("date"))
+    if not earnings_date:
+        return None
+    step_window = int(getattr(config, "CALENDAR_SHORT_LEG_STEP_WINDOW_DAYS", 10) or 10)
+    best_exp = None
+    best_gap = None
+    for exp_str in expirations:
+        exp_dt = _parse_date(exp_str)
+        if not exp_dt:
+            continue
+        gap = (exp_dt - earnings_date).days
+        if 0 < gap <= step_window:
+            if best_gap is None or gap < best_gap:
+                best_gap = gap
+                best_exp = exp_str
+    if best_exp is None:
+        return None
+    return {
+        "note": (
+            f"Nearest expiry {best_exp} is {best_gap}d after earnings — "
+            f"holiday gap or missing weekly. Consider manual entry."
+        ),
+        "check_detail": (
+            f"Near-miss: nearest available expiry {best_exp} is {best_gap}d after earnings — "
+            f"no valid pair, but front leg is close. Manual evaluation recommended."
+        ),
+    }
 
 
 def _cheap_prefilter(events: list[dict[str, Any]], logger: LogFn) -> list[dict[str, Any]]:

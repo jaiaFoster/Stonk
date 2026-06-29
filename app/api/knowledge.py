@@ -14,6 +14,83 @@ from app.auth import require_auth
 knowledge_bp = Blueprint("knowledge", __name__, url_prefix="/api/advisor/knowledge")
 
 
+def _ff_live_summary() -> dict:
+    """Pull FF PASS/WATCH tickers from the latest snapshot for thresholds + agent context."""
+    try:
+        from app.services.report_snapshot_service import ReportSnapshotRepository
+        repo = ReportSnapshotRepository()
+        snapshot = repo.latest_success(include_full=True)
+        if not snapshot:
+            return {"ff_pass_tickers": [], "ff_watch_tickers": [], "ff_latest_pass": None}
+        summary = repo.load_summary(snapshot, full=True)
+        report = summary.get("report_data", {}) or {}
+        tradier = report.get("tradier_snapshot", {}) or {}
+        strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
+        ff = strategies.get("forward_factor_calendar", {}) or {}
+        rows = ff.get("rows", []) or []
+        pass_rows = [r for r in rows if r.get("is_positive_signal")]
+        watch_rows = [r for r in rows if str(r.get("verdict") or "").startswith("WATCH")]
+        latest = None
+        if pass_rows:
+            top = pass_rows[0]
+            latest = {
+                "ticker": top.get("ticker"),
+                "forward_factor": top.get("forward_factor"),
+                "signal_score": top.get("signal_score"),
+                "signal_tier": top.get("signal_tier"),
+                "verdict": top.get("verdict"),
+                "front_expiration": top.get("front_expiration"),
+                "back_expiration": top.get("back_expiration"),
+                "conservative_debit": top.get("conservative_debit"),
+                "edge_on_margin": top.get("edge_on_margin"),
+            }
+        return {
+            "ff_pass_tickers": [r.get("ticker") for r in pass_rows],
+            "ff_watch_tickers": [r.get("ticker") for r in watch_rows],
+            "ff_latest_pass": latest,
+        }
+    except Exception:
+        return {"ff_pass_tickers": [], "ff_watch_tickers": [], "ff_latest_pass": None}
+
+
+def _ff_agent_context() -> list[str]:
+    """Build human-readable FF signal lines for agent-prompt context."""
+    try:
+        ff = _ff_live_summary()
+        if not ff.get("ff_latest_pass"):
+            return []
+        lines = []
+        from app.services.report_snapshot_service import ReportSnapshotRepository
+        repo = ReportSnapshotRepository()
+        snapshot = repo.latest_success(include_full=True)
+        if not snapshot:
+            return []
+        summary = repo.load_summary(snapshot, full=True)
+        report = summary.get("report_data", {}) or {}
+        tradier = report.get("tradier_snapshot", {}) or {}
+        strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
+        ff_result = strategies.get("forward_factor_calendar", {}) or {}
+        rows = ff_result.get("rows", []) or []
+        pass_rows = [r for r in rows if r.get("is_positive_signal")]
+        for r in pass_rows:
+            ff_val = r.get("forward_factor")
+            ff_str = f"{ff_val:.3f}" if ff_val is not None else "?"
+            score = r.get("signal_score", "?")
+            front = r.get("front_expiration", "?")
+            back = r.get("back_expiration", "?")
+            debit = r.get("conservative_debit")
+            debit_str = f"${debit:.2f}" if debit is not None else "?"
+            eom = r.get("edge_on_margin", "?")
+            lines.append(
+                f"FF CALENDAR SIGNAL: {r.get('ticker', '?')} — {r.get('verdict', '?')} "
+                f"(FF={ff_str}, score={score}, front={front}, back={back}, "
+                f"debit={debit_str}, edge_on_margin={eom}%)"
+            )
+        return lines
+    except Exception:
+        return []
+
+
 @knowledge_bp.route("/strategies")
 @require_auth
 def knowledge_strategies():
@@ -204,6 +281,7 @@ def knowledge_thresholds():
             "dry_run": True,
             "chain_dte_range": "50-105",
             "structure_delta_target": 0.35,
+            **_ff_live_summary(),
         },
         "open_options_lifecycle": {
             "profit_target_pct": config.SKEW_PROFIT_TARGET_PCT,
@@ -491,6 +569,12 @@ def knowledge_agent_prompt():
                 "FF_DRY_RUN=True means trade execution is gated, but the signal quality is real."
             ),
             (
+                "When ff_pass_tickers is non-empty in thresholds, always surface FF PASS signals in section 4 "
+                "(Strategy Signals) with ticker, structure, debit, and edge_on_margin. These are source-qualified "
+                "live signals — present them as actionable for manual review, not as research. "
+                "FF_DRY_RUN=True means execution is gated; the signal itself is real."
+            ),
+            (
                 "Skew WATCH rows with SKEW_NOT_RICH_ENOUGH have confirmed momentum but "
                 "insufficient wing financing -- report as 'worth monitoring', not as a directional miss."
             ),
@@ -507,6 +591,7 @@ def knowledge_agent_prompt():
                 "via config without code deploys."
             ),
         ],
+        "ff_strategy_context": _ff_agent_context(),
         "storage_guidance": (
             "Cache knowledge endpoint responses (strategies, signals, gates, sources) for the session "
             "-- static content. Re-fetch thresholds and status each session. Never cache positions or "

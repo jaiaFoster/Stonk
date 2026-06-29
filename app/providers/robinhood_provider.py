@@ -1162,6 +1162,11 @@ def _normalize_option_position(raw, account_number, account_label):
         return None
 
     side = _infer_robinhood_option_side(raw, quantity)
+    print(
+        f"[open_options] {underlying} ${strike} {option_type}: side={side!r} "
+        f"side_is_explicit={side in ('long', 'short')} qty={quantity}",
+        flush=True,
+    )
     abs_quantity = abs(quantity)
     avg_price_raw = _float_or_none(_first_present(raw, ["average_price", "average_open_price", "average_buy_price", "price"]))
     avg_price, avg_price_scale = _normalize_robinhood_option_average_price(avg_price_raw)
