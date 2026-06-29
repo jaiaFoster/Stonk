@@ -213,6 +213,18 @@ def build_skew_momentum_vertical_strategy(
             safe_error = sanitize_for_log(exc, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
             result["errors"].append(f"{ticker}: {safe_error}")
             result["items"].append(_blocked_data_row(ticker, direction, f"Tradier options data unavailable: {safe_error}"))
+    seen_tickers: dict[str, dict[str, Any]] = {}
+    dedup_before = len(result["items"])
+    for row in result["items"]:
+        ticker = str(row.get("ticker") or "")
+        existing = seen_tickers.get(ticker)
+        if existing is None:
+            seen_tickers[ticker] = row
+        elif (float(row.get("score") or 0)) > (float(existing.get("score") or 0)):
+            seen_tickers[ticker] = row
+    result["items"] = list(seen_tickers.values())
+    if len(result["items"]) < dedup_before:
+        logger(f"[skew] dedup: {dedup_before} rows → {len(result['items'])} unique tickers")
     result["items"].sort(key=lambda row: (0 if str(row.get("verdict")).startswith("PASS") else 1, -float(row.get("score") or 0)))
 
     # TKT-056: Conflict check — downgrade PASS to WATCH if user has open vertical in same ticker+expiry
