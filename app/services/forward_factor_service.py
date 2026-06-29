@@ -518,6 +518,32 @@ def build_forward_factor_strategy(
         gated["what_would_make_positive"] = what_would_make_positive(gated)
         gated["ff_gates"] = _ff_gates(gated)
         gated_rows.append(gated)
+    if config.FF_JOURNAL_ENABLED:
+        try:
+            from app.db.ff_journal import historical_ivs as _hist_ivs
+            for row in gated_rows:
+                _ticker = str(row.get("ticker") or "")
+                _current_iv = float(row.get("front_raw_iv") or 0) or None
+                if not _ticker or not _current_iv:
+                    row["iv_percentile"] = None
+                    row["iv_percentile_note"] = "Current IV unavailable"
+                    continue
+                _history = _hist_ivs(_ticker)
+                if len(_history) < 5:
+                    row["iv_percentile"] = None
+                    row["iv_percentile_note"] = f"Insufficient history ({len(_history)} observations)"
+                    continue
+                _below = sum(1 for iv in _history if iv <= _current_iv)
+                row["iv_percentile"] = round(_below / len(_history) * 100, 1)
+                row["iv_percentile_note"] = f"Rank {row['iv_percentile']}% across {len(_history)} journal observations"
+        except Exception:
+            for row in gated_rows:
+                row.setdefault("iv_percentile", None)
+                row.setdefault("iv_percentile_note", "Journal unavailable")
+    else:
+        for row in gated_rows:
+            row["iv_percentile"] = None
+            row["iv_percentile_note"] = "Journal disabled"
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']} earnings_clean={stage['earnings_clean']} earnings_contaminated={stage['earnings_contaminated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']} near_miss_ff={stage['near_miss_ff']} discovery_overrides={stage['discovery_overrides']}")

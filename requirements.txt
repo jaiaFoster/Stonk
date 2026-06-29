@@ -1,4 +1,4 @@
-robin_stocks @ git+https://github.com/jmfernandes/robin_stocks.git
+robin_stocks @ git+https://github.com/jmfernandes/robin_stocks.git@1b4ef98be36d1df127886889c843256799a1dfea
 requests==2.31.0
 pyotp==2.9.0
 flask==3.0.3
@@ -6,4 +6,3 @@ gunicorn==23.0.0
 bcrypt>=4.0.0
 cryptography>=41.0.0
 plaid-python>=26.0.0
-moomoo-api>=2.0.0

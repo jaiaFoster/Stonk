@@ -147,6 +147,24 @@ def write_run(run_id: str, run_date: str, candidates: list[dict[str, Any]], db_p
         return 0
 
 
+def historical_ivs(ticker: str, db_path: str | None = None) -> list[float]:
+    """Return historical front_iv values for a ticker from the journal. Safe on any error."""
+    path = db_path or config.FF_JOURNAL_DB_PATH
+    if not config.FF_JOURNAL_ENABLED:
+        return []
+    try:
+        if not Path(path).exists():
+            return []
+        with _connect(path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT front_iv FROM ff_journal WHERE ticker=? AND front_iv IS NOT NULL AND front_iv > 0 ORDER BY created_at",
+                (ticker.upper().strip(),),
+            ).fetchall()
+            return [float(r["front_iv"]) for r in rows]
+    except Exception:
+        return []
+
+
 def journal_summary(db_path: str | None = None) -> dict[str, Any]:
     """Summary stats for diagnostic endpoint. Provider-free. Returns safe dict on any error."""
     path = db_path or config.FF_JOURNAL_DB_PATH

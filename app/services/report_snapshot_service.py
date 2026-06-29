@@ -262,6 +262,9 @@ def _compact_strategy(value: dict[str, Any], *, include_rows: bool) -> dict[str,
     output = {key: value.get(key) for key in keep if key in value}
     if "summary" in output:
         output["summary"] = _compact_nested_summary(output["summary"])
+    for key in ("active_rows", "active_items"):
+        if isinstance(value.get(key), list):
+            output[key] = [_compact_hot_row(item) for item in value.get(key)[:row_limit]]
     if include_rows:
         for key in ("pass_items", "watch_items", "blocked_items", "items", "rows"):
             if isinstance(value.get(key), list):

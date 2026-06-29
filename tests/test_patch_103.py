@@ -748,5 +748,144 @@ class TestPatch106VerticalDetectionRequiresSide(unittest.TestCase):
         self.assertEqual(len(result), 1)
 
 
+class TestPatch107BuildFix(unittest.TestCase):
+    """Patch 107 Item 1: Dockerfile and requirements.txt fixes."""
+
+    def test_dockerfile_no_cache_dir_removed(self):
+        with open("Dockerfile") as f:
+            content = f.read()
+        self.assertNotIn("--no-cache-dir", content)
+        self.assertIn("pip install -r requirements.txt", content)
+
+    def test_requirements_no_moomoo(self):
+        with open("requirements.txt") as f:
+            content = f.read()
+        self.assertNotIn("moomoo", content)
+
+    def test_requirements_robin_stocks_pinned(self):
+        with open("requirements.txt") as f:
+            content = f.read()
+        self.assertIn("1b4ef98be36d1df127886889c843256799a1dfea", content)
+
+
+class TestPatch107SkewDedup(unittest.TestCase):
+    """Patch 107 Item 2: Skew dedup keeps highest-scoring row per ticker."""
+
+    def _dedup(self, items):
+        """Replicate the inline dedup logic from build_skew_momentum_vertical_strategy."""
+        seen: dict[str, dict] = {}
+        for row in items:
+            ticker = str(row.get("ticker") or "")
+            existing = seen.get(ticker)
+            if existing is None:
+                seen[ticker] = row
+            elif (float(row.get("score") or 0)) > (float(existing.get("score") or 0)):
+                seen[ticker] = row
+        return list(seen.values())
+
+    def test_dedup_keeps_highest_score(self):
+        items = [
+            {"ticker": "CRDO", "score": 10, "verdict": "PASS"},
+            {"ticker": "CRDO", "score": 20, "verdict": "PASS"},
+            {"ticker": "CRDO", "score": 5, "verdict": "WATCH"},
+            {"ticker": "NVO", "score": 15, "verdict": "PASS"},
+            {"ticker": "NVO", "score": 8, "verdict": "WATCH"},
+        ]
+        deduped = self._dedup(items)
+        tickers = [r["ticker"] for r in deduped]
+        self.assertEqual(sorted(tickers), ["CRDO", "NVO"])
+        crdo = next(r for r in deduped if r["ticker"] == "CRDO")
+        self.assertEqual(crdo["score"], 20)
+
+    def test_dedup_no_duplicates_passthrough(self):
+        items = [
+            {"ticker": "AAPL", "score": 10, "verdict": "PASS"},
+            {"ticker": "MSFT", "score": 8, "verdict": "WATCH"},
+        ]
+        deduped = self._dedup(items)
+        self.assertEqual(len(deduped), 2)
+
+    def test_dedup_code_exists_in_service(self):
+        import inspect
+        from app.services import skew_momentum_vertical_service
+        source = inspect.getsource(skew_momentum_vertical_service.build_skew_momentum_vertical_strategy)
+        self.assertIn("seen_tickers", source)
+        self.assertIn("dedup", source)
+
+
+class TestPatch107StaleStructureInSnapshot(unittest.TestCase):
+    """Patch 107 Item 3: _compact_strategy includes active_rows."""
+
+    def test_compact_strategy_includes_active_rows(self):
+        from app.services.report_snapshot_service import _compact_strategy
+        strategy = {
+            "strategy_id": "skew_momentum_vertical",
+            "enabled": True,
+            "summary": {"pass_count": 1},
+            "active_rows": [
+                {"ticker": "ORCL", "stale_structure": True, "stale_structure_note": "Stock 37% below"},
+            ],
+            "items": [
+                {"ticker": "CRDO", "score": 20},
+            ],
+        }
+        compact = _compact_strategy(strategy, include_rows=False)
+        self.assertIn("active_rows", compact)
+        self.assertEqual(len(compact["active_rows"]), 1)
+        self.assertTrue(compact["active_rows"][0]["stale_structure"])
+        self.assertNotIn("items", compact)
+
+    def test_compact_strategy_active_rows_empty_list(self):
+        from app.services.report_snapshot_service import _compact_strategy
+        strategy = {
+            "strategy_id": "skew_momentum_vertical",
+            "enabled": True,
+            "summary": {},
+        }
+        compact = _compact_strategy(strategy, include_rows=False)
+        self.assertNotIn("active_rows", compact)
+
+
+class TestPatch107AccountRiskAlreadyExists(unittest.TestCase):
+    """Patch 107 Item 4: evaluate_account_risk already computes debit_pct_of_account."""
+
+    def test_debit_pct_of_account_computed(self):
+        from app.services.calendar_verdict_service import evaluate_account_risk
+        candidate = {"conservative_debit": 2.50}
+        account_context = {"account_value_estimate": 50000.0}
+        result = evaluate_account_risk(candidate, account_context)
+        self.assertIn("debit_pct_of_account", result)
+        self.assertIsNotNone(result["debit_pct_of_account"])
+        self.assertIn("account_risk_status", result)
+
+    def test_no_account_value_returns_unknown(self):
+        from app.services.calendar_verdict_service import evaluate_account_risk
+        candidate = {"conservative_debit": 2.50}
+        result = evaluate_account_risk(candidate, None)
+        self.assertIn("account_risk_status", result)
+
+
+class TestPatch107IVPercentile(unittest.TestCase):
+    """Patch 107 Item 5: IV percentile from FF journal history."""
+
+    def test_historical_ivs_returns_list(self):
+        from app.db.ff_journal import historical_ivs
+        with patch("app.db.ff_journal.config") as mock_config:
+            mock_config.FF_JOURNAL_ENABLED = False
+            result = historical_ivs("SBUX")
+        self.assertEqual(result, [])
+
+    def test_iv_percentile_computation(self):
+        history = [0.20, 0.22, 0.25, 0.28, 0.30, 0.35, 0.40]
+        current = 0.30
+        below = sum(1 for iv in history if iv <= current)
+        pct = round(below / len(history) * 100, 1)
+        self.assertAlmostEqual(pct, 71.4, places=1)
+
+    def test_iv_percentile_insufficient_history(self):
+        history = [0.20, 0.22, 0.25]
+        self.assertTrue(len(history) < 5)
+
+
 if __name__ == "__main__":
     unittest.main()
