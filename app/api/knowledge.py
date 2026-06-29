@@ -600,6 +600,26 @@ def knowledge_agent_prompt():
             "execution is gated; the signal itself is real and reviewed."
         ),
         "active_ff_signals": _ff_agent_context(),
+        "volatility_framing": {
+            "principle": (
+                "Frame every options trade in volatility-pricing language, not directional language. "
+                "The edge is in the vol surface — IV vs RV, term structure slope, skew richness — "
+                "not in predicting stock direction."
+            ),
+            "terminology": [
+                "Use 'vol is rich/cheap' instead of 'stock will go up/down'.",
+                "Use 'harvesting IV crush' instead of 'betting on earnings'.",
+                "Use 'selling rich front vol, buying cheap back vol' for calendar rationale.",
+                "Use 'VRP (volatility risk premium) positive' when IV > RV historically.",
+                "Use 'term structure in backwardation' when front IV > back IV (favorable for calendars).",
+                "Use 'skew financing the debit' for vertical spread rationale.",
+            ],
+            "never_say": [
+                "Never say 'the stock will move X%' — say 'the market is pricing X% move'.",
+                "Never say 'bullish/bearish on earnings' — say 'front vol is rich relative to realized'.",
+                "Never frame calendar spreads as directional bets — they are volatility structure trades.",
+            ],
+        },
         "storage_guidance": (
             "Cache knowledge endpoint responses (strategies, signals, gates, sources) for the session "
             "-- static content. Re-fetch thresholds and status each session. Never cache positions or "

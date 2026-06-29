@@ -789,6 +789,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         for p in (positions or [])
         if str(p.get("ticker") or "").strip()
     ))
+    _account_value_estimate = _estimate_account_value(positions)
     earnings_discovery_quality = run_optional_step(
         "earnings_quality_filter",
         "Running Earnings Discovery Quality Filter v1...",
@@ -798,6 +799,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             run_mode=clean_mode,
             held_tickers=_held_tickers,
             earnings_events=earnings_events,
+            account_value=_account_value_estimate,
         ),
         EMPTY_EARNINGS_QUALITY,
         lambda result: (
@@ -993,7 +995,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         )
     tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
 
-    account_context = {"account_value_estimate": _estimate_account_value(positions)}
+    account_context = {"account_value_estimate": _account_value_estimate}
 
     calendar_ranking = run_optional_step(
         "calendar_ranking",

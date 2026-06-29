@@ -127,6 +127,9 @@ def _strategy_summary(result: dict[str, Any], include_rows: bool) -> dict[str, A
     output = {key: result.get(key) for key in ("strategy_id", "strategy_label", "enabled", "ran", "pass_count", "watch_count", "fail_count", "skipped_count", "summary")}
     if include_rows:
         output["rows"] = list(result.get("rows", []) or [])[:50]
+    for key in ("active_rows", "active_items"):
+        if isinstance(result.get(key), list):
+            output[key] = list(result[key])[:50]
     return output
 
 
