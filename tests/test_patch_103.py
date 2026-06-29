@@ -990,5 +990,205 @@ class TestPatch108SideInferencePositiveQtyFallback(unittest.TestCase):
         self.assertEqual(result, "unknown")
 
 
+# ────────────────────────────────────────────────────────────────────
+# Patch 109: Near-miss upstream fix, dev snapshot stale structure,
+#            account_value threading, volatility framing, leg detail
+#            gaps, provider_fetch_count surfacing.
+# ────────────────────────────────────────────────────────────────────
+
+class TestPatch109GenericPairReturnType(unittest.TestCase):
+    """Item 1 — TKT-061: _select_generic_calendar_pair returns 3-tuple."""
+
+    def test_generic_pair_returns_three_tuple(self):
+        from app.services.earnings_discovery_quality_service import _select_generic_calendar_pair
+        today = date.today()
+        parsed = [
+            (10, (today.replace(day=1)).strftime("%Y-%m-%d")),
+            (14, (today.replace(day=5)).strftime("%Y-%m-%d")),
+            (45, (today.replace(day=28) if today.day < 28 else today).strftime("%Y-%m-%d")),
+        ]
+        result = _select_generic_calendar_pair(parsed)
+        self.assertIsNotNone(result)
+        self.assertEqual(len(result), 3, "Generic pair must return 3-tuple (front, back, near_miss_flag)")
+        self.assertFalse(result[2], "Generic pair near_miss flag should always be False")
+
+    def test_generic_pair_none_when_no_match(self):
+        from app.services.earnings_discovery_quality_service import _select_generic_calendar_pair
+        result = _select_generic_calendar_pair([])
+        self.assertIsNone(result)
+
+    def test_calendar_pair_consistent_len(self):
+        """Both event-aware and generic paths should produce indexable pair[2]."""
+        from app.services.earnings_discovery_quality_service import _select_calendar_expiration_pair
+        from unittest.mock import patch as _p
+        today = date.today()
+        exps = [
+            (today.replace(year=today.year + 1, month=1, day=17)).strftime("%Y-%m-%d"),
+            (today.replace(year=today.year + 1, month=2, day=21)).strftime("%Y-%m-%d"),
+        ]
+        with _p("app.services.earnings_discovery_quality_service.config") as mock_cfg:
+            mock_cfg.CALENDAR_FRONT_MIN_DTE = 7
+            mock_cfg.CALENDAR_FRONT_MAX_DTE = 400
+            mock_cfg.CALENDAR_MIN_EXPIRATION_GAP_DAYS = 14
+            mock_cfg.CALENDAR_BACK_MAX_DTE = 500
+            mock_cfg.CALENDAR_TARGET_EXPIRATION_GAP_DAYS = 30
+            mock_cfg.CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS = False
+            result = _select_calendar_expiration_pair(exps, event=None)
+        if result is not None:
+            self.assertGreaterEqual(len(result), 3)
+
+
+class TestPatch109DevSnapshotActiveRows(unittest.TestCase):
+    """Item 2 — TKT-ADV-003: _strategy_summary includes active_rows/active_items."""
+
+    def test_active_rows_included(self):
+        from app.services.developer_snapshot_service import _strategy_summary
+        strat = {
+            "strategy_id": "forward_factor_calendar",
+            "strategy_label": "FF",
+            "enabled": True,
+            "ran": True,
+            "pass_count": 2,
+            "watch_count": 1,
+            "fail_count": 0,
+            "skipped_count": 0,
+            "summary": {},
+            "rows": [{"ticker": "AAPL"}],
+            "active_rows": [{"ticker": "MSFT", "verdict": "PASS"}],
+            "active_items": [{"ticker": "GOOG", "action": "review"}],
+        }
+        result = _strategy_summary(strat, include_rows=False)
+        self.assertIn("active_rows", result)
+        self.assertIn("active_items", result)
+        self.assertEqual(len(result["active_rows"]), 1)
+        self.assertEqual(result["active_rows"][0]["ticker"], "MSFT")
+        self.assertNotIn("rows", result)
+
+    def test_active_rows_absent_when_not_in_source(self):
+        from app.services.developer_snapshot_service import _strategy_summary
+        strat = {"strategy_id": "test", "rows": []}
+        result = _strategy_summary(strat, include_rows=False)
+        self.assertNotIn("active_rows", result)
+        self.assertNotIn("active_items", result)
+
+
+class TestPatch109AccountValueThreading(unittest.TestCase):
+    """Item 3 — TKT-ADV-014: account_value threaded to quality filter."""
+
+    def test_quality_filter_accepts_account_value(self):
+        import inspect
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        sig = inspect.signature(filter_earnings_discovery_for_calendar_scan)
+        self.assertIn("account_value", sig.parameters)
+
+    def test_account_value_in_summary(self):
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        with patch("app.services.earnings_discovery_quality_service.TradierProvider"):
+            result = filter_earnings_discovery_for_calendar_scan(
+                earnings_trade_discovery={"items": []},
+                account_value=12345.67,
+            )
+        self.assertEqual(result["summary"]["account_value_estimate"], 12345.67)
+
+
+class TestPatch109VolatilityFraming(unittest.TestCase):
+    """Item 4 — TKT-ADV-022/023: volatility framing in agent-prompt."""
+
+    def _get_agent_prompt(self):
+        import inspect, json
+        from app.api import knowledge
+        source = inspect.getsource(knowledge.knowledge_agent_prompt)
+        return source
+
+    def test_volatility_framing_present(self):
+        source = self._get_agent_prompt()
+        self.assertIn("volatility_framing", source)
+        self.assertIn("principle", source)
+        self.assertIn("terminology", source)
+        self.assertIn("never_say", source)
+
+    def test_volatility_framing_content(self):
+        source = self._get_agent_prompt()
+        self.assertIn("vol", source.lower())
+        self.assertIn("IV crush", source)
+        self.assertIn("VRP", source)
+
+
+class TestPatch109VerticalLegFields(unittest.TestCase):
+    """Item 5 — Leg detail gaps: position_type, side, option_type in vertical legs."""
+
+    def test_leg_fields_present_in_source(self):
+        import inspect
+        from app.services import open_options_service
+        source = inspect.getsource(open_options_service._detect_vertical_spreads)
+        for field in ("position_type", "side", "option_type"):
+            long_pattern = f'"{field}"'
+            self.assertIn(long_pattern, source, f"Leg dict should contain '{field}'")
+
+    def test_leg_dict_structure(self):
+        """Verify both legs get position_type/side/option_type from surrounding context."""
+        import inspect
+        from app.services import open_options_service
+        source = inspect.getsource(open_options_service._detect_vertical_spreads)
+        self.assertIn('"position_type": "long"', source)
+        self.assertIn('"position_type": "short"', source)
+        self.assertIn('"side": "long"', source)
+        self.assertIn('"side": "short"', source)
+        count = source.count('"option_type": option_type')
+        self.assertGreaterEqual(count, 2, "Both legs should inherit option_type from parent")
+
+
+class TestPatch109ProviderFetchCount(unittest.TestCase):
+    """Item 6 — TKT-053: provider_fetch_count in dev/status."""
+
+    def test_provider_fetch_count_surfaced(self):
+        from app.services.app_diagnostics_service import build_dev_status
+        with patch("app.services.app_diagnostics_service.RunManifestRepository") as MockRepo:
+            MockRepo.return_value.latest.return_value = {"provider_fetch_count": 42}
+            with patch("app.services.app_diagnostics_service.build_commit_identity", return_value={
+                "source_of_truth": "abc123", "git_branch": "main",
+                "deploy_label": "v1", "commit_identity_mismatch": False,
+            }):
+                result = build_dev_status()
+        self.assertEqual(result["provider_fetch_count"], 42)
+
+    def test_provider_fetch_count_default_zero(self):
+        from app.services.app_diagnostics_service import build_dev_status
+        with patch("app.services.app_diagnostics_service.RunManifestRepository") as MockRepo:
+            MockRepo.return_value.latest.return_value = {}
+            with patch("app.services.app_diagnostics_service.build_commit_identity", return_value={
+                "source_of_truth": "abc123", "git_branch": "main",
+                "deploy_label": "v1", "commit_identity_mismatch": False,
+            }):
+                result = build_dev_status()
+        self.assertEqual(result["provider_fetch_count"], 0)
+
+
+class TestPatch109VerificationItems(unittest.TestCase):
+    """Items 7-9: Verification-only checks."""
+
+    def test_iv_percentile_enrichment_exists(self):
+        """Item 8: IV percentile code exists in forward_factor_service."""
+        import inspect
+        from app.services import forward_factor_service
+        source = inspect.getsource(forward_factor_service)
+        self.assertIn("iv_percentile", source)
+        self.assertIn("iv_percentile_note", source)
+
+    def test_edge_on_margin_in_ff_agent_context(self):
+        """Item 9: edge_on_margin surfaced in FF agent context."""
+        import inspect
+        from app.api import knowledge
+        source = inspect.getsource(knowledge._ff_agent_context)
+        self.assertIn("edge_on_margin", source)
+
+    def test_edge_on_margin_in_ff_live_summary(self):
+        """Item 9: edge_on_margin in FF live summary."""
+        import inspect
+        from app.api import knowledge
+        source = inspect.getsource(knowledge._ff_live_summary)
+        self.assertIn("edge_on_margin", source)
+
+
 if __name__ == "__main__":
     unittest.main()

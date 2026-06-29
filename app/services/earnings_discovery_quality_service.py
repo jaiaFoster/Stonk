@@ -25,6 +25,7 @@ def filter_earnings_discovery_for_calendar_scan(
     run_mode: str = "prod",
     held_tickers: list[str] | None = None,
     earnings_events: dict[str, dict[str, Any]] | None = None,
+    account_value: float | None = None,
 ) -> dict[str, Any]:
     """Return optionable/liquid-enough earnings events for calendar scanning.
 
@@ -65,6 +66,7 @@ def filter_earnings_discovery_for_calendar_scan(
             "rejected_count": 0,
             "max_to_check": max_to_check,
             "max_final": max_final,
+            "account_value_estimate": account_value,
         },
         "errors": [],
     }
@@ -419,7 +421,7 @@ def _select_generic_calendar_pair(parsed: list[tuple[int, str]]) -> tuple[str, s
             if best_pair is None or score < best_pair[0]:
                 best_pair = (score, front_exp, back_exp)
     if best_pair:
-        return best_pair[1], best_pair[2]
+        return best_pair[1], best_pair[2], False
     return None
 
 
