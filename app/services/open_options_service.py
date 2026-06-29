@@ -142,7 +142,7 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
     result["positions"] = raw_positions
     result["option_legs"] = option_legs
 
-    logger(f"[open_options] Path A: {len(option_legs)} legs normalized | sides: {[(l.get('underlying'), l.get('side')) for l in option_legs]}")
+    logger(f"[open_options] Path A: {len(option_legs)} legs normalized | sides: {[(l.get('underlying'), l.get('side'), l.get('strike'), l.get('option_type')) for l in option_legs]}")
 
     # Price all detected option legs through Tradier quotes when available. This
     # works for Robinhood legs too because they are normalized into OCC symbols.
