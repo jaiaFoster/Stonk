@@ -297,6 +297,7 @@ def evaluate_account_risk(candidate: dict[str, Any], account_context: dict[str, 
 
     return {
         "account_value_estimate": account_value,
+        "account_value_source": "override" if override else str((account_context or {}).get("account_value_source") or "unknown"),
         "debit_total_estimate": debit,
         "debit_pct_of_account": None if pct_of_account is None else round(pct_of_account, 2),
         "max_loss_assumption": "debit" if bool(config.CALENDAR_ASSUME_MAX_LOSS_IS_DEBIT) else "unknown",

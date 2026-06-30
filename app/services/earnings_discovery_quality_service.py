@@ -26,6 +26,7 @@ def filter_earnings_discovery_for_calendar_scan(
     held_tickers: list[str] | None = None,
     earnings_events: dict[str, dict[str, Any]] | None = None,
     account_value: float | None = None,
+    account_value_source: str = "unknown",
 ) -> dict[str, Any]:
     """Return optionable/liquid-enough earnings events for calendar scanning.
 
@@ -67,6 +68,7 @@ def filter_earnings_discovery_for_calendar_scan(
             "max_to_check": max_to_check,
             "max_final": max_final,
             "account_value_estimate": account_value,
+            "account_value_source": account_value_source,
         },
         "errors": [],
     }
@@ -113,6 +115,8 @@ def filter_earnings_discovery_for_calendar_scan(
         quote = quotes.get(ticker) or {}
         logger(f"[calendar] {ticker}: event fields include date_confidence={item.get('earnings_date_confidence')} sources={item.get('sources_seen')}")
         row = _quality_row(item, quote)
+        row["expiry_near_miss"] = False
+        row["expiry_exception"] = None
         try:
             expirations = provider.get_expirations(ticker)
             row["expiration_count"] = len(expirations)
@@ -139,10 +143,10 @@ def filter_earnings_discovery_for_calendar_scan(
                     row["expiry_gap_note"] = near_miss_exp["note"]
                     row["checks"].append(_check("Option expirations", "WARN", near_miss_exp["check_detail"]))
                 else:
-                    row["expiry_near_miss"] = False
                     row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
         except Exception as e:
             safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
+            row["expiry_exception"] = repr(safe_error)
             row["checks"].append(_check("Option expirations", "FAIL", f"Expiration lookup failed: {safe_error}"))
             row["errors"].append(str(safe_error))
 

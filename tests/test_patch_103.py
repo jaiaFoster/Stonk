@@ -1190,5 +1190,235 @@ class TestPatch109VerificationItems(unittest.TestCase):
         self.assertIn("edge_on_margin", source)
 
 
+# ────────────────────────────────────────────────────────────────────
+# Patch 28A: Canonical Data Pipeline + Structural Fixes.
+#            stale_structure on scan candidates, expiry_near_miss/exception
+#            defaults, account_value_source threading, options_trading
+#            philosophy block, exclude-list _strategy_summary rewrite.
+# ────────────────────────────────────────────────────────────────────
+
+class TestPatch28AStaleStructureOnCandidates(unittest.TestCase):
+    """Item 1: stale_structure/stale_structure_note set on scan candidate rows."""
+
+    def _make_candidate(self, underlying):
+        from app.services.skew_momentum_vertical_service import _candidate_row
+        direction = {"direction": "bullish", "confirmed": True, "score": 70.0, "reason": "Bullish."}
+        long_leg = {
+            "strike": 100.0, "bid": 1.00, "ask": 1.20, "mid": 1.10,
+            "iv": 0.30, "delta": 0.50, "open_interest": 200, "volume": 100,
+        }
+        short_leg = {
+            "strike": 105.0, "bid": 0.40, "ask": 0.50, "mid": 0.45,
+            "iv": 0.35, "delta": 0.30, "open_interest": 150, "volume": 80,
+        }
+        return _candidate_row(
+            ticker="AAPL", direction=direction, underlying=underlying,
+            expiration="2024-03-15", dte=28, option_type="call",
+            long_leg=long_leg, short_leg=short_leg, metrics={}, earnings_event={},
+            account_context={}, adjusted_skew_score=15.0,
+        )
+
+    def test_fresh_candidate_not_stale(self):
+        row = self._make_candidate(underlying=100.0)
+        self.assertIn("stale_structure", row)
+        self.assertFalse(row["stale_structure"])
+        self.assertIsNone(row["stale_structure_note"])
+
+    def test_moved_candidate_is_stale(self):
+        row = self._make_candidate(underlying=110.0)
+        self.assertTrue(row["stale_structure"])
+        self.assertIsInstance(row["stale_structure_note"], str)
+        self.assertIn("strike", row["stale_structure_note"])
+
+    def test_finalize_defaults_missing_keys(self):
+        from app.services.skew_momentum_vertical_service import _finalize
+        result = {"items": [{"score": 1.0}], "enabled": True}
+        finalized = _finalize(result)
+        row = finalized["items"][0]
+        self.assertIn("stale_structure", row)
+        self.assertFalse(row["stale_structure"])
+        self.assertIsNone(row["stale_structure_note"])
+
+
+class TestPatch28AExpiryNearMissDefaults(unittest.TestCase):
+    """Item 3: expiry_near_miss always present; expiry_exception captured on failure."""
+
+    def test_expiry_exception_captured_and_near_miss_false_on_failure(self):
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        with patch("app.services.earnings_discovery_quality_service.TradierProvider") as MockProvider:
+            instance = MockProvider.return_value
+            instance.is_configured = True
+            instance.get_quotes.return_value = {"AAPL": {"last": 150.0}}
+            instance.get_expirations.side_effect = RuntimeError("boom")
+            result = filter_earnings_discovery_for_calendar_scan(
+                earnings_trade_discovery={"items": [{"ticker": "AAPL", "earnings_date": "2026-07-15"}]},
+            )
+        row = result["events_by_ticker"]["AAPL"]
+        self.assertFalse(row["expiry_near_miss"])
+        self.assertIsNotNone(row["expiry_exception"])
+        self.assertIn("boom", row["expiry_exception"])
+
+    def test_expiry_near_miss_present_and_exception_none_when_no_pair_matched(self):
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        with patch("app.services.earnings_discovery_quality_service.TradierProvider") as MockProvider, \
+             patch("app.services.earnings_discovery_quality_service._select_calendar_expiration_pair", return_value=None), \
+             patch("app.services.earnings_discovery_quality_service._find_near_miss_expiry", return_value=None):
+            instance = MockProvider.return_value
+            instance.is_configured = True
+            instance.get_quotes.return_value = {"AAPL": {"last": 150.0}}
+            instance.get_expirations.return_value = ["2026-08-01"]
+            result = filter_earnings_discovery_for_calendar_scan(
+                earnings_trade_discovery={"items": [{"ticker": "AAPL", "earnings_date": "2026-07-15"}]},
+            )
+        row = result["events_by_ticker"]["AAPL"]
+        self.assertIn("expiry_near_miss", row)
+        self.assertFalse(row["expiry_near_miss"])
+        self.assertIsNone(row["expiry_exception"])
+
+
+class TestPatch28AAccountValueSource(unittest.TestCase):
+    """Item 5: account_value_source threaded through quality filter and account risk eval."""
+
+    def test_quality_filter_accepts_account_value_source(self):
+        import inspect
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        sig = inspect.signature(filter_earnings_discovery_for_calendar_scan)
+        self.assertIn("account_value_source", sig.parameters)
+
+    def test_account_value_source_in_summary(self):
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        with patch("app.services.earnings_discovery_quality_service.TradierProvider"):
+            result = filter_earnings_discovery_for_calendar_scan(
+                earnings_trade_discovery={"items": []},
+                account_value=1000.0,
+                account_value_source="live",
+            )
+        self.assertEqual(result["summary"]["account_value_source"], "live")
+
+    def test_account_value_source_defaults_unknown(self):
+        from app.services.earnings_discovery_quality_service import filter_earnings_discovery_for_calendar_scan
+        with patch("app.services.earnings_discovery_quality_service.TradierProvider"):
+            result = filter_earnings_discovery_for_calendar_scan(earnings_trade_discovery={"items": []})
+        self.assertEqual(result["summary"]["account_value_source"], "unknown")
+
+    def test_analysis_service_account_value_source_live_when_market_value_present(self):
+        from app.services.analysis_service import _account_value_source
+        positions = [{"market_value": 5000.0, "ticker": "AAPL"}]
+        self.assertEqual(_account_value_source(positions), "live")
+
+    def test_analysis_service_account_value_source_estimate_when_only_estimable(self):
+        from app.services.analysis_service import _account_value_source
+        positions = [{"quantity": 10.0, "avg_buy_price": 50.0}]
+        self.assertEqual(_account_value_source(positions), "estimate")
+
+    def test_analysis_service_account_value_source_unknown_when_empty(self):
+        from app.services.analysis_service import _account_value_source
+        self.assertEqual(_account_value_source([]), "unknown")
+
+    def test_evaluate_account_risk_surfaces_source_from_context(self):
+        from app.services.calendar_verdict_service import evaluate_account_risk
+        with patch("app.services.calendar_verdict_service.config") as mock_cfg:
+            mock_cfg.CALENDAR_ACCOUNT_VALUE_OVERRIDE = None
+            mock_cfg.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED = False
+            mock_cfg.CALENDAR_MAX_DEBIT_PCT_OF_ACCOUNT = 0.02
+            result = evaluate_account_risk(
+                candidate={"conservative_debit": 1.0},
+                account_context={"account_value_estimate": 10000.0, "account_value_source": "live"},
+            )
+        self.assertEqual(result["account_value_source"], "live")
+
+    def test_evaluate_account_risk_source_is_override_when_override_set(self):
+        from app.services.calendar_verdict_service import evaluate_account_risk
+        with patch("app.services.calendar_verdict_service.config") as mock_cfg:
+            mock_cfg.CALENDAR_ACCOUNT_VALUE_OVERRIDE = 5000.0
+            mock_cfg.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED = False
+            mock_cfg.CALENDAR_MAX_DEBIT_PCT_OF_ACCOUNT = 0.02
+            result = evaluate_account_risk(
+                candidate={"conservative_debit": 1.0},
+                account_context={"account_value_estimate": 10000.0, "account_value_source": "live"},
+            )
+        self.assertEqual(result["account_value_source"], "override")
+
+
+class TestPatch28AOptionsTradingPhilosophy(unittest.TestCase):
+    """Item 6: options_trading_philosophy block present in agent-prompt."""
+
+    def _source(self):
+        import inspect
+        from app.api import knowledge
+        return inspect.getsource(knowledge.knowledge_agent_prompt)
+
+    def test_block_present_with_expected_keys(self):
+        source = self._source()
+        self.assertIn("options_trading_philosophy", source)
+        self.assertIn("core", source)
+        self.assertIn("signal_framing", source)
+        self.assertIn("exit_conditions", source)
+        self.assertIn("theta_clarification", source)
+
+    def test_block_uses_vrp_and_iv_rv_language(self):
+        source = self._source()
+        self.assertIn("VRP", source)
+        self.assertIn("implied volatility", source)
+        self.assertIn("realized volatility", source)
+        self.assertIn("not an edge source", source)
+
+
+class TestPatch28AStrategySummaryExcludeList(unittest.TestCase):
+    """Structural fix: _strategy_summary uses an exclude list, not a whitelist."""
+
+    def test_arbitrary_new_field_passes_through(self):
+        from app.services.developer_snapshot_service import _strategy_summary
+        strat = {
+            "strategy_id": "skew_momentum_vertical",
+            "brand_new_field_nobody_whitelisted": "should still appear",
+        }
+        result = _strategy_summary(strat, include_rows=False)
+        self.assertIn("brand_new_field_nobody_whitelisted", result)
+        self.assertEqual(result["brand_new_field_nobody_whitelisted"], "should still appear")
+
+    def test_excluded_keys_are_stripped(self):
+        from app.services.developer_snapshot_service import _strategy_summary
+        strat = {
+            "strategy_id": "forward_factor_calendar",
+            "observation_history": ["huge", "history"],
+            "ff_journal": {"big": "blob"},
+            "raw_chain_data": {"raw": True},
+        }
+        result = _strategy_summary(strat, include_rows=False)
+        self.assertNotIn("observation_history", result)
+        self.assertNotIn("ff_journal", result)
+        self.assertNotIn("raw_chain_data", result)
+        self.assertIn("strategy_id", result)
+
+    def test_rows_capped_when_include_rows_true(self):
+        from app.services.developer_snapshot_service import _strategy_summary
+        strat = {"strategy_id": "x", "rows": [{"i": i} for i in range(75)]}
+        result = _strategy_summary(strat, include_rows=True)
+        self.assertEqual(len(result["rows"]), 50)
+
+    def test_rows_stripped_when_include_rows_false(self):
+        from app.services.developer_snapshot_service import _strategy_summary
+        strat = {"strategy_id": "x", "rows": [{"i": 1}]}
+        result = _strategy_summary(strat, include_rows=False)
+        self.assertNotIn("rows", result)
+
+
+class TestPatch28AProviderCallCountAlias(unittest.TestCase):
+    """Item 4: provider_call_count alias present alongside provider_fetch_count."""
+
+    def test_provider_call_count_alias_present(self):
+        from app.services.app_diagnostics_service import build_dev_status
+        with patch("app.services.app_diagnostics_service.RunManifestRepository") as MockRepo:
+            MockRepo.return_value.latest.return_value = {"provider_fetch_count": 17}
+            with patch("app.services.app_diagnostics_service.build_commit_identity", return_value={
+                "source_of_truth": "abc123", "git_branch": "main",
+                "deploy_label": "v1", "commit_identity_mismatch": False,
+            }):
+                result = build_dev_status()
+        self.assertEqual(result["provider_call_count"], 17)
+        self.assertEqual(result["provider_call_count"], result["provider_fetch_count"])
+
+
 if __name__ == "__main__":
     unittest.main()

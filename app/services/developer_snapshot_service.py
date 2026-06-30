@@ -123,10 +123,24 @@ def build_snapshot_detail(
     return redact(_read_only({**base, "status": status, "detail": detail}))
 
 
+# ARCHITECTURAL NOTE: This function uses an exclude list, not a whitelist.
+# Any field added to a StrategyResult automatically passes through to all API
+# surfaces unless explicitly excluded here. This prevents serialization drift
+# where a field exists internally but silently disappears before reaching an
+# endpoint. To suppress a field, add it below with a comment explaining why.
+_STRATEGY_SUMMARY_EXCLUDE = frozenset({
+    "observation_history",  # FF journal history — large, has its own endpoint
+    "ff_journal",  # same
+    "raw_chain_data",  # raw provider chain responses — too large for summary
+})
+
+
 def _strategy_summary(result: dict[str, Any], include_rows: bool) -> dict[str, Any]:
-    output = {key: result.get(key) for key in ("strategy_id", "strategy_label", "enabled", "ran", "pass_count", "watch_count", "fail_count", "skipped_count", "summary")}
+    output = {k: v for k, v in result.items() if k not in _STRATEGY_SUMMARY_EXCLUDE}
     if include_rows:
         output["rows"] = list(result.get("rows", []) or [])[:50]
+    else:
+        output.pop("rows", None)
     for key in ("active_rows", "active_items"):
         if isinstance(result.get(key), list):
             output[key] = list(result[key])[:50]
