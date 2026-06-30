@@ -404,6 +404,7 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
     if account_risk_pct is not None:
         requirements.append(_req("Account risk", account_risk_pct <= float(config.SKEW_VERTICAL_MAX_ACCOUNT_RISK_PCT), f"Max risk is {account_risk_pct:.2f}% of estimated account value.", "account_risk"))
     breakeven = float(long_leg["strike"]) + conservative_debit if option_type == "call" else float(long_leg["strike"]) - conservative_debit
+    is_stale = _is_structure_stale(float(long_leg["strike"]), underlying)
     spread = {
         "expiration": expiration,
         "option_type": option_type,
@@ -457,6 +458,8 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         "short_leg": short_leg,
         "account_risk_pct": round(account_risk_pct, 2) if account_risk_pct is not None else None,
         "payload": {"long_leg": long_leg, "short_leg": short_leg, "market_metrics": metrics},
+        "stale_structure": is_stale,
+        "stale_structure_note": _staleness_note(float(long_leg["strike"]), underlying) if is_stale else None,
     }
 
 
@@ -496,6 +499,8 @@ def _finalize(result):
         row.setdefault("risk_notes", [])
         row.setdefault("provider_notes", [])
         row.setdefault("payload", {})
+        row.setdefault("stale_structure", False)
+        row.setdefault("stale_structure_note", None)
     result["pass_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("PASS")]
     result["watch_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("WATCH")]
     result["blocked_items"] = [row for row in result["items"] if str(row.get("verdict") or "").startswith("FAIL")]

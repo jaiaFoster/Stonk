@@ -392,6 +392,17 @@ def _estimate_account_value(positions: list[dict[str, Any]]) -> float | None:
     return round(total, 2) if total > 0 else None
 
 
+def _account_value_source(positions: list[dict[str, Any]]) -> str:
+    has_direct_value = any(
+        isinstance(pos, dict)
+        and _safe_float(pos.get("market_value") or pos.get("equity") or pos.get("current_value")) is not None
+        for pos in (positions or [])
+    )
+    if has_direct_value:
+        return "live"
+    return "estimate" if _estimate_account_value(positions) is not None else "unknown"
+
+
 def _apply_price_freshness_gate(
     calendar_candidates: list[dict[str, Any]],
     tradier_snapshot: dict[str, Any],
@@ -790,6 +801,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         if str(p.get("ticker") or "").strip()
     ))
     _account_value_estimate = _estimate_account_value(positions)
+    _account_value_source_label = _account_value_source(positions)
     earnings_discovery_quality = run_optional_step(
         "earnings_quality_filter",
         "Running Earnings Discovery Quality Filter v1...",
@@ -800,6 +812,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             held_tickers=_held_tickers,
             earnings_events=earnings_events,
             account_value=_account_value_estimate,
+            account_value_source=_account_value_source_label,
         ),
         EMPTY_EARNINGS_QUALITY,
         lambda result: (
@@ -995,7 +1008,10 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         )
     tradier_snapshot["_calendar_lifecycle_checks"] = lifecycle_checks
 
-    account_context = {"account_value_estimate": _account_value_estimate}
+    account_context = {
+        "account_value_estimate": _account_value_estimate,
+        "account_value_source": _account_value_source_label,
+    }
 
     calendar_ranking = run_optional_step(
         "calendar_ranking",

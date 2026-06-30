@@ -600,6 +600,24 @@ def knowledge_agent_prompt():
             "execution is gated; the signal itself is real and reviewed."
         ),
         "active_ff_signals": _ff_agent_context(),
+        "options_trading_philosophy": {
+            "core": (
+                "Options are volatility products. Edge comes from the gap between implied volatility "
+                "and realized volatility (VRP, the variance risk premium), never from theta itself."
+            ),
+            "signal_framing": (
+                "Calendar: front implied volatility rich vs forward variance. Skew: put tail overpriced. "
+                "FF: forward variance cheap relative to realized."
+            ),
+            "exit_conditions": (
+                "Close when implied volatility drops to the realized volatility forecast (thesis validated) "
+                "OR when realized volatility rises toward sold implied volatility (thesis invalidated)."
+            ),
+            "theta_clarification": (
+                "Theta is payment for gamma risk. Positive theta is compensation for negative gamma, "
+                "not an edge source on its own."
+            ),
+        },
         "volatility_framing": {
             "principle": (
                 "Frame every options trade in volatility-pricing language, not directional language. "

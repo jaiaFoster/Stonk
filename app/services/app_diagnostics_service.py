@@ -39,6 +39,7 @@ def build_dev_status(
         "tracked_job_count": len(jobs),
         "latest_run": latest,
         "provider_fetch_count": (latest or {}).get("provider_fetch_count", 0),
+        "provider_call_count": (latest or {}).get("provider_fetch_count", 0),
         "provider_calls_triggered": False,
     })
 
