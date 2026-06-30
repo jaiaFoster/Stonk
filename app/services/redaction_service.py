@@ -6,7 +6,7 @@ from typing import Any
 
 from app import config
 
-SENSITIVE_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "COOKIE", "SESSION", "PRIVATE", "BEARER", "CREDENTIAL", "ACCESS_TOKEN", "REFRESH_TOKEN")
+SENSITIVE_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "COOKIE", "PRIVATE", "BEARER", "CREDENTIAL", "ACCESS_TOKEN", "REFRESH_TOKEN")
 
 
 def known_secrets() -> list[str]:
