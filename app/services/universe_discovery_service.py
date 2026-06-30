@@ -245,6 +245,17 @@ def _get_constituent_tickers(logger: LogFn) -> list[str]:
     return combined
 
 
+def get_constituent_ticker_set(log_print: LogFn | None = None) -> set[str]:
+    """Return the full set of constituent tickers as uppercase strings."""
+    logger = log_print or (lambda msg: None)
+    try:
+        tickers = _get_constituent_tickers(logger)
+        return {t.upper().strip() for t in tickers if t}
+    except Exception as exc:
+        logger(f"[universe_discovery] constituent_ticker_set failed: {exc}")
+        return set()
+
+
 # ---------------------------------------------------------------------------
 # Universe cache build + retrieval
 # ---------------------------------------------------------------------------
@@ -354,9 +365,12 @@ def _build_cache(
     items: list[dict[str, Any]] = []
     new_provider_calls = 0
 
-    for ticker in sorted(tickers_with_earnings):
+    sorted_tickers = sorted(tickers_with_earnings)
+    quotes = _batch_quotes(sorted_tickers, logger)
+
+    for ticker in sorted_tickers:
         event = earnings_map.get(ticker) or {}
-        price, avg_volume = _get_price_volume(ticker, logger)
+        price, avg_volume = _get_price_volume(ticker, logger, quotes=quotes)
         if price is not None:
             new_provider_calls += 1
 
@@ -435,17 +449,38 @@ def _build_earnings_map(
     return result
 
 
-def _get_price_volume(ticker: str, logger: LogFn) -> tuple[float | None, float | None]:
+def _batch_quotes(tickers: list[str], logger: LogFn, chunk_size: int = 250) -> dict[str, dict[str, Any]]:
+    """Fetch quotes for many tickers via Tradier's batched quotes endpoint.
+
+    Tradier accepts a comma-separated symbol list per request; chunking keeps
+    each request within a safe URL length for large (600+) universes.
+    """
+    if not tickers:
+        return {}
     try:
-        from app.services.market_data_hub_service import MarketDataHub
-        hub = MarketDataHub.instance()
-        cached = hub.get("quote", ticker)
-        if cached:
-            price = _first_num(cached.get("last"), cached.get("close"), cached.get("prevclose"))
-            avg_vol = _first_num(cached.get("average_volume"), cached.get("volume"))
-            return price, avg_vol
-    except Exception:
-        pass
+        from app.providers.tradier_provider import TradierProvider
+        provider = TradierProvider()
+    except Exception as exc:
+        logger(f"[universe_discovery] batch quote provider init failed (non-fatal): {exc}")
+        return {}
+    if not provider.is_configured:
+        return {}
+    quotes: dict[str, dict[str, Any]] = {}
+    for i in range(0, len(tickers), chunk_size):
+        chunk = tickers[i:i + chunk_size]
+        try:
+            quotes.update(provider.get_quotes(chunk) or {})
+        except Exception as exc:
+            logger(f"[universe_discovery] batch quote fetch failed for chunk (non-fatal): {exc}")
+    return quotes
+
+
+def _get_price_volume(ticker: str, logger: LogFn, quotes: dict[str, dict[str, Any]] | None = None) -> tuple[float | None, float | None]:
+    cached = (quotes or {}).get(ticker.upper().strip())
+    if cached:
+        price = _first_num(cached.get("last"), cached.get("close"), cached.get("prevclose"))
+        avg_vol = _first_num(cached.get("average_volume"), cached.get("volume"))
+        return price, avg_vol
     return None, None
 
 
@@ -476,11 +511,14 @@ def get_skew_candidates(
     """Return liquid constituent tickers ranked for skew scanning.
 
     No earnings requirement — returns any constituent that passes the
-    price/volume filter, ranked by IV proxy (MarketDataHub implied_volatility
-    field, falling back to avg_volume as a liquidity proxy).
+    price/volume filter, ranked by average volume as a liquidity proxy.
+    True per-ticker implied volatility would require an options-chain call
+    per ticker, which is too expensive to run across the full constituent
+    universe; average volume from a single batched quote call is the
+    cheapest available signal.
     """
     logger = log_print or (lambda msg: print(msg, flush=True))
-    max_tickers = max_tickers or int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30) or 30)
+    max_tickers = max_tickers or int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 50) or 50)
 
     if not getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True):
         logger("[universe_discovery] skew candidates disabled by UNIVERSE_DISCOVERY_ENABLED=false")
@@ -497,26 +535,25 @@ def get_skew_candidates(
     max_price = float(getattr(config, "UNIVERSE_MAX_PRICE", 1000.0) or 1000.0)
     min_avg_vol = int(getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000) or 500000)
 
-    scored: list[tuple[str, float, float]] = []
-    for ticker in constituents:
-        t = ticker.upper().strip()
-        if t in exclude_set:
-            continue
-        price, avg_volume = _get_price_volume(t, logger)
+    candidate_tickers = [t.upper().strip() for t in constituents if t.upper().strip() not in exclude_set]
+    quotes = _batch_quotes(candidate_tickers, logger)
+
+    scored: list[tuple[str, float]] = []
+    for t in candidate_tickers:
+        price, avg_volume = _get_price_volume(t, logger, quotes=quotes)
         price_val = price or 0.0
         vol_val = avg_volume or 0
         if price is not None and (price_val < min_price or price_val > max_price):
             continue
         if avg_volume is not None and vol_val < min_avg_vol:
             continue
-        iv = _get_iv_proxy(t)
-        scored.append((t, iv or 0.0, vol_val))
+        scored.append((t, vol_val))
 
-    scored.sort(key=lambda x: (x[1], x[2]), reverse=True)
-    result = [t for t, _iv, _vol in scored[:max_tickers]]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    result = [t for t, _vol in scored[:max_tickers]]
     logger(
         f"[universe_discovery] skew candidates: {len(result)} of {len(scored)} eligible "
-        f"({len(exclude_set)} held excluded, cap {max_tickers})"
+        f"({len(exclude_set)} held excluded, cap {max_tickers}, ranked by avg volume)"
     )
     return result
 
@@ -562,11 +599,11 @@ def get_ff_candidates(
     established: list[tuple[str, float]] = []
     new_discovery: list[tuple[str, float]] = []
 
-    for ticker in constituents:
-        t = ticker.upper().strip()
-        if t in existing_set:
-            continue
-        price, avg_volume = _get_price_volume(t, logger)
+    candidate_tickers = [t.upper().strip() for t in constituents if t.upper().strip() not in existing_set]
+    quotes = _batch_quotes(candidate_tickers, logger)
+
+    for t in candidate_tickers:
+        price, avg_volume = _get_price_volume(t, logger, quotes=quotes)
         price_val = price or 0.0
         vol_val = avg_volume or 0
         if price is not None and (price_val < min_price or price_val > max_price):
@@ -611,22 +648,6 @@ def get_ff_candidates(
         f"({len(existing_set)} existing + {len(established)} established + {len(new_discovery)} new discovery, cap {max_tickers})"
     )
     return ordered[:max_tickers]
-
-
-def _get_iv_proxy(ticker: str) -> float | None:
-    try:
-        from app.services.market_data_hub_service import MarketDataHub
-        hub = MarketDataHub.instance()
-        cached = hub.get("quote", ticker)
-        if cached:
-            return _first_num(
-                cached.get("implied_volatility"),
-                cached.get("iv"),
-                cached.get("greeks", {}).get("iv") if isinstance(cached.get("greeks"), dict) else None,
-            )
-    except Exception:
-        pass
-    return None
 
 
 def _load_ff_journal_scores(logger: LogFn) -> dict[str, float]:

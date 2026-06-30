@@ -73,7 +73,7 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "universe_discovery_enabled": getattr(config, "UNIVERSE_DISCOVERY_ENABLED", True),
         "universe_discovery_max_candidates": getattr(config, "EARNINGS_DISCOVERY_UNIVERSE_MAX_CANDIDATES", 50),
         "universe_min_avg_volume": getattr(config, "UNIVERSE_MIN_AVG_VOLUME", 500000),
-        "skew_universe_max_candidates": getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30),
+        "skew_universe_max_candidates": getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 50),
         "ff_universe_max_tickers": getattr(config, "FF_UNIVERSE_MAX_TICKERS", 40),
         "ff_earnings_contamination_window_days": getattr(config, "FF_EARNINGS_CONTAMINATION_WINDOW_DAYS", 4),
         "ff_earnings_iv_haircut_pct": getattr(config, "FF_EARNINGS_IV_HAIRCUT_PCT", 0.20),

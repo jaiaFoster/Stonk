@@ -275,7 +275,7 @@ def build_skew_vertical_universe(positions, watchlist_candidates, portfolio_gap_
             held_tickers = [str((p or {}).get("ticker") or "").upper().strip() for p in (positions or [])]
             discovery = get_skew_candidates(
                 exclude_held=held_tickers,
-                max_tickers=int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 30) or 30),
+                max_tickers=int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 50) or 50),
                 log_print=logger,
             )
             _add([{"ticker": t} for t in discovery])
