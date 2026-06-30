@@ -243,6 +243,15 @@ def _build_new_trade_row(
         "reasons": _dedupe((final.get("reasons") or []) + (strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),
         "risks": _dedupe((final.get("blockers") or []) + (strategy.get("risks", []) if strategy else []) + (candidate.get("risks", []) if candidate else [])),
     }
+    # Promote quality_precheck fields to top level so API consumers reading
+    # the row directly (not the nested quality_precheck dict) still see them.
+    row.setdefault("date_confidence", quality_row.get("date_confidence") or quality_row.get("earnings_date_confidence") or "unknown")
+    row.setdefault("date_sources", quality_row.get("date_sources") or [])
+    row.setdefault("date_conflict", bool(quality_row.get("date_conflict")))
+    row.setdefault("expiry_near_miss", bool(quality_row.get("expiry_near_miss")))
+    row.setdefault("expiry_gap_note", quality_row.get("expiry_gap_note") or "")
+    row.setdefault("high_move_warning", bool(quality_row.get("high_move_warning")))
+    row.setdefault("high_move_note", quality_row.get("high_move_note") or "")
     return row
 
 

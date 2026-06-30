@@ -1420,5 +1420,90 @@ class TestPatch28AProviderCallCountAlias(unittest.TestCase):
         self.assertEqual(result["provider_call_count"], result["provider_fetch_count"])
 
 
+# ────────────────────────────────────────────────────────────────────
+# Calendar Pipeline Patch: volume calibration, quality_precheck field
+#            promotion to top-level calendar row, session_label
+#            over-redaction fix.
+# ────────────────────────────────────────────────────────────────────
+
+class TestCalendarVolumeThresholdCalibration(unittest.TestCase):
+    """Item 1: EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME default lowered to 250K."""
+
+    def test_default_is_250000(self):
+        from app import config
+        self.assertEqual(config.EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME, 250000)
+
+
+class TestCalendarRowFieldPromotion(unittest.TestCase):
+    """Item 2: quality_precheck fields promoted to the top-level calendar row."""
+
+    def _quality_event(self, **overrides):
+        event = {
+            "ticker": "CTAS",
+            "checks": [],
+            "passes_precheck": True,
+            "date_confidence": "single_source",
+            "date_sources": ["finnhub"],
+            "date_conflict": False,
+            "expiry_near_miss": True,
+            "expiry_gap_note": "Nearest expiry is 2d after earnings.",
+            "high_move_warning": True,
+            "high_move_note": "Historical earnings move avg 9.0%.",
+            "earnings_date": "2026-07-09",
+            "days_until_earnings": 9,
+        }
+        event.update(overrides)
+        return event
+
+    def test_fields_promoted_to_top_level(self):
+        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
+        row = _build_new_trade_row(self._quality_event(), {}, {}, None, None)
+        self.assertEqual(row["date_confidence"], "single_source")
+        self.assertEqual(row["date_sources"], ["finnhub"])
+        self.assertFalse(row["date_conflict"])
+        self.assertTrue(row["expiry_near_miss"])
+        self.assertEqual(row["expiry_gap_note"], "Nearest expiry is 2d after earnings.")
+        self.assertTrue(row["high_move_warning"])
+        self.assertEqual(row["high_move_note"], "Historical earnings move avg 9.0%.")
+
+    def test_defaults_when_quality_row_missing_fields(self):
+        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
+        row = _build_new_trade_row({"ticker": "AAPL", "checks": []}, {}, {}, None, None)
+        self.assertEqual(row["date_confidence"], "unknown")
+        self.assertEqual(row["date_sources"], [])
+        self.assertFalse(row["date_conflict"])
+        self.assertFalse(row["expiry_near_miss"])
+        self.assertEqual(row["expiry_gap_note"], "")
+        self.assertFalse(row["high_move_warning"])
+        self.assertEqual(row["high_move_note"], "")
+
+    def test_near_miss_verdict_still_correct_after_promotion(self):
+        """Item 3 verification: NEAR_MISS verdict already derives correctly
+        from the un-nested quality_row, independent of the promoted fields."""
+        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
+        row = _build_new_trade_row(self._quality_event(passes_precheck=False), {}, {}, None, None)
+        self.assertEqual(row["verdict"], "NEAR_MISS / EXPIRY_GAP")
+        self.assertTrue(row["expiry_near_miss"])
+
+
+class TestSessionLabelNotOverRedacted(unittest.TestCase):
+    """Item 4: 'SESSION' substring removed from SENSITIVE_PARTS; session_label
+    no longer collides while genuine secrets (session_token via TOKEN) still do."""
+
+    def test_session_label_not_redacted(self):
+        from app.services.redaction_service import redact
+        result = redact({"session_label": "amc", "ticker": "CTAS"})
+        self.assertEqual(result["session_label"], "amc")
+
+    def test_session_token_still_redacted_via_token_match(self):
+        from app.services.redaction_service import redact
+        result = redact({"session_token": "abc123"})
+        self.assertEqual(result["session_token"], "[REDACTED]")
+
+    def test_sensitive_parts_no_longer_contains_session(self):
+        from app.services.redaction_service import SENSITIVE_PARTS
+        self.assertNotIn("SESSION", SENSITIVE_PARTS)
+
+
 if __name__ == "__main__":
     unittest.main()
