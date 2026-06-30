@@ -1289,6 +1289,100 @@ def _active_calendar_section_html(
     return _section("active-calendars", "Active Calendar Lifecycle", "Broker-detected open calendars; no manual trade tracking.", body, str(len(rows)))
 
 
+def _open_options_positions_section_html(open_options: dict[str, Any]) -> str:
+    """TKT-058: Broker-detected open option positions that aren't already shown
+    as Active Calendar Lifecycle rows — debit verticals and single-leg
+    positions (covered calls, cash-secured puts, naked options).
+    """
+    summary = (open_options or {}).get("summary", {}) or {}
+    verticals = (open_options or {}).get("verticals", []) or []
+    single_legs = (open_options or {}).get("single_legs", []) or []
+    calendars = (open_options or {}).get("calendars", []) or []
+    errors = (open_options or {}).get("errors", []) or []
+
+    overview = (
+        f'<div class="metric-grid">'
+        f'<div class="metric"><span class="label">Accounts</span><span class="value">{escape(str(summary.get("account_count", 0)))}</span></div>'
+        f'<div class="metric"><span class="label">Total Positions</span><span class="value">{escape(str(summary.get("total_positions", 0)))}</span></div>'
+        f'<div class="metric"><span class="label">Option Legs</span><span class="value">{escape(str(summary.get("option_leg_count", 0)))}</span></div>'
+        f'<div class="metric"><span class="label">Calendars</span><span class="value">{len(calendars)} <span class="muted">(see Active Calendar Lifecycle above)</span></span></div>'
+        f'<div class="metric"><span class="label">Verticals</span><span class="value">{len(verticals)}</span></div>'
+        f'<div class="metric"><span class="label">Single Legs</span><span class="value">{len(single_legs)}</span></div>'
+        f'</div>'
+    )
+
+    if not open_options:
+        return _section(
+            "open-options-positions",
+            "Open Options Positions",
+            "Broker-detected option positions (verticals, covered calls, cash-secured puts, naked options).",
+            '<p class="empty">Open options detector did not run for this report.</p>',
+            "0",
+        )
+
+    cards = []
+    for row in verticals[:30]:
+        exit_signal = str(row.get("exit_signal") or "HOLD")
+        cards.append(f"""
+        <details class="decision-card" {'open' if exit_signal != 'HOLD' else ''}>
+            <summary>
+                <div class="strip-summary">
+                    <span class="ticker">{_safe_text(row.get('ticker'), 'UNKNOWN')}</span>
+                    <span>{_chip("Debit Vertical", str(row.get('option_type') or '').upper(), 'neutral')}</span>
+                    <span>{_chip(exit_signal, None, _tone_for_text(exit_signal))}</span>
+                    <span>Long {option_money(row.get('long_strike'))} / Short {option_money(row.get('short_strike'))}</span>
+                    <span class="{_signed_class(row.get('unrealized_pnl_pct'))}">{signed_pct(row.get('unrealized_pnl_pct'))} / {signed_money(row.get('unrealized_pnl'))}</span>
+                    <span>{escape(str(row.get('dte') if row.get('dte') is not None else '—'))} DTE</span>
+                </div>
+            </summary>
+            <div class="metric-grid">
+                <div class="metric"><span class="label">Net Debit</span><span class="value">{option_money(row.get('net_debit'))}</span></div>
+                <div class="metric"><span class="label">Current Value</span><span class="value">{option_money(row.get('current_value'))}</span></div>
+                <div class="metric"><span class="label">Max Profit / Loss</span><span class="value">{money(row.get('max_profit'))} / {money(row.get('max_loss'))}</span></div>
+                <div class="metric"><span class="label">% of Max Profit</span><span class="value">{pct(row.get('pct_of_max_profit'))}</span></div>
+                <div class="metric"><span class="label">Quantity</span><span class="value">{number(row.get('quantity'), 0)}</span></div>
+                <div class="metric"><span class="label">Expiration</span><span class="value">{escape(str(row.get('expiration') or '—'))}</span></div>
+                <div class="metric"><span class="label">Broker</span><span class="value">{escape(str(row.get('broker') or 'unknown'))}</span></div>
+            </div>
+        </details>""")
+    for row in single_legs[:30]:
+        position = str(row.get("position") or "unknown").title()
+        cards.append(f"""
+        <details class="decision-card">
+            <summary>
+                <div class="strip-summary">
+                    <span class="ticker">{_safe_text(row.get('ticker'), 'UNKNOWN')}</span>
+                    <span>{_chip(position, str(row.get('option_type') or '').upper(), 'neutral')}</span>
+                    <span>Strike {option_money(row.get('strike'))}</span>
+                    <span class="{_signed_class(row.get('unrealized_pnl'))}">{signed_money(row.get('unrealized_pnl'))}</span>
+                    <span>{escape(str(row.get('dte') if row.get('dte') is not None else '—'))} DTE</span>
+                    <span>{escape(str(row.get('expiration') or '—'))}</span>
+                </div>
+            </summary>
+            <div class="metric-grid">
+                <div class="metric"><span class="label">Average Price</span><span class="value">{option_money(row.get('average_price'))}</span></div>
+                <div class="metric"><span class="label">Current Price</span><span class="value">{option_money(row.get('current_price'))}</span></div>
+                <div class="metric"><span class="label">Quantity</span><span class="value">{number(row.get('quantity'), 0)}</span></div>
+                <div class="metric"><span class="label">Broker</span><span class="value">{escape(str(row.get('broker') or 'unknown'))}</span></div>
+            </div>
+        </details>""")
+
+    if not cards:
+        body = overview + '<p class="empty">No open verticals or single-leg option positions detected. Calendar spreads, if any, are shown in Active Calendar Lifecycle above.</p>'
+    else:
+        body = overview + "".join(cards)
+    if errors:
+        body += format_compact_list([str(e) for e in errors[:3]])
+    count = f"{len(verticals)} vertical · {len(single_legs)} single-leg"
+    return _section(
+        "open-options-positions",
+        "Open Options Positions",
+        "Broker-detected verticals and single-leg option positions; calendar spreads are detailed above.",
+        body,
+        count,
+    )
+
+
 def _skew_vertical_section_html(strategy: dict[str, Any], cache: dict[str, Any]) -> str:
     passes = strategy.get("pass_items", []) or []
     watches = strategy.get("watch_items", []) or []
@@ -2373,6 +2467,21 @@ def _skew_vertical_monitor_summary_html(strategy: dict[str, Any], cache: dict[st
     ) + "</div>"
 
 
+def _personalize_link_html() -> str:
+    """TKT-050: Static link from the shared/core report to the per-user
+    personalization page. No data lookups — this report has no per-user
+    context to surface a nickname, so it always shows the generic prompt.
+    """
+    return (
+        '<div class="chip-row" style="margin: 0.6rem 0 0.2rem;">'
+        '<a class="export-btn" href="/dashboard">Personalize this view &rarr;</a>'
+        '<span class="muted" style="margin-left: 0.5rem;">'
+        'Connect your own broker account for recommendations scoped to your positions.'
+        '</span>'
+        '</div>'
+    )
+
+
 def _section(section_id: str, title: str, kicker: str, body: str, count: str | None) -> str:
     count_html = _chip("COUNT", count, "neutral") if count is not None else ""
     return f"""
@@ -2603,6 +2712,7 @@ def format_html(
         daily_opportunity_from_tradier_snapshot(parsed_tradier_snapshot),
         zero_tickers,
     )
+    open_options = open_options_from_tradier_snapshot(parsed_tradier_snapshot)
     unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot)
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot)
@@ -2710,8 +2820,14 @@ def format_html(
         None,
     )
     active_calendar_html = _active_calendar_section_html(active_rows, provider_status)
+    open_options_html = _open_options_positions_section_html(open_options)
     skew_vertical_html = _skew_vertical_section_html(skew_vertical, skew_vertical_cache)
-    forward_factor_html = _generic_strategy_section_html("forward-factor", strategy_results.get("forward_factor_calendar", {}), "Dry-run validation only; no row enters Daily Opportunity.")
+    ff_dry_run_kicker = (
+        "Dry-run: signal live, execution gated. No row enters Daily Opportunity."
+        if getattr(config, "FORWARD_FACTOR_DRY_RUN", True)
+        else "Dry-run validation only; no row enters Daily Opportunity."
+    )
+    forward_factor_html = _generic_strategy_section_html("forward-factor", strategy_results.get("forward_factor_calendar", {}), ff_dry_run_kicker)
     holdings_html = _holdings_section_html(display_recommendations, provider_status)
     potential_adds_html = _potential_adds_section_html(potential_groups)
     risk_review_html = _risk_review_section_html(potential_groups, display_recommendations)
@@ -2761,6 +2877,7 @@ def format_html(
         _hot_shell_portfolio_status_html(display_positions, display_recommendations, pipeline_status, provider_status),
         macro_html,
         _active_calendar_section_html(active_rows, provider_status, display_limit=max_shell_rows),
+        open_options_html,
         _daily_opportunity_shell_html(daily_actions, 5),
         _section(
             "potential-adds",
@@ -2782,6 +2899,7 @@ def format_html(
         export_toolbar_html,
         macro_html,
         active_calendar_html,
+        open_options_html,
         skew_vertical_html,
         forward_factor_html,
         holdings_html,
@@ -2800,6 +2918,7 @@ def format_html(
         """
             <a href="#macro-context">Macro</a>
             <a href="#active-calendars">Active Calendars</a>
+            <a href="#open-options-positions">Open Options</a>
             <a href="#skew-verticals">Skew Verticals</a>
             <a href="#forward-factor">Forward Factor</a>
             <a href="#holdings">Holdings</a>
@@ -2813,6 +2932,7 @@ def format_html(
         """ if dashboard_view == "full" else """
             <a href="#portfolio-status">Portfolio</a>
             <a href="#active-calendars">Active Options</a>
+            <a href="#open-options-positions">Open Options</a>
             <a href="#daily-opportunity">Daily Opportunity</a>
             <a href="#potential-adds">Adds</a>
             <a href="#risk-review">Risk</a>
@@ -2834,6 +2954,7 @@ def format_html(
 <body>
     <main class="report-shell" data-dashboard-view="{dashboard_view}">
         {top_summary_html}
+        {_personalize_link_html()}
         {quality_banner}
         {freshness_html}
         {profile_warning_html}

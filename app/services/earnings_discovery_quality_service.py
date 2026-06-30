@@ -43,6 +43,25 @@ def filter_earnings_discovery_for_calendar_scan(
     raw_items = _merge_universe_discovery(
         raw_items, held_tickers, earnings_events, logger,
     )
+    merged_count = len(raw_items)
+
+    prescreen_removed_count = 0
+    if getattr(config, "EARNINGS_DISCOVERY_CONSTITUENT_PRESCREEN", True):
+        try:
+            from app.services.universe_discovery_service import get_constituent_ticker_set
+            constituent_set = get_constituent_ticker_set(logger)
+        except Exception as exc:
+            constituent_set = None
+            logger(f"[calendar] pre-screen: constituent cache unavailable, skipping filter ({exc})")
+        if constituent_set:
+            pre_len = len(raw_items)
+            raw_items = [
+                item for item in raw_items
+                if str(item.get("ticker") or item.get("symbol") or "").upper().strip() in constituent_set
+            ]
+            prescreen_removed_count = pre_len - len(raw_items)
+            if prescreen_removed_count > 0:
+                logger(f"[calendar] pre-screen: {prescreen_removed_count} tickers removed (not in constituent cache) — {pre_len} → {len(raw_items)}")
 
     max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 40) or 40))
     if clean_mode == "dev":
@@ -61,7 +80,8 @@ def filter_earnings_discovery_for_calendar_scan(
         "summary": {
             "raw_event_count": len(raw_items),
             "raw_only_count": raw_only_count,
-            "universe_added_count": len(raw_items) - raw_only_count,
+            "universe_added_count": merged_count - raw_only_count,
+            "prescreen_removed_count": prescreen_removed_count,
             "checked_count": 0,
             "passed_count": 0,
             "rejected_count": 0,
