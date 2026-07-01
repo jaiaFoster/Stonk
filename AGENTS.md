@@ -14,6 +14,18 @@ in the API surface without a separate fix. The rule:
 
 This policy eliminates the "field exists internally but disappears" class of bugs.
 
+## Robinhood Re-Auth
+
+Every Railway deploy invalidates the Robinhood OAuth token.
+After each deploy: open the Robinhood app and re-approve the device login.
+
+ASA surfaces `broker_auth_status: EXPIRED` in `/api/dev/status` (under `latest_run`)
+when the token is stale. Check this first if position data looks wrong after a deploy.
+
+To set up proactive notification: Railway Project Settings → Webhooks → add your
+notification channel (Slack, SMS, email). This is a Railway config change, not a code
+change — no PR needed.
+
 ## Open Tickets (Calendar Pipeline Audit)
 
 - **TKT-CAL-001** — CAG/LEVI/EPAC are not bugs; they simply fall outside the current
