@@ -251,6 +251,8 @@ def _build_new_trade_row(
     row.setdefault("date_conflict", bool(quality_row.get("date_conflict")))
     row.setdefault("expiry_near_miss", bool(quality_row.get("expiry_near_miss")))
     row.setdefault("expiry_gap_note", quality_row.get("expiry_gap_note") or "")
+    row.setdefault("expiration_pair", quality_row.get("expiration_pair"))
+    row.setdefault("pipeline_trace", quality_row.get("pipeline_trace"))
     row.setdefault("high_move_warning", bool(quality_row.get("high_move_warning")))
     row.setdefault("high_move_note", quality_row.get("high_move_note") or "")
     return row

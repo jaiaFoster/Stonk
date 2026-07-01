@@ -29,6 +29,67 @@ class StrategyLeg:
     def to_dict(self) -> dict:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> StrategyLeg:
+        return cls(**{name: value.get(name) for name in cls.__dataclass_fields__})
+
+
+@dataclass
+class StrategyPricing:
+    """Provider-independent package pricing."""
+
+    mid_debit: float | None = None
+    conservative_debit: float | None = None
+    net_credit: float | None = None
+    slippage_pct: float | None = None
+    pricing_status: str = "unknown"
+    diagnostics: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class StrategyRisk:
+    """Provider-independent structure risk facts."""
+
+    max_risk: float | None = None
+    max_reward: float | None = None
+    account_risk_pct: float | None = None
+    risk_status: str = "unknown"
+    diagnostics: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass
+class StrategyStructure:
+    """Canonical option structure built from normalized chain data."""
+
+    structure_type: str
+    ticker: str
+    legs: list[StrategyLeg]
+    status: str = "BUILT"
+    reason_code: str | None = None
+    reason_label: str | None = None
+    pricing: StrategyPricing | None = None
+    risk: StrategyRisk | None = None
+    diagnostics: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict:
+        return {
+            "structure_type": self.structure_type,
+            "ticker": self.ticker,
+            "legs": [leg.to_dict() for leg in self.legs],
+            "status": self.status,
+            "reason_code": self.reason_code,
+            "reason_label": self.reason_label,
+            "pricing": self.pricing.to_dict() if self.pricing else None,
+            "risk": self.risk.to_dict() if self.risk else None,
+            "diagnostics": self.diagnostics,
+        }
+
 
 @dataclass
 class StrategyGate:
@@ -39,6 +100,11 @@ class StrategyGate:
     detail: str
     is_hard_block: bool = False
     value: Any = None
+    gate_id: str | None = None
+    reason_code: str | None = None
+    reason_label: str | None = None
+    blockers: list[str] | None = None
+    warnings: list[str] | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -161,6 +227,7 @@ class StrategyOpportunity:
     pipeline_trace: StrategyPipelineTrace | None
     gates: list[StrategyGate]
     raw: dict
+    generated_at: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -199,6 +266,7 @@ class StrategyOpportunity:
             "pipeline_trace": self.pipeline_trace.to_dict() if self.pipeline_trace else None,
             "gates": [gate.to_dict() for gate in self.gates],
             "raw": self.raw,
+            "generated_at": self.generated_at,
         }
 
     @property

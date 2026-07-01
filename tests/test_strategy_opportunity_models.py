@@ -1,6 +1,12 @@
 """Regression tests for the canonical strategy opportunity schema."""
 
-from app.models.strategy_opportunity_models import ExpirationPair
+from app.models.strategy_opportunity_models import (
+    ExpirationPair,
+    StrategyLeg,
+    StrategyPricing,
+    StrategyRisk,
+    StrategyStructure,
+)
 from app.services.strategy_opportunity_normalizer import normalize_legacy_strategy_row
 
 
@@ -106,3 +112,27 @@ def test_to_dict_complete_no_missing_keys():
                 "edge_on_margin", "iv_percentile"]
     for key in required:
         assert key in data, f"Missing key in to_dict(): {key}"
+
+
+def test_leg_fields_survive_serialization():
+    leg = StrategyLeg(
+        "long_front", "long", "call", 100.0, "2026-08-21", 51,
+        1.0, 1.2, 1.1, 0.35, 0.35, 200, 50, 1.1, None,
+    )
+    assert StrategyLeg.from_dict(leg.to_dict()).to_dict() == leg.to_dict()
+
+
+def test_structure_models_serialize_without_provider_objects():
+    leg = StrategyLeg(
+        "long", "long", "call", 100.0, "2026-08-21", 51,
+        1.0, 1.2, 1.1, 0.35, 0.35, 200, 50, None, None,
+    )
+    structure = StrategyStructure(
+        "calendar", "TEST", [leg],
+        pricing=StrategyPricing(mid_debit=1.1, conservative_debit=1.2, pricing_status="complete"),
+        risk=StrategyRisk(max_risk=120.0, risk_status="bounded"),
+    )
+    data = structure.to_dict()
+    assert data["legs"][0]["delta"] == 0.35
+    assert data["pricing"]["conservative_debit"] == 1.2
+    assert data["risk"]["max_risk"] == 120.0
