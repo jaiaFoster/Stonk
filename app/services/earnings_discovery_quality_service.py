@@ -173,6 +173,9 @@ def filter_earnings_discovery_for_calendar_scan(
                 row["front_dte"] = _dte(pair[0])
                 row["back_dte"] = _dte(pair[1])
                 is_near_miss = len(pair) > 2 and pair[2]
+                row["expiration_pair"] = _canonical_expiration_pair(pair, item)
+                row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
+                row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "PASS"
                 if is_near_miss:
                     earnings_dt = _parse_date(item.get("earnings_date") or item.get("date"))
                     front_dt = _parse_date(pair[0])
@@ -183,6 +186,8 @@ def filter_earnings_discovery_for_calendar_scan(
                 else:
                     row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
             else:
+                row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
+                row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "FAIL"
                 near_miss_exp = _find_near_miss_expiry(expirations, item)
                 if near_miss_exp:
                     row["expiry_near_miss"] = True
@@ -314,6 +319,14 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         "back_expiration": None,
         "front_dte": None,
         "back_dte": None,
+        "expiration_pair": None,
+        "pipeline_trace": {
+            "stages": {"candidate_created": "PASS"},
+            "stage_details": {},
+            "removed_at_stage": None,
+            "removal_reason": None,
+            "prescreen_stats": None,
+        },
         "checks": checks,
         "errors": errors,
         "passes_precheck": False,
@@ -391,6 +404,29 @@ def _select_calendar_expiration_pair(expirations: list[str], event: dict[str, An
             return front, back
 
     return _select_generic_calendar_pair(parsed)
+
+
+def _canonical_expiration_pair(pair: tuple, event: dict[str, Any]) -> dict[str, Any]:
+    """Serialize selected pair once without changing selector behavior."""
+    front, back = str(pair[0]), str(pair[1])
+    earnings = _parse_date(event.get("earnings_date") or event.get("date"))
+    front_date = _parse_date(front)
+    days_to_earnings = (earnings - date.today()).days if earnings else None
+    gap_days = (earnings - front_date).days if earnings and front_date else None
+    front_before = bool(earnings and front_date and front_date < earnings)
+    near_miss = bool(len(pair) > 2 and pair[2])
+    return {
+        "front_expiration": front,
+        "back_expiration": back,
+        "front_dte": _dte(front) or 0,
+        "back_dte": _dte(back) or 0,
+        "earnings_date": earnings.isoformat() if earnings else None,
+        "days_to_earnings": days_to_earnings,
+        "front_before_earnings": front_before,
+        "gap_days": gap_days,
+        "is_near_miss": near_miss,
+        "selection_method": "event_aware" if event else "generic",
+    }
 
 
 def _select_event_aware_pair(

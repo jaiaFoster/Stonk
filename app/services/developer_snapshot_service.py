@@ -132,6 +132,7 @@ _STRATEGY_SUMMARY_EXCLUDE = frozenset({
     "observation_history",  # FF journal history — large, has its own endpoint
     "ff_journal",  # same
     "raw_chain_data",  # raw provider chain responses — too large for summary
+    "canonical_opportunities",  # full rows remain available in strategy detail
 })
 
 
@@ -139,6 +140,7 @@ def _strategy_summary(result: dict[str, Any], include_rows: bool) -> dict[str, A
     output = {k: v for k, v in result.items() if k not in _STRATEGY_SUMMARY_EXCLUDE}
     if include_rows:
         output["rows"] = list(result.get("rows", []) or [])[:50]
+        output["canonical_opportunities"] = list(result.get("canonical_opportunities", []) or [])[:50]
     else:
         output.pop("rows", None)
     for key in ("active_rows", "active_items"):

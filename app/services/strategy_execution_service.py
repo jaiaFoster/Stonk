@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.strategy_opportunity_normalizer import normalize_legacy_strategy_row
 from app.strategies.registry import enabled_strategies, normalize_strategy_results
 
 
@@ -27,7 +28,7 @@ def execute_strategy_registry(context: Any, evaluators: dict[str, Any], log_prin
             f"StrategyRegistry: {plugin.strategy_id} complete "
             f"pass={normalized.pass_count} watch={normalized.watch_count} fail={normalized.fail_count}"
         )
-    return normalize_strategy_results(context, raw_results)
+    return _attach_canonical_opportunities(normalize_strategy_results(context, raw_results), context)
 
 
 def collect_strategy_results(context: Any, raw_results: dict[str, dict[str, Any]], log_print=None) -> dict[str, dict[str, Any]]:
@@ -37,7 +38,7 @@ def collect_strategy_results(context: Any, raw_results: dict[str, dict[str, Any]
     migration boundary that keeps report assembly strategy-agnostic.
     """
     log = log_print or (lambda message: None)
-    normalized = normalize_strategy_results(context, raw_results)
+    normalized = _attach_canonical_opportunities(normalize_strategy_results(context, raw_results), context)
     for strategy_id, result in normalized.items():
         log(f"StrategyRegistry: executing {strategy_id}")
         log(
@@ -46,3 +47,39 @@ def collect_strategy_results(context: Any, raw_results: dict[str, dict[str, Any]
             f"fail={result.get('fail_count', 0)} skipped={result.get('skipped_count', 0)}"
         )
     return normalized
+
+
+_SURVIVAL_FIELDS = (
+    "expiration_pair", "stale_structure", "date_confidence", "source_mode",
+    "side", "position_type", "provider_fetch_count", "pipeline_trace",
+)
+
+
+def _attach_canonical_opportunities(results: dict[str, dict[str, Any]], context: Any) -> dict[str, dict[str, Any]]:
+    """Add canonical rows while preserving every legacy result field."""
+    run_id = getattr(context, "run_id", None)
+    for strategy_id, result in results.items():
+        canonical = []
+        errors = []
+        lost_fields: dict[str, int] = {}
+        for index, row in enumerate(result.get("rows") or []):
+            if not isinstance(row, dict):
+                errors.append({"row_index": index, "error": "row_not_dict"})
+                continue
+            opportunity = normalize_legacy_strategy_row(strategy_id, row, run_id=run_id)
+            if strategy_id == "forward_factor_calendar":
+                opportunity.can_trade_live = False
+                opportunity.can_enter_daily_opportunity = False
+            serialized = opportunity.to_dict()
+            canonical.append(serialized)
+            if opportunity.reason_code == "NORMALIZATION_ERROR":
+                errors.append({"row_index": index, "error": opportunity.reason_label})
+            for field in _SURVIVAL_FIELDS:
+                if row.get(field) is not None and field not in serialized and field not in serialized.get("raw", {}):
+                    lost_fields[field] = lost_fields.get(field, 0) + 1
+        result["canonical_opportunities"] = canonical
+        result["canonical_opportunity_count"] = len(canonical)
+        result["canonical_normalizer_errors"] = errors
+        result["canonical_normalizer_error_count"] = len(errors)
+        result["canonical_lost_field_counts"] = lost_fields
+    return results
