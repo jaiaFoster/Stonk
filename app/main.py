@@ -1155,6 +1155,207 @@ def dev_ff_graduation_analysis():
     return jsonify(build_ff_graduation_analysis()), 200
 
 
+@app.route("/api/dev/trigger-run", methods=["POST"])
+def dev_trigger_run():
+    """Kick off a pipeline run and return immediately with a run_id for polling.
+
+    Uses the same lock/job mechanism as /run so it cannot double-fire a concurrent run.
+    Poll GET /api/dev/status to watch the run complete.
+    """
+    _require_dev_diagnostics_token()
+    mode = str(request.args.get("mode") or "dev").strip().lower()
+    if mode not in {"dev", "prod"}:
+        return jsonify({"error": "mode must be 'dev' or 'prod'"}), 400
+
+    global ACTIVE_JOB_ID
+    _recover_stale_run_if_needed()
+    _cleanup_old_jobs()
+    with RUN_STATE_LOCK:
+        if not RUN_LOCK.acquire(blocking=False):
+            return jsonify({
+                "status": "already_running",
+                "run_id": ACTIVE_JOB_ID,
+                "mode": mode,
+                "poll": f"/api/dev/status?token={request.args.get('token')}",
+                "note": "A run is already in progress. Poll /api/dev/status for completion.",
+            }), 202
+
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        ACTIVE_JOB_ID = job_id
+        RUN_JOBS[job_id] = {
+            "status": "running",
+            "message": _initial_job_message(mode),
+            "mode": mode,
+            "created_at": now,
+            "started_at": now,
+            "heartbeat_at": now,
+            "updated_at": now,
+            "timeout_reason": None,
+            "failed_stage": None,
+            "retry_safe": False,
+            "result": None,
+        }
+
+    worker = threading.Thread(target=_run_job, args=(job_id, mode, RUN_LOCK), daemon=True)
+    worker.start()
+    print(f"=== /api/dev/trigger-run: async job {job_id} started; mode={mode} ===", flush=True)
+    return jsonify({
+        "status": "triggered",
+        "run_id": job_id,
+        "mode": mode,
+        "poll": f"/api/dev/status?token={request.args.get('token')}",
+        "note": "Poll /api/dev/status until latest_run.run_id matches and quality=SUCCESS_COMPLETE",
+        "provider_calls_triggered": True,
+        "read_only": False,
+    }), 202
+
+
+@app.route("/api/dev/calendar-pipeline-trace")
+def dev_calendar_pipeline_trace():
+    """Post-hoc reconstruction of the calendar pipeline lifecycle from the latest snapshot.
+
+    Reads from the existing stored snapshot — no new provider calls. Shows per-ticker
+    stages (prescreen → quality precheck → expiration pair → scanner → trade engine)
+    so pipeline drop-offs are immediately visible without parsing Railway logs.
+    """
+    _require_dev_diagnostics_token()
+    try:
+        from app.services.report_snapshot_service import ReportSnapshotRepository
+        repo = ReportSnapshotRepository()
+        snapshot = repo.latest_success(include_full=True)
+        if not snapshot:
+            return jsonify({"status": "unavailable", "error": "No completed run snapshot found.", "provider_calls_triggered": False}), 404
+        summary = repo.load_summary(snapshot, full=True)
+        report = summary.get("report_data", {}) or {}
+        tradier = report.get("tradier_snapshot", {}) or {}
+        quality = tradier.get("_earnings_discovery_quality") or {}
+        engine = tradier.get("_unified_calendar_trade_engine") or {}
+        prescreen_stats = quality.get("_prescreen_stats") or {}
+        new_trade_rows = (engine.get("new_trade_rows") or [])
+        quality_items = quality.get("items") or []
+        quality_rejected = quality.get("rejected_items") or []
+
+        # Build lookup maps for quality rows (all checked, incl. rejected).
+        quality_by_ticker: dict[str, dict] = {}
+        for row in quality_items + quality_rejected:
+            if isinstance(row, dict) and row.get("ticker"):
+                quality_by_ticker[str(row["ticker"]).upper()] = row
+
+        # Reconstruct lifecycle for each ticker that reached the trade engine.
+        lifecycle = []
+        for row in new_trade_rows:
+            if not isinstance(row, dict):
+                continue
+            ticker = str(row.get("ticker") or "").upper()
+            if not ticker:
+                continue
+            qp = row.get("quality_precheck") or quality_by_ticker.get(ticker) or {}
+            lifecycle.append(_reconstruct_calendar_lifecycle(ticker, row, qp))
+
+        # Tickers rejected at the quality precheck level (never reached engine).
+        for qrow in quality_rejected:
+            if not isinstance(qrow, dict):
+                continue
+            ticker = str(qrow.get("ticker") or "").upper()
+            if not ticker or any(lc.get("ticker") == ticker for lc in lifecycle):
+                continue
+            lifecycle.append(_reconstruct_calendar_lifecycle(ticker, {}, qrow))
+
+        # Aggregate summary.
+        pair_built = sum(1 for lc in lifecycle if lc["stages"].get("front_back_expirations_found") == "PASS")
+        pair_dict_stored = sum(1 for lc in lifecycle if lc["stages"].get("expiration_pair_dict_stored") == "PASS")
+        pair_dict_missing = sum(1 for lc in lifecycle if lc["stages"].get("expiration_pair_dict_stored") == "FAIL")
+        structures_built = sum(1 for lc in lifecycle if lc["stages"].get("structure_built") == "PASS")
+        final_pass = sum(1 for lc in lifecycle if str(lc["stages"].get("final_verdict") or "").startswith("PASS"))
+        final_watch = sum(1 for lc in lifecycle if str(lc["stages"].get("final_verdict") or "").startswith("WATCH"))
+        final_fail = sum(1 for lc in lifecycle if str(lc["stages"].get("final_verdict") or "").startswith("FAIL"))
+
+        warnings = []
+        removed_pct = float(prescreen_stats.get("removed_pct") or 0)
+        if removed_pct > 80 and prescreen_stats.get("cache_size"):
+            warnings.append(
+                f"{removed_pct:.1f}% of events removed by constituent prescreen — "
+                f"possible stale cache (size={prescreen_stats['cache_size']}, expected ~664)"
+            )
+
+        result = {
+            "status": "ok",
+            "source_run_id": snapshot.get("run_id"),
+            "checked_at": summary.get("created_at") or snapshot.get("run_id"),
+            "provider_calls_triggered": False,
+            "read_only": True,
+            "summary": {
+                "constituent_cache_size": prescreen_stats.get("cache_size"),
+                "raw_events_from_finnhub": prescreen_stats.get("raw_count"),
+                "after_constituent_prescreen": prescreen_stats.get("post_count"),
+                "prescreen_removed_count": prescreen_stats.get("removed_count"),
+                "prescreen_removed_pct": prescreen_stats.get("removed_pct"),
+                "prescreen_removed_tickers": prescreen_stats.get("removed_tickers", []),
+                "prescreen_fail_open": prescreen_stats.get("fail_open"),
+                "quality_checked_count": len(quality_items) + len(quality_rejected),
+                "quality_passed_count": len(quality_items),
+                "quality_rejected_count": len(quality_rejected),
+                "expiration_pairs_built": pair_built,
+                "expiration_pair_dict_stored": pair_dict_stored,
+                "expiration_pair_dict_missing": pair_dict_missing,
+                "structures_built": structures_built,
+                "final_pass": final_pass,
+                "final_watch": final_watch,
+                "final_fail": final_fail,
+                "WARNING": warnings,
+            },
+            "lifecycle": lifecycle,
+        }
+        return jsonify(result), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
+
+
+def _reconstruct_calendar_lifecycle(ticker: str, engine_row: dict, quality_row: dict) -> dict:
+    """Reconstruct per-ticker pipeline stages from stored snapshot data."""
+    qp = quality_row or {}
+    has_exps = bool(qp.get("front_expiration") and qp.get("back_expiration"))
+    has_pair_dict = bool(qp.get("expiration_pair"))
+    has_spread = bool(engine_row.get("possible_spread") and any(engine_row.get("possible_spread", {}).values()))
+    quality_passed = bool(qp.get("passes_precheck"))
+    final_verdict = str(engine_row.get("verdict") or qp.get("verdict") or "UNKNOWN")
+
+    stages = {
+        "constituent_prescreen": "PASS" if (quality_passed or has_exps) else "UNKNOWN",
+        "quality_precheck": "PASS" if quality_passed else ("FAIL" if qp else "SKIPPED"),
+        "front_back_expirations_found": "PASS" if has_exps else ("FAIL" if quality_passed else "SKIPPED"),
+        "expiration_pair_dict_stored": "PASS" if has_pair_dict else ("FAIL" if has_exps else "SKIPPED"),
+        "trade_engine_received_pair": "PASS" if has_pair_dict else ("FAIL" if has_exps else "SKIPPED"),
+        "structure_built": "PASS" if has_spread else ("FAIL" if has_pair_dict else "SKIPPED"),
+        "final_verdict": final_verdict,
+    }
+    earnings_date = (qp.get("event") or {}).get("earnings_date") or qp.get("earnings_date")
+    front = qp.get("front_expiration")
+    front_before_earnings: bool | None = None
+    if front and earnings_date:
+        try:
+            from datetime import datetime as _dt
+            front_before_earnings = _dt.strptime(str(front)[:10], "%Y-%m-%d").date() < _dt.strptime(str(earnings_date)[:10], "%Y-%m-%d").date()
+        except Exception:
+            pass
+    return {
+        "ticker": ticker,
+        "stages": stages,
+        "expiration_debug": {
+            "front_expiration": front,
+            "back_expiration": qp.get("back_expiration"),
+            "expiration_pair_dict": qp.get("expiration_pair"),
+            "passes_precheck": quality_passed,
+            "expiry_near_miss": bool(qp.get("expiry_near_miss")),
+            "expiry_exception": qp.get("expiry_exception"),
+            "earnings_date": earnings_date,
+            "front_before_earnings": front_before_earnings,
+        },
+    }
+
+
 def _run_job(job_id: str, run_mode: str = "prod", job_lock: threading.Lock | None = None) -> None:
     global ACTIVE_JOB_ID
 

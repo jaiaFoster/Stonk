@@ -46,22 +46,47 @@ def filter_earnings_discovery_for_calendar_scan(
     merged_count = len(raw_items)
 
     prescreen_removed_count = 0
+    prescreen_stats: dict[str, object] = {"fail_open": False, "cache_size": 0, "raw_count": 0, "post_count": 0, "removed_count": 0, "removed_pct": 0.0, "removed_tickers": []}
     if getattr(config, "EARNINGS_DISCOVERY_CONSTITUENT_PRESCREEN", True):
         try:
             from app.services.universe_discovery_service import get_constituent_ticker_set
             constituent_set = get_constituent_ticker_set(logger)
         except Exception as exc:
             constituent_set = None
+            prescreen_stats["fail_open"] = True
             logger(f"[calendar] pre-screen: constituent cache unavailable, skipping filter ({exc})")
         if constituent_set:
             pre_len = len(raw_items)
-            raw_items = [
+            surviving = [
                 item for item in raw_items
                 if str(item.get("ticker") or item.get("symbol") or "").upper().strip() in constituent_set
             ]
+            removed_tickers = [
+                str(item.get("ticker") or item.get("symbol") or "").upper().strip()
+                for item in raw_items
+                if str(item.get("ticker") or item.get("symbol") or "").upper().strip() not in constituent_set
+            ]
+            raw_items = surviving
             prescreen_removed_count = pre_len - len(raw_items)
-            if prescreen_removed_count > 0:
-                logger(f"[calendar] pre-screen: {prescreen_removed_count} tickers removed (not in constituent cache) — {pre_len} → {len(raw_items)}")
+            removed_pct = prescreen_removed_count / pre_len * 100 if pre_len else 0.0
+            prescreen_stats = {
+                "fail_open": False,
+                "cache_size": len(constituent_set),
+                "raw_count": pre_len,
+                "post_count": len(raw_items),
+                "removed_count": prescreen_removed_count,
+                "removed_pct": round(removed_pct, 1),
+                "removed_tickers": removed_tickers[:30],
+            }
+            logger(
+                f"[calendar_prescreen] {pre_len} → {len(raw_items)} after constituent filter "
+                f"({prescreen_removed_count} removed, {removed_pct:.1f}%) | cache_size={len(constituent_set)}"
+            )
+            if removed_pct > 80 and constituent_set:
+                logger(
+                    f"[calendar_prescreen] WARNING: {removed_pct:.1f}% removal — "
+                    f"possible stale cache (size={len(constituent_set)}, expected ~664)"
+                )
 
     max_to_check = max(1, int(getattr(config, "EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK", 40) or 40))
     if clean_mode == "dev":
@@ -77,6 +102,7 @@ def filter_earnings_discovery_for_calendar_scan(
         "rejected_items": [],
         "tickers": [],
         "events_by_ticker": {},
+        "_prescreen_stats": prescreen_stats,
         "summary": {
             "raw_event_count": len(raw_items),
             "raw_only_count": raw_only_count,

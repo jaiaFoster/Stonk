@@ -6,6 +6,8 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
+_STALE_RUN_SECONDS = 82800  # 23 hours
+
 from app import config
 from app.services.commit_identity_service import build_commit_identity
 from app.services.developer_snapshot_service import build_developer_snapshot
@@ -37,7 +39,7 @@ def build_dev_status(
         "active_run": _job_summary(active_job_id, active) if active else None,
         "run_lock": run_lock or {},
         "tracked_job_count": len(jobs),
-        "latest_run": latest,
+        "latest_run": _enrich_latest_run(latest),
         "provider_fetch_count": (latest or {}).get("provider_fetch_count", 0),
         "provider_call_count": (latest or {}).get("provider_fetch_count", 0),
         "provider_calls_triggered": False,
@@ -119,6 +121,25 @@ def build_feature_health() -> dict[str, Any]:
         "trade_execution_enabled": False,
         "telemetry": telemetry_summary(),
     })
+
+
+def _enrich_latest_run(latest: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not latest:
+        return None
+    out = dict(latest)
+    completed_at = latest.get("completed_at")
+    age_seconds: int | None = None
+    is_stale: bool | None = None
+    if completed_at:
+        try:
+            completed_dt = datetime.fromisoformat(str(completed_at).replace("Z", "+00:00"))
+            age_seconds = int((datetime.now(timezone.utc) - completed_dt).total_seconds())
+            is_stale = age_seconds > _STALE_RUN_SECONDS
+        except Exception:
+            pass
+    out["last_run_age_seconds"] = age_seconds
+    out["last_run_is_stale"] = is_stale
+    return out
 
 
 def _job_summary(job_id: str | None, job: dict[str, Any]) -> dict[str, Any]:

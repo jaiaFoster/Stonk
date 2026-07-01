@@ -647,4 +647,26 @@ def knowledge_agent_prompt():
             "See /api/advisor/knowledge/status for current actionability before making "
             "any recommendation language."
         ),
+        "brief_format": {
+            "default": "prose",
+            "target_duration": "under 3 minutes listening",
+            "lead_with": "action_items_only",
+            "position_tables": "on_request_only",
+            "ticker_lists": "on_request_only",
+            "rules": [
+                "Never include position tables in default brief output.",
+                "Mention broad movers in prose: 'IBM led the portfolio at +13.8%'.",
+                "If a position needs action, call it out explicitly in plain language.",
+                "Strategy signals: one sentence per strategy. Details on request.",
+                "Market context: 2-3 sentences max on what matters today.",
+                "Advisor take: what to do and why. No hedging. Direct.",
+                "End with any tickets to raise — just the title and one sentence.",
+                "Total brief should be readable aloud in under 3 minutes.",
+            ],
+            "table_trigger_phrases": [
+                "show me my positions",
+                "give me the full table",
+                "what does the grid look like",
+            ],
+        },
     })

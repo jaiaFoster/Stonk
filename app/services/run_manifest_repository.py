@@ -76,6 +76,7 @@ def build_run_manifest(
     provider_status = provider_status or {}
     broker_data_state = _broker_data_state(pipeline_status, provider_status)
     options_data_state = _options_data_state(strategy_results, counts)
+    broker_auth_status = _broker_auth_status(provider_status)
     manifest_evidence = {
         "status": status,
         "report_quality": report_quality,
@@ -105,6 +106,11 @@ def build_run_manifest(
         "has_broker_data": broker_data_state, "has_market_data": provider_fetch_count > 0,
         "has_options_data": options_data_state,
         "has_errors": bool(pipeline_status.get("errors")), "error_count": len(pipeline_status.get("errors", []) or []),
+        "broker_auth_status": broker_auth_status,
+        "broker_auth_message": (
+            "Robinhood OAuth requires re-approval — open the Robinhood app and re-authorize."
+            if broker_auth_status == "EXPIRED" else None
+        ),
         **manifest_evidence,
         **degraded_reason,
         "redaction_version": 1, "schema_version": 1,
@@ -122,6 +128,23 @@ def _broker_data_state(pipeline_status: dict[str, Any], provider_status: dict[st
         if status in {"auth_required", "auth_failed", "auth_timeout", "rate_limited", "positions_failed"}:
             return False
     return None
+
+
+def _broker_auth_status(provider_status: dict[str, Any]) -> str:
+    """Return EXPIRED, OK, or UNKNOWN based on the Robinhood auth result."""
+    rh = (provider_status or {}).get("robinhood") if isinstance(provider_status, dict) else None
+    if not isinstance(rh, dict):
+        return "UNKNOWN"
+    if rh.get("success"):
+        return "OK"
+    status = str(rh.get("status") or "").lower()
+    if status in {"auth_required", "auth_failed", "auth_timeout"}:
+        return "EXPIRED"
+    if status in {"rate_limited"}:
+        return "RATE_LIMITED"
+    if status == "unknown":
+        return "UNKNOWN"
+    return "OK" if rh.get("configured") and not rh.get("error") else "UNKNOWN"
 
 
 def _options_data_state(strategy_results: dict[str, Any], counts: dict[str, Any]) -> bool | None:
