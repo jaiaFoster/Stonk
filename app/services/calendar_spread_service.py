@@ -441,6 +441,26 @@ def _select_expiration_pairs(
             parsed.append((dte, str(raw)))
     parsed.sort(key=lambda item: item[0])
 
+    # TKT-ADV-006: use the pre-selected pair from the quality precheck when
+    # available — avoids re-running selection in the background thread where
+    # expirations or timing may differ from when the precheck ran.
+    if earnings_event:
+        precheck_front = str(earnings_event.get("precheck_front_expiration") or "").strip()
+        precheck_back = str(earnings_event.get("precheck_back_expiration") or "").strip()
+        if precheck_front and precheck_back:
+            available = {exp for _, exp in parsed}
+            if precheck_front in available and precheck_back in available:
+                if diagnostics is not None:
+                    diagnostics["source"] = "quality_precheck"
+                    diagnostics["precheck_front"] = precheck_front
+                    diagnostics["precheck_back"] = precheck_back
+                return [(precheck_front, precheck_back)]
+            # Pair stale (expirations have passed since precheck ran) — fall through.
+            if diagnostics is not None:
+                diagnostics["precheck_pair_stale"] = True
+                diagnostics["precheck_front"] = precheck_front
+                diagnostics["precheck_back"] = precheck_back
+
     if bool(getattr(config, "CALENDAR_EARNINGS_EVENT_AWARE_EXPIRATIONS", True)) and earnings_event:
         event_pairs, _diag = _select_earnings_expiration_pairs(parsed, earnings_event, today)
         if diagnostics is not None:

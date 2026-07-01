@@ -255,6 +255,14 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
     if high_move_warning:
         checks.append(_check("Historical earnings move", "WARN", f"Avg historical earnings move {historical_move*100:.1f}% — large moves reduce calendar edge."))
 
+    _sources_seen = list(event.get("sources_seen") or [])
+    _configured = _configured_provider_names()
+    _source_call_log = {
+        "configured_providers": _configured,
+        "providers_with_data": _sources_seen,
+        "providers_without_data": [p for p in _configured if p not in _sources_seen],
+        "is_single_source": len(_sources_seen) == 1,
+    }
     return {
         "ticker": ticker,
         "event": event,
@@ -267,6 +275,7 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         "date_confidence": event.get("earnings_date_confidence") or event.get("date_confidence") or "unknown",
         "date_conflict": bool(event.get("earnings_source_conflict") or event.get("date_conflict")),
         "date_sources": event.get("sources_seen") or event.get("date_sources") or [],
+        "source_call_log": _source_call_log,
         "high_move_warning": high_move_warning,
         "high_move_note": f"Historical earnings move avg {historical_move*100:.1f}% — large moves reduce calendar edge. Structure cost likely high relative to max profit." if high_move_warning else None,
         "is_timestamp_confirmed": bool(event.get("is_timestamp_confirmed")),
@@ -535,6 +544,18 @@ def _parse_date(value: Any) -> date | None:
 
 def _check(name: str, status: str, detail: str) -> dict[str, str]:
     return {"name": name, "status": status.upper(), "detail": str(detail)}
+
+
+def _configured_provider_names() -> list[str]:
+    """Return names of earnings providers that have API keys configured."""
+    order = list(getattr(config, "EARNINGS_PROVIDER_ORDER", ["finnhub", "alphavantage"]) or [])
+    configured: list[str] = []
+    for name in order:
+        if name == "finnhub" and getattr(config, "FINNHUB_API_KEY", None):
+            configured.append("finnhub")
+        elif name in ("alphavantage", "alpha_vantage") and getattr(config, "ALPHA_VANTAGE_API_KEY", None):
+            configured.append(name)
+    return configured
 
 
 def _underlying_price(quote: dict[str, Any]) -> float | None:

@@ -278,6 +278,17 @@ def positions_from_earnings_discovery(discovery: dict[str, Any]) -> list[dict[st
         ticker = str((raw or {}).get("ticker") or (event or {}).get("ticker") or (event or {}).get("symbol") or "").upper().strip()
         if not ticker:
             continue
+        # Carry pre-selected expiration pair from quality precheck into the
+        # earnings_event so the background calendar scanner uses the same pair
+        # instead of re-selecting independently (TKT-ADV-006).
+        earnings_event = dict(event) if isinstance(event, dict) else {}
+        if isinstance(raw, dict):
+            front = raw.get("front_expiration")
+            back = raw.get("back_expiration")
+            if front:
+                earnings_event["precheck_front_expiration"] = str(front)
+            if back:
+                earnings_event["precheck_back_expiration"] = str(back)
         positions.append(
             {
                 "ticker": ticker,
@@ -289,7 +300,7 @@ def positions_from_earnings_discovery(discovery: dict[str, Any]) -> list[dict[st
                 "market_value": 0,
                 "account": "Earnings Discovery",
                 "source": str((discovery or {}).get("source") or "earnings_discovery_v2"),
-                "earnings_event": event,
+                "earnings_event": earnings_event,
             }
         )
     return positions

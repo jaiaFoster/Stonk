@@ -405,3 +405,259 @@ class TestFormatHtmlIntegration:
             html = format_html("payload text", [], {}, [], {}, [])
 
         assert "signal live, execution gated" in html
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — TKT-ADV-006: precheck expiration pair passthrough
+# ---------------------------------------------------------------------------
+
+class TestPositionsFromEarningsDiscovery:
+    def test_carries_precheck_expirations_into_earnings_event(self):
+        from app.services.pipeline_helpers import positions_from_earnings_discovery
+
+        discovery = {
+            "passed_items": [{
+                "ticker": "JPM",
+                "front_expiration": "2026-07-10",
+                "back_expiration": "2026-08-07",
+                "event": {
+                    "ticker": "JPM",
+                    "earnings_date": "2026-07-11",
+                },
+            }]
+        }
+
+        positions = positions_from_earnings_discovery(discovery)
+
+        assert len(positions) == 1
+        ev = positions[0]["earnings_event"]
+        assert ev["precheck_front_expiration"] == "2026-07-10"
+        assert ev["precheck_back_expiration"] == "2026-08-07"
+
+    def test_omits_precheck_keys_when_expirations_missing(self):
+        from app.services.pipeline_helpers import positions_from_earnings_discovery
+
+        discovery = {
+            "passed_items": [{
+                "ticker": "AAPL",
+                "event": {"ticker": "AAPL", "earnings_date": "2026-07-25"},
+            }]
+        }
+
+        positions = positions_from_earnings_discovery(discovery)
+
+        assert len(positions) == 1
+        ev = positions[0]["earnings_event"]
+        assert "precheck_front_expiration" not in ev
+        assert "precheck_back_expiration" not in ev
+
+    def test_returns_empty_on_empty_discovery(self):
+        from app.services.pipeline_helpers import positions_from_earnings_discovery
+
+        assert positions_from_earnings_discovery({}) == []
+        assert positions_from_earnings_discovery(None) == []
+
+
+class TestSelectExpirationPairsPrecheck:
+    def _run(self, expirations, earnings_event=None, diagnostics=None):
+        from app.services.calendar_spread_service import _select_expiration_pairs
+        return _select_expiration_pairs(expirations, earnings_event=earnings_event, diagnostics=diagnostics)
+
+    def test_uses_precheck_pair_when_both_expirations_available(self):
+        expirations = ["2026-07-10", "2026-07-17", "2026-08-07", "2026-09-18"]
+        event = {
+            "precheck_front_expiration": "2026-07-10",
+            "precheck_back_expiration": "2026-08-07",
+        }
+        diag: dict = {}
+        result = self._run(expirations, earnings_event=event, diagnostics=diag)
+
+        assert result == [("2026-07-10", "2026-08-07")]
+        assert diag.get("source") == "quality_precheck"
+
+    def test_falls_through_when_precheck_pair_stale(self):
+        # Only back expiration is present; front has already rolled off.
+        expirations = ["2026-08-07", "2026-09-18"]
+        event = {
+            "precheck_front_expiration": "2026-07-10",  # not in expirations anymore
+            "precheck_back_expiration": "2026-08-07",
+        }
+        diag: dict = {}
+        result = self._run(expirations, earnings_event=event, diagnostics=diag)
+
+        assert diag.get("precheck_pair_stale") is True
+        # Falls through to generic selection; just check it returned something (or empty)
+        assert isinstance(result, list)
+
+    def test_ignores_precheck_when_both_keys_missing(self):
+        expirations = ["2026-08-07", "2026-09-18"]
+        event = {"earnings_date": "2026-08-01"}
+        diag: dict = {}
+        result = self._run(expirations, earnings_event=event, diagnostics=diag)
+
+        assert diag.get("source") != "quality_precheck"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — TKT-ADV-001/002: source_call_log on quality rows
+# ---------------------------------------------------------------------------
+
+class TestSourceCallLog:
+    def _make_row(self, sources_seen, configured=("finnhub",)):
+        from app.services.earnings_discovery_quality_service import _quality_row
+        event = {
+            "ticker": "AAPL",
+            "earnings_date": "2026-07-25",
+            "sources_seen": list(sources_seen),
+        }
+        with patch("app.services.earnings_discovery_quality_service._configured_provider_names",
+                   return_value=list(configured)):
+            return _quality_row(event, {})
+
+    def test_source_call_log_present_on_quality_row(self):
+        row = self._make_row(["finnhub"])
+        assert "source_call_log" in row
+
+    def test_single_source_flag_true_when_one_source(self):
+        row = self._make_row(["finnhub"])
+        assert row["source_call_log"]["is_single_source"] is True
+
+    def test_single_source_flag_false_when_two_sources(self):
+        row = self._make_row(["finnhub", "alphavantage"], configured=("finnhub", "alphavantage"))
+        assert row["source_call_log"]["is_single_source"] is False
+
+    def test_providers_without_data_lists_missing_contributor(self):
+        row = self._make_row(["finnhub"], configured=("finnhub", "alphavantage"))
+        assert "alphavantage" in row["source_call_log"]["providers_without_data"]
+
+    def test_configured_providers_empty_when_no_keys_set(self):
+        row = self._make_row([], configured=())
+        assert row["source_call_log"]["configured_providers"] == []
+
+
+class TestConfiguredProviderNames:
+    def test_returns_only_providers_with_api_keys(self):
+        from app.services.earnings_discovery_quality_service import _configured_provider_names
+
+        with patch("app.config.FINNHUB_API_KEY", "key123"), \
+             patch("app.config.ALPHA_VANTAGE_API_KEY", None), \
+             patch("app.config.EARNINGS_PROVIDER_ORDER", ["finnhub", "alphavantage"]):
+            result = _configured_provider_names()
+
+        assert result == ["finnhub"]
+
+    def test_returns_both_when_both_keys_set(self):
+        from app.services.earnings_discovery_quality_service import _configured_provider_names
+
+        with patch("app.config.FINNHUB_API_KEY", "key123"), \
+             patch("app.config.ALPHA_VANTAGE_API_KEY", "avkey"), \
+             patch("app.config.EARNINGS_PROVIDER_ORDER", ["finnhub", "alphavantage"]):
+            result = _configured_provider_names()
+
+        assert "finnhub" in result
+        assert "alphavantage" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — TKT-CAL-004: verdict_tier sort
+# ---------------------------------------------------------------------------
+
+class TestVerdictTier:
+    def test_pass_scores_100(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+        assert _verdict_tier("PASS / POSSIBLE ENTRY SETUP") == 100
+
+    def test_watch_scores_80(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+        assert _verdict_tier("WATCH / STRUCTURE FOUND") == 80
+
+    def test_near_miss_scores_60(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+        assert _verdict_tier("NEAR_MISS / EXPIRY_GAP") == 60
+
+    def test_fail_scores_35(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+        assert _verdict_tier("FAIL / NO VALID CALENDAR STRUCTURE") == 35
+
+    def test_unknown_scores_35(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+        assert _verdict_tier("") == 35
+
+
+class TestVerdictTierSortOrder:
+    def _make_engine_result(self, events_verdicts):
+        """Run the engine with mocked sub-services, forcing specific verdicts."""
+        from app.services.unified_calendar_trade_engine_service import run_unified_calendar_trade_engine
+
+        # Build a minimal quality-precheck result with provided tickers.
+        def fake_quality(tickers):
+            items = []
+            for ticker, verdict_hint in tickers.items():
+                items.append({
+                    "ticker": ticker,
+                    "event": {"ticker": ticker, "earnings_date": "2026-07-25", "days_until_earnings": 5},
+                    "checks": [],
+                    "passes_precheck": verdict_hint != "FAIL",
+                    "expiry_near_miss": verdict_hint == "NEAR_MISS",
+                    "front_expiration": None,
+                    "back_expiration": None,
+                    "quality_score": 50.0,
+                    "primary_rejection_reason": None,
+                })
+            return items
+
+        tickers = dict(events_verdicts)
+        quality_rows = {t: row for row, t in zip(fake_quality(tickers), tickers)}
+
+        # Minimal stubs — no candidates, no strategy, no open options.
+        with patch("app.services.unified_calendar_trade_engine_service._verdict_tier") as mock_tier:
+            from app.services.unified_calendar_trade_engine_service import _verdict_tier as real_tier
+            mock_tier.side_effect = real_tier
+            result = run_unified_calendar_trade_engine(
+                quality_precheck={"passed_items": list(fake_quality(tickers).values()) if isinstance(fake_quality(tickers), dict) else fake_quality(tickers),
+                                   "events_by_ticker": quality_rows,
+                                   "tickers": list(tickers.keys())},
+                calendar_scan={},
+                open_options={},
+                lifecycle_checks={},
+                log_print=lambda msg: None,
+            )
+        return result
+
+    def test_pass_rows_sort_before_watch_rows(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+
+        # Simulate rows with identical scores but different verdict tiers.
+        rows = [
+            {"verdict": "WATCH / STRUCTURE FOUND", "score": 50.0, "verdict_tier": _verdict_tier("WATCH / STRUCTURE FOUND")},
+            {"verdict": "PASS / POSSIBLE ENTRY SETUP", "score": 50.0, "verdict_tier": _verdict_tier("PASS / POSSIBLE ENTRY SETUP")},
+            {"verdict": "FAIL / NO VALID CALENDAR STRUCTURE", "score": 50.0, "verdict_tier": _verdict_tier("FAIL / NO VALID CALENDAR STRUCTURE")},
+        ]
+        rows.sort(key=lambda item: (float(item.get("verdict_tier") or 0), float(item.get("score") or 0)), reverse=True)
+
+        assert rows[0]["verdict"].startswith("PASS")
+        assert rows[1]["verdict"].startswith("WATCH")
+        assert rows[2]["verdict"].startswith("FAIL")
+
+    def test_watch_before_fail_at_equal_score(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+
+        rows = [
+            {"verdict": "FAIL / NO VALID CALENDAR STRUCTURE", "score": 35.0, "verdict_tier": _verdict_tier("FAIL / NO VALID CALENDAR STRUCTURE")},
+            {"verdict": "WATCH / STRUCTURE FOUND", "score": 35.0, "verdict_tier": _verdict_tier("WATCH / STRUCTURE FOUND")},
+        ]
+        rows.sort(key=lambda item: (float(item.get("verdict_tier") or 0), float(item.get("score") or 0)), reverse=True)
+
+        assert rows[0]["verdict"].startswith("WATCH")
+        assert rows[1]["verdict"].startswith("FAIL")
+
+    def test_higher_score_wins_within_same_tier(self):
+        from app.services.unified_calendar_trade_engine_service import _verdict_tier
+
+        rows = [
+            {"verdict": "WATCH / STRUCTURE FOUND", "score": 40.0, "verdict_tier": _verdict_tier("WATCH / STRUCTURE FOUND")},
+            {"verdict": "WATCH / URGENT MANUAL REVIEW", "score": 70.0, "verdict_tier": _verdict_tier("WATCH / URGENT MANUAL REVIEW")},
+        ]
+        rows.sort(key=lambda item: (float(item.get("verdict_tier") or 0), float(item.get("score") or 0)), reverse=True)
+
+        assert rows[0]["score"] == 70.0
