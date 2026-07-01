@@ -336,22 +336,32 @@ class CompositeEarningsProvider:
             try:
                 items = getattr(provider, method_name)(*args)
             except EarningsRateLimitError as e:
-                provider_errors.append(f"{provider.name}: {e}")
+                provider_errors.append(f"{provider.name}: rate_limit: {e}")
                 continue
             except EarningsProviderError as e:
-                provider_errors.append(f"{provider.name}: {e}")
+                provider_errors.append(f"{provider.name}: provider_error: {e}")
                 continue
             except Exception as e:
-                provider_errors.append(f"{provider.name}: {e}")
+                provider_errors.append(f"{provider.name}: unexpected: {e}")
                 continue
 
             if items:
                 collected.extend(items)
                 if not config.EARNINGS_MERGE_PROVIDER_EVENTS:
                     break
+            else:
+                # Provider called successfully but returned no events — log so
+                # empty responses are distinguishable from errors in Railway logs.
+                provider_errors.append(f"{provider.name}: empty_response")
 
         if collected:
-            return _merge_dedupe_events(collected)
+            merged = _merge_dedupe_events(collected)
+            if provider_errors:
+                # Partial success: some providers returned data, others didn't.
+                # Attach provider activity summary to each event for visibility.
+                for ev in merged:
+                    ev.setdefault("provider_errors", provider_errors)
+            return merged
 
         # Avoid hard-failing the whole run just because both calendars are empty.
         # Raise only when every configured provider errored, which helps logs show

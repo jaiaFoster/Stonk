@@ -109,7 +109,7 @@ def build_unified_calendar_trade_engine(
             new_rows.append(row)
 
     new_rows = [attach_calendar_display_fields(row) for row in new_rows]
-    new_rows.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    new_rows.sort(key=lambda item: (float(item.get("verdict_tier") or 0), float(item.get("score") or 0)), reverse=True)
 
     open_rows = [attach_calendar_display_fields(row) for row in _build_open_trade_rows(open_options, lifecycle_checks)]
 
@@ -220,6 +220,7 @@ def _build_new_trade_row(
         "ticker": ticker,
         "type": "new_earnings_calendar_candidate",
         "score": round(max(0.0, min(100.0, float(score or 0.0))), 1),
+        "verdict_tier": _verdict_tier(verdict),
         "verdict": verdict,
         "final_verdict": final,
         "trade_type": final.get("trade_type") or "",
@@ -534,6 +535,18 @@ def _compact_event(event: dict[str, Any]) -> dict[str, Any]:
         "is_timestamp_confirmed": event.get("is_timestamp_confirmed"),
         "source": event.get("source"),
     }
+
+
+def _verdict_tier(verdict: str) -> int:
+    """Numeric sort key so PASS > WATCH > NEAR_MISS > FAIL regardless of score."""
+    v = str(verdict or "").upper()
+    if v.startswith("PASS"):
+        return 100
+    if v.startswith("WATCH"):
+        return 80
+    if v.startswith("NEAR_MISS"):
+        return 60
+    return 35  # FAIL or unknown
 
 
 def _baseline_score_for_event(event: dict[str, Any]) -> float:
