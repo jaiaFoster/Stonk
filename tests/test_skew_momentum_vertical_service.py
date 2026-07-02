@@ -77,6 +77,17 @@ class SkewMomentumVerticalServiceTests(unittest.TestCase):
         self.assertIn("3M", result["reason"])
         self.assertTrue(result["components"])
 
+    def test_short_dte_spread_hard_fails(self):
+        direction = {"direction": "bullish", "score": 82, "confirmed": True, "reason": "Bullish trend confirmed."}
+        short_expiration = (date.today() + timedelta(days=14)).isoformat()
+        rows = construct_vertical_candidates(
+            "CRDO", direction, 100, short_expiration,
+            [option(100, "call", 1.9, 2.0, .30), option(105, "call", .70, .75, .36, .25)],
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["verdict"], "FAIL / DTE TOO SHORT")
+        self.assertIn("below hard minimum", rows[0]["primary_blocker"])
+
 
 if __name__ == "__main__":
     unittest.main()

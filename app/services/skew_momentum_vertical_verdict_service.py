@@ -11,6 +11,7 @@ def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str,
     code = str(failures[0].get("code") or "") if failures else ""
     verdicts = {
         "data_quality": ("FAIL / DATA QUALITY", "BLOCKED_DATA_QUALITY", "Fix provider/candle quality before review."),
+        "dte": ("FAIL / DTE TOO SHORT", "BLOCKED_DTE_TOO_SHORT", "Wait for an expiration that clears the hard DTE minimum."),
         "no_chain": ("FAIL / NO VALID VERTICAL", "BLOCKED_NO_OPTIONS_CHAIN", "Retry when a usable options chain is available."),
         "no_vertical": ("FAIL / NO VALID VERTICAL", "BLOCKED_NO_VALID_VERTICAL", "A liquid short wing or valid width must appear."),
         "liquidity": ("FAIL / OPTIONS ILLIQUID", "BLOCKED_ILLIQUID_OPTIONS", "Wait for tighter bid/ask spreads and stronger volume/open interest."),

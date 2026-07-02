@@ -112,6 +112,13 @@ def apply_hard_fail_overrides(
     min_oi = _num(candidate.get("min_leg_open_interest"))
     min_vol = _num(candidate.get("min_leg_volume"))
     iv_edge = _num(candidate.get("iv_edge"))
+    front_dte = _num(candidate.get("front_dte"))
+
+    if front_dte is not None and front_dte < float(config.CALENDAR_MIN_FRONT_LEG_DTE):
+        verdict = "FAIL / FRONT LEG TOO CLOSE"
+        status = "FAIL"
+        main_blocker = "FRONT_LEG_DTE_TOO_LOW"
+        blockers.append(f"Front leg DTE {front_dte:.0f} is below hard minimum {config.CALENDAR_MIN_FRONT_LEG_DTE}.")
 
     if max_spread is not None and max_spread > float(config.CALENDAR_HARD_FAIL_MAX_LEG_SPREAD_PCT):
         verdict = "FAIL / UNTRADEABLE SPREAD"
@@ -132,11 +139,11 @@ def apply_hard_fail_overrides(
         status = "FAIL"
         main_blocker = main_blocker or "options market untradeable"
         blockers.append(f"Min volume {min_vol:.0f} with low OI does not show live liquidity.")
-    if iv_edge is not None and iv_edge < -float(config.CALENDAR_HARD_FAIL_BACK_IV_OVER_FRONT_IV_PCT):
-        verdict = verdict or "FAIL / IV EDGE NOT PRESENT"
+    if iv_edge is not None and iv_edge < 0:
+        verdict = verdict or "FAIL / IV RELATIONSHIP ADVERSE"
         status = "FAIL"
-        main_blocker = main_blocker or "IV edge not present"
-        blockers.append(f"Back IV exceeds front IV by {abs(iv_edge):.1f} points.")
+        main_blocker = main_blocker or "IV_RELATIONSHIP_ADVERSE"
+        blockers.append(f"IV_RELATIONSHIP_ADVERSE: Back IV exceeds front IV by {abs(iv_edge):.1f} points.")
 
     timestamp_confirmed = _timestamp_confirmed(candidate, ranking)
     if not timestamp_confirmed and bool(config.CALENDAR_REQUIRE_CONFIRMED_EARNINGS_TIMESTAMP_FOR_ENTRY) and status != "FAIL":

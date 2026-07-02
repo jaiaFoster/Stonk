@@ -113,7 +113,14 @@ def _rank_candidate(candidate: dict[str, Any], strategy: dict[str, Any]) -> dict
 
     iv_edge = _float(candidate.get("iv_edge"))
     iv_ok = iv_edge is not None and iv_edge >= 0
-    criteria.append(_criterion("IV relationship", iv_ok, f"Front IV - back IV = {iv_edge:.2f}" if iv_edge is not None else "IV edge unavailable.", status="PASS" if iv_ok else "WARN"))
+    criteria.append(
+        _criterion(
+            "IV relationship",
+            iv_ok,
+            f"Front IV - back IV = {iv_edge:.2f}" if iv_edge is not None else "IV edge unavailable.",
+            status="PASS" if iv_ok else "FAIL" if iv_edge is not None else "WARN",
+        )
+    )
 
     hard_fails = [c for c in criteria if c.get("status") == "FAIL"]
     pass_count = sum(1 for c in criteria if c.get("status") == "PASS")

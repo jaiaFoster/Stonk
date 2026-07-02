@@ -50,6 +50,18 @@ class Patch27ASlimSnapshotFoundationTests(unittest.TestCase):
         self.assertNotIn("known-secret", output["message"])
         self.assertEqual(output["safe"], "ok")
 
+    def test_redaction_allows_safe_auth_status_fields(self):
+        output = redact({
+            "broker_auth_status": "auth_required",
+            "broker_auth_message": "Device approval required",
+            "degraded_auth_status": "rate_limited",
+            "refresh_token": "secret-token",
+        })
+        self.assertEqual(output["broker_auth_status"], "auth_required")
+        self.assertEqual(output["broker_auth_message"], "Device approval required")
+        self.assertEqual(output["degraded_auth_status"], "rate_limited")
+        self.assertEqual(output["refresh_token"], "[REDACTED]")
+
     def test_developer_snapshot_latest_uses_stored_report_and_excludes_raw_provider_payload(self):
         with tempfile.TemporaryDirectory() as temp:
             report_repo = ReportSnapshotRepository(str(Path(temp) / "reports.sqlite3"))

@@ -196,9 +196,30 @@ def construct_vertical_candidates(
     account_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     option_type = "call" if direction.get("direction") == "bullish" else "put"
+    dte = _dte(expiration)
+    if dte is None or dte < int(config.SKEW_MIN_SPREAD_DTE):
+        detail = f"Expiration DTE {dte if dte is not None else 'unavailable'} is below hard minimum {config.SKEW_MIN_SPREAD_DTE}."
+        return [
+            apply_skew_momentum_vertical_verdict(
+                {
+                    "strategy_id": "skew_momentum_vertical",
+                    "strategy_label": "Skew Momentum Vertical",
+                    "source": "skew_momentum_vertical_strategy_v1",
+                    "ticker": ticker,
+                    "direction": direction.get("direction"),
+                    "score": 0,
+                    "momentum_confirmed": bool(direction.get("confirmed")),
+                    "skew_pass": False,
+                    "primary_reason": detail,
+                    "requirements": [_req("DTE gate", False, detail, "dte")],
+                    "risk_notes": [],
+                    "provider_notes": [detail],
+                    "payload": {"market_metrics": metrics or {}},
+                }
+            )
+        ]
     options = [row for row in chain or [] if str(row.get("option_type") or "").lower() == option_type and _usable_quote(row)]
     options.sort(key=lambda row: float(row.get("strike") or 0))
-    dte = _dte(expiration)
     out: list[dict[str, Any]] = []
     for long_leg in options:
         long_strike = float(long_leg.get("strike") or 0)

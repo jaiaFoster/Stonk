@@ -7,6 +7,7 @@ from typing import Any
 from app import config
 
 SENSITIVE_PARTS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "COOKIE", "SESSION", "PRIVATE", "BEARER", "CREDENTIAL", "ACCESS_TOKEN", "REFRESH_TOKEN")
+SAFE_KEY_ALLOWLIST = {"BROKER_AUTH_STATUS", "BROKER_AUTH_MESSAGE", "DEGRADED_AUTH_STATUS"}
 
 
 def known_secrets() -> list[str]:
@@ -17,7 +18,7 @@ def known_secrets() -> list[str]:
 def redact(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            str(key): "[REDACTED]" if any(part in str(key).upper() for part in SENSITIVE_PARTS) else redact(item)
+            str(key): redact(item) if str(key).upper() in SAFE_KEY_ALLOWLIST else "[REDACTED]" if any(part in str(key).upper() for part in SENSITIVE_PARTS) else redact(item)
             for key, item in value.items()
         }
     if isinstance(value, list):

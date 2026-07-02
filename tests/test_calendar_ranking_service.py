@@ -54,6 +54,32 @@ class CalendarRankingServiceTests(unittest.TestCase):
         self.assertEqual(row["backtest_mode"], "skipped_insufficient_candles")
         self.assertIn("insufficient_historical_candle_data", row["backtest_blockers"])
 
+    def test_adverse_iv_relationship_is_fail_not_warn(self):
+        ranking = build_calendar_ranking(
+            [
+                {
+                    "ticker": "CAG",
+                    "front_expiration": "2026-06-12",
+                    "back_expiration": "2026-07-17",
+                    "max_leg_spread_pct": 5,
+                    "min_leg_open_interest": 100,
+                    "min_leg_volume": 50,
+                    "debit_pct_underlying": 2,
+                    "iv_edge": -0.5,
+                    "earnings_timing": {"captures_event": True},
+                    "earnings_event": {"earnings_date": "2026-06-11", "session_label": "AMC", "is_timestamp_confirmed": True},
+                    "candle_quality": {"confidence": "high", "selected_provider": "tradier"},
+                }
+            ],
+            {"items": [{"ticker": "CAG", "score": 85, "is_preferred_setup": True, "earnings": {"earnings_date": "2026-06-11", "session_label": "AMC", "is_timestamp_confirmed": True}}]},
+            log_print=lambda msg: None,
+        )
+
+        row = ranking["items"][0]
+        criteria = {item["name"]: item["status"] for item in row["criteria"]}
+        self.assertEqual(criteria["IV relationship"], "FAIL")
+        self.assertFalse(row["passes_all_criteria"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -302,7 +302,7 @@ def _candidate_requirements(candidate: dict[str, Any]) -> list[dict[str, str]]:
     elif iv_edge >= 0:
         reqs.append(_req("IV relationship", "PASS", f"Front IV exceeds/equal back IV by {iv_edge:.2f}."))
     else:
-        reqs.append(_req("IV relationship", "WARN", f"Back IV is above front IV by {abs(iv_edge):.2f}."))
+        reqs.append(_req("IV relationship", "FAIL", f"IV_RELATIONSHIP_ADVERSE: Back IV is above front IV by {abs(iv_edge):.2f}."))
     return reqs
 
 

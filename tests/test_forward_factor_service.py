@@ -6,7 +6,7 @@ from unittest.mock import patch
 from app.services.forward_factor_backtest_service import forward_factor_backtest_status
 from app.services.forward_factor_data_eligibility_service import validate_required_data
 from app.services.forward_factor_candidate_selection_service import score_forward_factor_candidate, select_forward_factor_candidates
-from app.services.forward_factor_service import build_forward_factor_double_calendar_structure, build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar
+from app.services.forward_factor_service import build_forward_factor_double_calendar_structure, build_forward_factor_strategy, build_scenario_grid, calculate_forward_factor, construct_double_calendar, eligible_expiration_pairs
 from app.services.data_requirement_planner import DataRequirementPlanner
 from app.services.data_requirement_service import forward_factor_requirement
 from app.services.strategy_opportunity_repository import opportunity_structure_key
@@ -60,6 +60,19 @@ class ForwardFactorTests(unittest.TestCase):
             calculate_forward_factor(.8, .2, 60, 90)
         with self.assertRaises(ValueError):
             calculate_forward_factor(50, 45, 60, 90)
+
+    def test_front_leg_hard_minimum_blocks_short_dte_pairs_even_if_window_is_loosened(self):
+        near = (date.today() + timedelta(days=5)).isoformat()
+        far = (date.today() + timedelta(days=90)).isoformat()
+        with patch("app.services.forward_factor_service.config.FF_FRONT_DTE_MIN", 1), \
+             patch("app.services.forward_factor_service.config.FF_FRONT_DTE_MAX", 10), \
+             patch("app.services.forward_factor_service.config.FF_BACK_DTE_MIN", 80), \
+             patch("app.services.forward_factor_service.config.FF_BACK_DTE_MAX", 105), \
+             patch("app.services.forward_factor_service.config.FF_MIN_FRONT_LEG_DTE", 7), \
+             patch("app.services.forward_factor_service.config.FF_MIN_EXPIRATION_GAP_DAYS", 20), \
+             patch("app.services.forward_factor_service.config.FF_MAX_EXPIRATION_GAP_DAYS", 120):
+            pairs = eligible_expiration_pairs([near, far])
+        self.assertEqual(pairs, [])
 
     def test_constructs_matched_delta_double_calendar(self):
         front = [leg(95, "put", -.35, .9, 1.0), leg(105, "call", .35, .9, 1.0)]
