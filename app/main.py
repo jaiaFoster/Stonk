@@ -50,6 +50,12 @@ app.register_blueprint(knowledge_bp)
 from app.api.plaid import plaid_bp
 app.register_blueprint(plaid_bp)
 
+from app.api.auth import auth_bp
+app.register_blueprint(auth_bp)
+
+from app.api.telemetry import telemetry_bp
+app.register_blueprint(telemetry_bp)
+
 # 28A: set secret key for signed cookies and seed admin user on first boot
 app.secret_key = config.SESSION_SECRET_KEY or os.urandom(32)
 try:
@@ -640,6 +646,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <p class="muted">Use full key in Authorization: Bearer header or ?token= param.</p>
 <p class="muted">Last login: {last_login}</p>
 <p><a href="/api/user/status?token={api_key}">View full status (JSON)</a></p>
+{broker_prompt_html}
 <div class="section">
 <h2>Personalization Run</h2>
 <p>{run_status_html}</p>
@@ -651,17 +658,20 @@ function triggerRun(){{
   var btn=document.getElementById('run-btn');
   var out=document.getElementById('run-result');
   btn.disabled=true; btn.textContent='Running…';
-  out.textContent='Fetching positions…';
+  out.textContent='Fetching signals…';
   fetch('/api/user/run?token={api_key}',{{method:'POST'}})
     .then(function(r){{return r.json();}})
     .then(function(d){{
       btn.disabled=false; btn.textContent='Run Personalization';
       if(d.status==='ok'){{
-        out.textContent='✓ Done — '+d.positions_fetched+' positions, '+d.daily_opportunity_count+' opportunities'+(d.core_run_stale?' (core run stale)':'');
+        var pos=d.positions_fetched||0;
+        var opp=d.daily_opportunity_count||0;
+        var mode=d.broker_mode==='signals_only'?' (signals only)':'';
+        out.textContent='✓ Done — '+pos+' positions, '+opp+' opportunities'+mode+(d.core_run_stale?' (core run stale)':'');
       }} else if(d.status==='already_running'){{
         out.textContent='⏳ Already running since '+d.started_at;
       }} else {{
-        out.textContent='✗ '+d.error+': '+d.message;
+        out.textContent='✗ '+(d.error||'')+': '+(d.message||'');
       }}
     }})
     .catch(function(e){{
@@ -949,6 +959,23 @@ def dashboard():
     except Exception:
         pass
 
+    # TKT-FEAT-001: broker-optional users get a connect prompt instead of credential status
+    broker_connection_optional = bool(user.get("broker_connection_optional"))
+    broker_connected_flag = bool(user.get("broker_connected"))
+    broker_prompt_html = ""
+    if broker_connection_optional and not broker_connected_flag:
+        broker_prompt_html = (
+            '<div class="section" style="border-color:#00ff8844">'
+            '<h2 style="color:#00ff88">Connect Your Brokerage</h2>'
+            '<p>Connect Robinhood to see your open positions, P&amp;L, and personalized exit signals '
+            'alongside these market signals.</p>'
+            f'<a href="/connect-broker" style="display:inline-block;margin-top:.5rem;'
+            f'padding:.5rem 1.2rem;background:#00ff8833;border:1px solid #00ff8866;'
+            f'color:#00ff88;border-radius:4px;text-decoration:none">Connect Robinhood</a>'
+            '<p class="muted" style="margin-top:.5rem">All strategy signals are fully visible without a broker connection.</p>'
+            '</div>'
+        )
+
     html = _DASHBOARD_HTML.format(
         css=_AUTH_CSS,
         username=escape(str(user.get("username", ""))),
@@ -960,6 +987,7 @@ def dashboard():
         core_freshness_html=core_freshness_html,
         cred_status_html=cred_status_html,
         cred_update_msg=cred_update_html,
+        broker_prompt_html=broker_prompt_html,
     )
     return html
 
@@ -1015,6 +1043,36 @@ def logout():
         except Exception:
             pass
     return redirect("/login")
+
+
+@app.route("/connect-broker")
+def connect_broker_page():
+    """TKT-FEAT-001: Simple page for broker-optional users to connect Robinhood."""
+    user = _get_session_user()
+    if not user:
+        return redirect("/login")
+    api_key = user.get("api_key", "")
+    msg = request.args.get("msg", "")
+    msg_html = (
+        f'<p class="{"ok" if "success" in msg.lower() else "err"}">{escape(msg)}</p>'
+        if msg else ""
+    )
+    return render_template_string(
+        """<!DOCTYPE html><html><head><title>ASA — Connect Broker</title>
+<style>{css}</style></head><body><div class="card">
+<h1>Connect Your Brokerage</h1>
+<p>Validate and store your Robinhood credentials to enable position tracking and personalized exit signals.</p>
+{msg_html}
+<form method="POST" action="/user/update-credentials">
+  <label>Robinhood Username (email)</label>
+  <input name="robinhood_username" type="email" required autofocus>
+  <label>Robinhood Password</label>
+  <input type="password" name="robinhood_password" required>
+  <button type="submit">Validate &amp; Connect</button>
+</form>
+<p class="muted" style="margin-top:1rem"><a href="/dashboard">← Back to dashboard</a></p>
+</div></body></html>""".format(css=_AUTH_CSS, msg_html=msg_html)
+    )
 
 
 @app.route("/api/dev/snapshot")

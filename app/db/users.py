@@ -234,6 +234,30 @@ def _migrate_plaid(conn: sqlite3.Connection) -> None:
             pass
 
 
+def _migrate_feat001(conn: sqlite3.Connection) -> None:
+    """TKT-FEAT-001: broker_connected + broker_connection_optional columns. Idempotent."""
+    for sql in (
+        "ALTER TABLE users ADD COLUMN broker_connected INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN broker_connection_optional INTEGER DEFAULT 0",
+    ):
+        try:
+            conn.execute(sql)
+        except Exception:
+            pass
+    # Backfill: existing users with any broker credentials are considered connected.
+    try:
+        conn.execute(
+            "UPDATE users SET broker_connected = 1 "
+            "WHERE broker_connected = 0 AND ("
+            "  (robinhood_username IS NOT NULL AND robinhood_username != '') "
+            "  OR (plaid_access_token_encrypted IS NOT NULL AND plaid_access_token_encrypted != '') "
+            "  OR broker_type = 'moomoo'"
+            ")"
+        )
+    except Exception:
+        pass
+
+
 def log_user_error(
     user_id: int | None,
     error_source: str,
@@ -299,6 +323,7 @@ def init_db() -> None:
         _migrate_43(conn)
         _migrate_45(conn)
         _migrate_plaid(conn)
+        _migrate_feat001(conn)
         cols = [c[1] for c in conn.execute("PRAGMA table_info(user_positions)").fetchall()]
         if "position_type" not in cols or "option_details" not in cols:
             print(f"[init_db] WARNING: user_positions missing options columns. "
@@ -383,12 +408,26 @@ def generate_invite_code() -> str:
 # ---------------------------------------------------------------------------
 
 def hash_password(plain: str) -> str:
-    import bcrypt  # type: ignore
-    return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+    try:
+        import bcrypt  # type: ignore
+        return bcrypt.hashpw(plain.encode(), bcrypt.gensalt()).decode()
+    except ImportError:
+        import hashlib
+        import os
+        salt = os.urandom(16).hex()
+        digest = hashlib.sha256((salt + plain).encode()).hexdigest()
+        return f"sha256:{salt}:{digest}"
 
 
 def check_password(plain: str, hashed: str) -> bool:
     try:
+        if hashed.startswith("sha256:"):
+            import hashlib
+            parts = hashed.split(":")
+            if len(parts) == 3:
+                _, salt, digest = parts
+                return hashlib.sha256((salt + plain).encode()).hexdigest() == digest
+            return False
         import bcrypt  # type: ignore
         return bcrypt.checkpw(plain.encode(), hashed.encode())
     except Exception:
@@ -557,6 +596,39 @@ def set_credentials_error(user_id: int, error_message: str) -> None:
         conn.execute(
             "UPDATE users SET credentials_last_error=? WHERE id=?",
             ((error_message or "")[:500], user_id),
+        )
+
+
+def create_user_broker_optional(
+    email: str,
+    password_plain: str,
+) -> dict[str, Any]:
+    """Create a broker-optional user (no Robinhood/Plaid creds required).
+
+    email is used as the username. Raises ValueError on duplicate.
+    Sets broker_connection_optional=1, broker_connected=0.
+    """
+    pw_hash = hash_password(password_plain)
+    api_key = generate_api_key()
+    with _connect() as conn:
+        try:
+            conn.execute(
+                "INSERT INTO users (username, password_hash, api_key, broker_type, "
+                "broker_connected, broker_connection_optional) VALUES (?,?,?,NULL,0,1)",
+                (email, pw_hash, api_key),
+            )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"email already registered: {email}")
+    return get_user_by_username(email) or {}
+
+
+def set_broker_connected(user_id: int, broker_type: str = "robinhood") -> None:
+    """Mark user as broker-connected and record validation timestamp."""
+    now = datetime.now(timezone.utc).isoformat()
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE users SET broker_connected=1, broker_type=?, credentials_validated_at=? WHERE id=?",
+            (broker_type, now, user_id),
         )
 
 
