@@ -78,12 +78,11 @@ class TestPrescreenStats:
 
         assert result["_prescreen_stats"]["cache_size"] == 3
 
-    def test_high_removal_warning_logged(self):
+    def test_warning_logs_when_constituent_cache_undersized(self):
         from app.services.earnings_discovery_quality_service import (
             filter_earnings_discovery_for_calendar_scan,
         )
 
-        # 9 tickers, only 1 in constituent set → 88.9% removal → WARNING expected
         tickers = [f"T{i}" for i in range(9)]
         discovery = {"items": [{"ticker": t} for t in tickers]}
         logged: list[str] = []
@@ -100,6 +99,30 @@ class TestPrescreenStats:
             )
 
         assert any("WARNING" in msg for msg in logged)
+
+    def test_high_removal_alone_does_not_log_warning_when_cache_healthy(self):
+        from app.services.earnings_discovery_quality_service import (
+            filter_earnings_discovery_for_calendar_scan,
+        )
+
+        tickers = [f"T{i}" for i in range(9)]
+        discovery = {"items": [{"ticker": t} for t in tickers]}
+        logged: list[str] = []
+        healthy_cache = {f"T{i}" for i in range(664)}
+
+        with patch("app.config.EARNINGS_DISCOVERY_CONSTITUENT_PRESCREEN", True), \
+             patch("app.services.universe_discovery_service.get_constituent_ticker_set",
+                   return_value=healthy_cache), \
+             patch("app.services.earnings_discovery_quality_service._merge_universe_discovery",
+                   side_effect=lambda items, *a, **k: items), \
+             patch("app.services.earnings_discovery_quality_service.TradierProvider") as MockT:
+            MockT.return_value.is_configured = False
+            filter_earnings_discovery_for_calendar_scan(
+                {"items": [{"ticker": "T0"}] + [{"ticker": f"MISS{i}"} for i in range(8)]},
+                log_print=logged.append
+            )
+
+        assert not any("possible stale cache" in msg for msg in logged)
 
 
 # ---------------------------------------------------------------------------
