@@ -386,6 +386,21 @@ def _core_run_info() -> dict:
         return {"quality": None, "freshness_hours": None, "stale": None}
 
 
+@admin_bp.route("/signal-telemetry")
+@require_admin
+def signal_telemetry():
+    """TKT-FEAT-002: aggregate signal engagement for admin review (last 7 days)."""
+    from app.db.telemetry import signal_engagement_summary
+    days = min(request.args.get("days", 7, type=int), 90)
+    summary = signal_engagement_summary(days=days)
+    return jsonify({
+        "status": "ok",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        **summary,
+        "provider_calls_triggered": False,
+    }), 200
+
+
 @admin_bp.route("/errors")
 @require_admin
 def admin_errors():

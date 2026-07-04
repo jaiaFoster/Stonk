@@ -21,6 +21,14 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app import config
+from app.db.users import (
+    create_user_run,
+    complete_user_run,
+    fail_user_run,
+    save_user_positions,
+    save_user_daily_opportunity,
+    get_active_user_run,
+)
 
 
 def generate_run_id() -> str:
@@ -347,14 +355,8 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
     Never returns or logs the decrypted Robinhood password.
     """
     from app.db.users import (
-        create_user_run,
-        complete_user_run,
-        fail_user_run,
-        save_user_positions,
-        save_user_daily_opportunity,
         save_user_option_positions,
         decrypt_robinhood_password,
-        get_active_user_run,
     )
     from app.services.robinhood_queue import (
         RobinhoodQueueTimeout,
@@ -367,12 +369,48 @@ def run_personalization(user_id: int, user: dict[str, Any]) -> dict[str, Any]:
     rh_username = str(user.get("robinhood_username") or "").strip()
     rh_password_enc = str(user.get("robinhood_password_encrypted") or "").strip()
     plaid_token_enc = str(user.get("plaid_access_token_encrypted") or "").strip()
+    broker_connection_optional = bool(user.get("broker_connection_optional"))
+    broker_connected_flag = bool(user.get("broker_connected"))
 
     has_creds = (
         (broker_type == "plaid" and bool(plaid_token_enc))
         or (broker_type == "moomoo" and bool(config.MOOMOO_OPEND_HOST))
         or (broker_type not in ("plaid", "moomoo") and bool(rh_username) and bool(rh_password_enc))
     )
+
+    # TKT-FEAT-001: broker-optional path — complete the run with empty positions, no degraded state.
+    if broker_connection_optional and not broker_connected_flag:
+        run_id = generate_run_id()
+        snapshot, report = _load_latest_core_run()
+        core_run_id: str | None = snapshot.get("run_id") if snapshot else None
+        freshness_hours = _core_run_freshness_hours(snapshot) if snapshot else 999.0
+        stale_threshold = float(getattr(config, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
+        create_user_run(user_id, run_id, core_run_id=core_run_id, core_run_freshness_hours=freshness_hours)
+        daily_opp: list[dict[str, Any]] = []
+        if snapshot and report:
+            daily_opp = build_user_daily_opportunity([], report)
+        save_user_positions(user_id, run_id, [])
+        save_user_daily_opportunity(user_id, run_id, daily_opp)
+        complete_user_run(run_id, positions_fetched=0, daily_opportunity_count=len(daily_opp))
+        print(
+            f"[personalization] user_id={user_id} run_id={run_id}: "
+            f"broker_optional signals_only — {len(daily_opp)} opportunities.",
+            flush=True,
+        )
+        return {
+            "status": "ok",
+            "run_id": run_id,
+            "user_id": user_id,
+            "positions_fetched": 0,
+            "daily_opportunity_count": len(daily_opp),
+            "core_run_id_used": core_run_id,
+            "core_run_freshness_hours": round(freshness_hours, 2),
+            "core_run_stale": freshness_hours > stale_threshold,
+            "broker_mode": "signals_only",
+            "personalized": True,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "provider_calls_triggered": False,
+        }
 
     if not has_creds:
         _no_creds_run_id = generate_run_id()
