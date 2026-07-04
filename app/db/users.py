@@ -237,22 +237,32 @@ def _migrate_plaid(conn: sqlite3.Connection) -> None:
 def _migrate_feat001(conn: sqlite3.Connection) -> None:
     """TKT-FEAT-001: broker_connected + broker_connection_optional columns. Idempotent."""
     for sql in (
-        "ALTER TABLE users ADD COLUMN broker_connected INTEGER DEFAULT 0",
+        "ALTER TABLE users ADD COLUMN broker_connected INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE users ADD COLUMN broker_connection_optional INTEGER DEFAULT 0",
     ):
         try:
             conn.execute(sql)
         except Exception:
             pass
-    # Backfill: existing users with any broker credentials are considered connected.
+    # Existing connected users stay connected. Only truly broker-optional rows
+    # (no broker_type and no stored credentials) get downgraded to signals-only.
     try:
         conn.execute(
-            "UPDATE users SET broker_connected = 1 "
-            "WHERE broker_connected = 0 AND ("
+            "UPDATE users SET broker_connected = 1, broker_connection_optional = 0 "
+            "WHERE ("
             "  (robinhood_username IS NOT NULL AND robinhood_username != '') "
             "  OR (plaid_access_token_encrypted IS NOT NULL AND plaid_access_token_encrypted != '') "
-            "  OR broker_type = 'moomoo'"
+            "  OR broker_type IN ('robinhood', 'plaid', 'moomoo')"
             ")"
+        )
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "UPDATE users SET broker_connected = 0, broker_connection_optional = 1 "
+            "WHERE (broker_type IS NULL OR broker_type = '') "
+            "AND (robinhood_username IS NULL OR robinhood_username = '') "
+            "AND (plaid_access_token_encrypted IS NULL OR plaid_access_token_encrypted = '')"
         )
     except Exception:
         pass
@@ -967,6 +977,8 @@ def get_all_users_with_run_status() -> list[dict[str, Any]]:
                 u.is_admin,
                 u.is_dev,
                 u.broker_type,
+                u.broker_connected,
+                u.broker_connection_optional,
                 u.credentials_validated_at,
                 u.credentials_last_error,
                 u.created_at,

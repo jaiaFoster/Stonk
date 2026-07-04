@@ -77,6 +77,7 @@ def build_run_manifest(
     broker_data_state = _broker_data_state(pipeline_status, provider_status)
     options_data_state = _options_data_state(strategy_results, counts)
     broker_auth_status = _broker_auth_status(provider_status)
+    broker_mode, broker_connected = _broker_mode_fields(pipeline_status, provider_status)
     manifest_evidence = {
         "status": status,
         "report_quality": report_quality,
@@ -103,6 +104,8 @@ def build_run_manifest(
         "summary_json_bytes": (payload_profile.get("sections_bytes") or {}).get("report_summary_json", 0),
         "runtime_total_ms": runtime_profile.get("total_ms", 0), "provider_fetch_count": provider_fetch_count,
         "strategy_counts": counts, "daily_opportunity_count": len((daily_opportunity or {}).get("actions", []) or []),
+        "broker_mode": broker_mode,
+        "broker_connected": broker_connected,
         "has_broker_data": broker_data_state, "has_market_data": provider_fetch_count > 0,
         "has_options_data": options_data_state,
         "has_errors": bool(pipeline_status.get("errors")), "error_count": len(pipeline_status.get("errors", []) or []),
@@ -151,3 +154,24 @@ def _options_data_state(strategy_results: dict[str, Any], counts: dict[str, Any]
     if not strategy_results:
         return None
     return bool(counts.get("earnings_calendar") or counts.get("skew_momentum_vertical") or counts.get("forward_factor_calendar"))
+
+
+def _broker_mode_fields(
+    pipeline_status: dict[str, Any],
+    provider_status: dict[str, Any],
+) -> tuple[str | None, bool | None]:
+    mode = str((pipeline_status or {}).get("broker_mode") or "").strip().lower()
+    if mode in {"connected", "signals_only"}:
+        connected = (pipeline_status or {}).get("broker_connected")
+        if connected is None:
+            connected = mode == "connected"
+        return mode, bool(connected)
+
+    rh = (provider_status or {}).get("robinhood") if isinstance(provider_status, dict) else None
+    if isinstance(rh, dict):
+        configured = rh.get("configured")
+        if configured is True:
+            return "connected", True
+        if configured is False:
+            return "signals_only", False
+    return None, None

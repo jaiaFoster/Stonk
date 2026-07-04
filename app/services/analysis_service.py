@@ -610,6 +610,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     begin_step(pipeline_status, "positions", "Fetch Robinhood positions")
     log_print("Fetching Robinhood positions...")
+    pipeline_status["broker_mode"] = "connected" if bool(config.ROBINHOOD_USERNAME and config.ROBINHOOD_PASSWORD) else "signals_only"
+    pipeline_status["broker_connected"] = pipeline_status["broker_mode"] == "connected"
     try:
         portfolio_result = get_portfolio_positions_with_status()
         positions = list((portfolio_result or {}).get("positions") or [])
