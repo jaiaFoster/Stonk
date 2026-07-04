@@ -82,9 +82,9 @@ def filter_earnings_discovery_for_calendar_scan(
                 f"[calendar_prescreen] {pre_len} → {len(raw_items)} after constituent filter "
                 f"({prescreen_removed_count} removed, {removed_pct:.1f}%) | cache_size={len(constituent_set)}"
             )
-            if removed_pct > 80 and constituent_set:
+            if len(constituent_set) < 200:
                 logger(
-                    f"[calendar_prescreen] WARNING: {removed_pct:.1f}% removal — "
+                    f"[calendar_prescreen] WARNING: constituent cache may be undersized — "
                     f"possible stale cache (size={len(constituent_set)}, expected ~664)"
                 )
 

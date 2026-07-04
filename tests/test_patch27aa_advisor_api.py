@@ -113,7 +113,8 @@ class TestAdvisorStatus(unittest.TestCase):
         with _patch_snapshot():
             resp = self.client.get("/api/advisor/status")
         data = resp.get_json()
-        for key in ["status", "last_run_quality", "last_run_date", "daily_opportunity_count", "ff_dry_run"]:
+        for key in ["status", "last_run_quality", "last_run_date", "daily_opportunity_count", "ff_dry_run",
+                    "provider_calls_triggered", "run_id", "generated_at"]:
             self.assertIn(key, data, msg=f"Missing key: {key}")
 
     def test_status_ff_dry_run_true(self):
@@ -122,11 +123,10 @@ class TestAdvisorStatus(unittest.TestCase):
         self.assertTrue(resp.get_json()["ff_dry_run"])
 
     def test_status_no_provider_calls_flag(self):
-        # status endpoint doesn't return provider_calls_triggered but must not trigger calls
-        # Verify by confirming no ReportSnapshotRepository network call — _load_snapshot is mocked
         with _patch_snapshot():
             resp = self.client.get("/api/advisor/status")
         self.assertEqual(resp.status_code, 200)
+        self.assertFalse(resp.get_json()["provider_calls_triggered"])
 
     def test_status_no_snapshot_returns_ok(self):
         with _patch_no_snapshot():
@@ -251,7 +251,10 @@ class TestAdvisorPositions(unittest.TestCase):
         with patch("app.config.RUN_TOKEN", VALID_TOKEN), _patch_snapshot():
             resp = self.client.get(f"/api/advisor/positions?token={VALID_TOKEN}")
         data = resp.get_json()
-        for key in ["as_of", "accounts", "provider_calls_triggered"]:
+        for key in ["run_id", "generated_at", "core_run_id", "core_generated_at", "as_of", "positions_as_of",
+                    "position_data_stale", "position_data_status", "accounts", "broker_accounts",
+                    "options_positions", "options_count", "has_open_verticals", "has_open_calendars",
+                    "provider_calls_triggered", "personalized"]:
             self.assertIn(key, data, msg=f"Missing key: {key}")
 
     def test_positions_accounts_grouped(self):
@@ -280,6 +283,75 @@ class TestAdvisorPositions(unittest.TestCase):
         with patch("app.config.RUN_TOKEN", VALID_TOKEN), _patch_no_snapshot():
             resp = self.client.get(f"/api/advisor/positions?token={VALID_TOKEN}")
         self.assertEqual(resp.status_code, 404)
+
+    def test_positions_admin_shared_path_has_stable_empty_options_and_freshness(self):
+        with patch("app.config.RUN_TOKEN", VALID_TOKEN), _patch_snapshot():
+            resp = self.client.get(f"/api/advisor/positions?token={VALID_TOKEN}")
+        data = resp.get_json()
+        self.assertFalse(data["personalized"])
+        self.assertEqual(data["run_id"], "test-run-aaa")
+        self.assertEqual(data["core_run_id"], "test-run-aaa")
+        self.assertEqual(data["generated_at"], "2026-06-16T17:05:00+00:00")
+        self.assertEqual(data["positions_as_of"], "2026-06-16T17:05:00+00:00")
+        self.assertFalse(data["position_data_stale"])
+        self.assertEqual(data["position_data_status"], "FRESH")
+        self.assertEqual(data["broker_accounts"], [])
+        self.assertEqual(data["options_positions"], [])
+        self.assertEqual(data["options_count"], 0)
+        self.assertFalse(data["has_open_verticals"])
+        self.assertFalse(data["has_open_calendars"])
+
+    def test_positions_personalized_stale_metadata_when_user_run_older_than_core(self):
+        with patch("app.auth._resolve_user", return_value={"id": 123, "is_active": True, "is_admin": False}), \
+             patch("app.db.users.get_latest_complete_user_run",
+                   return_value={"run_id": "usr-1", "completed_at": "2026-06-15T17:05:00+00:00",
+                                 "core_run_id_used": "test-run-aaa"}), \
+             patch("app.db.users.get_user_positions",
+                   return_value=[{"ticker": "NVDA", "quantity": 1.0, "avg_cost": 100.0,
+                                  "current_price": 110.0, "unrealized_pnl_pct": 10.0,
+                                  "market_value": 110.0, "account_type": "roth_ira",
+                                  "account_number": "111", "position_type": "stock"}]), \
+             patch("app.db.users.get_user_broker_accounts",
+                   return_value=[{"account_number": "111", "account_type": "Roth IRA",
+                                  "broker_type": "robinhood", "discovered_at": "2026-06-15T17:00:00+00:00",
+                                  "nickname": None}]), \
+             _patch_snapshot():
+            resp = self.client.get("/api/advisor/positions?token=user-token")
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(data["personalized"])
+        self.assertEqual(data["user_run_id"], "usr-1")
+        self.assertEqual(data["run_id"], "test-run-aaa")
+        self.assertEqual(data["core_run_id"], "test-run-aaa")
+        self.assertEqual(data["positions_as_of"], "2026-06-15T17:05:00+00:00")
+        self.assertEqual(data["core_generated_at"], "2026-06-16T17:05:00+00:00")
+        self.assertTrue(data["position_data_stale"])
+        self.assertEqual(data["position_data_status"], "STALE_USER_POSITIONS")
+        self.assertFalse(data["provider_calls_triggered"])
+
+    def test_positions_personalized_no_run_has_stable_empty_keys(self):
+        with patch("app.auth._resolve_user", return_value={"id": 123, "is_active": True, "is_admin": False}), \
+             patch("app.db.users.get_latest_complete_user_run", return_value=None), \
+             _patch_snapshot():
+            resp = self.client.get("/api/advisor/positions?token=user-token")
+        data = resp.get_json()
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(data["provider_calls_triggered"])
+        self.assertFalse(data["personalized"])
+        self.assertEqual(data["run_id"], "test-run-aaa")
+        self.assertEqual(data["generated_at"], "2026-06-16T17:05:00+00:00")
+        self.assertEqual(data["core_run_id"], "test-run-aaa")
+        self.assertEqual(data["core_generated_at"], "2026-06-16T17:05:00+00:00")
+        self.assertIsNone(data["as_of"])
+        self.assertIsNone(data["positions_as_of"])
+        self.assertIsNone(data["position_data_stale"])
+        self.assertEqual(data["position_data_status"], "NO_PERSONALIZATION_RUN")
+        self.assertEqual(data["accounts"], [])
+        self.assertEqual(data["broker_accounts"], [])
+        self.assertEqual(data["options_positions"], [])
+        self.assertEqual(data["options_count"], 0)
+        self.assertFalse(data["has_open_verticals"])
+        self.assertFalse(data["has_open_calendars"])
 
 
 class TestFFNotActionableViaAdvisor(unittest.TestCase):

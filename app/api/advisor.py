@@ -7,6 +7,7 @@ Token validated against RUN_TOKEN (same as existing app pattern).
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from flask import Blueprint, jsonify, request
@@ -68,6 +69,102 @@ def _load_snapshot():
     summary = repo.load_summary(snapshot, full=True)
     report = summary.get("report_data", {}) or {}
     return snapshot, summary, report
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _positions_freshness_payload(
+    *,
+    snapshot: dict[str, Any] | None,
+    user_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    core_run_id = (user_run or {}).get("core_run_id_used") or (snapshot or {}).get("run_id")
+    core_generated_at = (snapshot or {}).get("completed_at")
+    positions_as_of = (user_run or {}).get("completed_at")
+    if user_run is None:
+        if snapshot is None:
+            return {
+                "run_id": None,
+                "generated_at": None,
+                "core_run_id": None,
+                "core_generated_at": None,
+                "as_of": None,
+                "positions_as_of": None,
+                "position_data_stale": None,
+                "position_data_status": "NO_CORE_RUN",
+            }
+        return {
+            "run_id": snapshot.get("run_id"),
+            "generated_at": snapshot.get("completed_at"),
+            "core_run_id": core_run_id,
+            "core_generated_at": core_generated_at,
+            "as_of": snapshot.get("completed_at"),
+            "positions_as_of": snapshot.get("completed_at"),
+            "position_data_stale": False,
+            "position_data_status": "FRESH",
+        }
+
+    if snapshot is None:
+        return {
+            "run_id": None,
+            "generated_at": None,
+            "core_run_id": core_run_id,
+            "core_generated_at": None,
+            "as_of": positions_as_of,
+            "positions_as_of": positions_as_of,
+            "position_data_stale": None,
+            "position_data_status": "NO_CORE_RUN",
+        }
+
+    positions_dt = _parse_dt(positions_as_of)
+    core_dt = _parse_dt(core_generated_at)
+    stale = bool(positions_dt and core_dt and positions_dt < core_dt)
+    return {
+        "run_id": snapshot.get("run_id"),
+        "generated_at": snapshot.get("completed_at"),
+        "core_run_id": core_run_id,
+        "core_generated_at": core_generated_at,
+        "as_of": positions_as_of,
+        "positions_as_of": positions_as_of,
+        "position_data_stale": stale,
+        "position_data_status": "STALE_USER_POSITIONS" if stale else "FRESH",
+    }
+
+
+def _empty_positions_payload(
+    *,
+    snapshot: dict[str, Any] | None,
+    personalized: bool,
+    user_run: dict[str, Any] | None = None,
+    reason: str | None = None,
+    message: str | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "status": "ok",
+        "provider_calls_triggered": False,
+        "personalized": personalized,
+        "broker_accounts": [],
+        "accounts": [],
+        "options_positions": [],
+        "options_count": 0,
+        "has_open_verticals": False,
+        "has_open_calendars": False,
+    }
+    payload.update(_positions_freshness_payload(snapshot=snapshot, user_run=user_run))
+    if user_run is not None:
+        payload["user_run_id"] = user_run.get("run_id")
+    if reason:
+        payload["reason"] = reason
+    if message:
+        payload["message"] = message
+    return payload
 
 
 def _strategy_summary(strategies: dict[str, Any]) -> dict[str, Any]:
@@ -421,11 +518,8 @@ def positions():
                 except Exception:
                     pass
 
-                return jsonify({
-                    "status": "ok",
-                    "provider_calls_triggered": False,
-                    "personalized": True,
-                    "as_of": user_run.get("completed_at"),
+                payload = _empty_positions_payload(snapshot=snapshot, personalized=True, user_run=user_run)
+                payload.update({
                     "user_run_id": user_run.get("run_id"),
                     "accounts": accounts_list,
                     "broker_accounts": broker_accounts,
@@ -433,7 +527,8 @@ def positions():
                     "options_count": len(options_positions),
                     "has_open_verticals": has_open_verticals,
                     "has_open_calendars": has_open_calendars,
-                }), 200
+                })
+                return jsonify(payload), 200
         except Exception as exc:
             import traceback
             print(f"[advisor.positions] outer block failed for user_id={user_id}: "
@@ -442,20 +537,18 @@ def positions():
             from app.db.users import log_user_error
             log_user_error(user_id, "advisor.positions", type(exc).__name__, str(exc))
 
-        # No run yet — include empty options fields so callers don't need to guard on MISSING keys
-        return jsonify({
-            "status": "ok",
-            "provider_calls_triggered": False,
-            "personalized": False,
-            "reason": "no_run_yet",
-            "message": "No personalization run yet. POST /api/user/run to fetch your positions.",
-            "accounts": [],
-            "broker_accounts": [],
-            "options_positions": [],
-            "options_count": 0,
-            "has_open_verticals": False,
-            "has_open_calendars": False,
-        }), 200
+        # No run yet — stable empty shape.
+        payload = _empty_positions_payload(
+            snapshot=snapshot,
+            personalized=False,
+            user_run={},
+            reason="no_run_yet",
+            message="No personalization run yet. POST /api/user/run to fetch your positions.",
+        )
+        payload["position_data_status"] = "NO_PERSONALIZATION_RUN"
+        payload["position_data_stale"] = None
+        payload["user_run_id"] = None
+        return jsonify(payload), 200
 
     # Admin / legacy token: shared positions from core run snapshot
     if snapshot is None:
@@ -477,18 +570,11 @@ def positions():
 
     accounts_shared = [{"account_type": acct, "positions": rows} for acct, rows in by_account_shared.items()]
 
-    return jsonify({
-        "status": "ok",
-        "provider_calls_triggered": False,
-        "as_of": snapshot.get("completed_at"),
+    payload = _empty_positions_payload(snapshot=snapshot, personalized=False)
+    payload.update({
         "accounts": accounts_shared,
-        # Options fields always present so callers never guard on MISSING keys.
-        # Admin/shared path has no per-user options context; return empty.
-        "options_positions": [],
-        "options_count": 0,
-        "has_open_verticals": False,
-        "has_open_calendars": False,
-    }), 200
+    })
+    return jsonify(payload), 200
 
 
 @advisor_bp.route("/status")
@@ -498,11 +584,13 @@ def status():
         snapshot, summary, report = _load_snapshot()
     except Exception:
         return jsonify({"status": "ok", "last_run_quality": None, "last_run_date": None,
-                        "daily_opportunity_count": 0, "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN)}), 200
+                        "daily_opportunity_count": 0, "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
+                        "provider_calls_triggered": False, "run_id": None, "generated_at": None}), 200
 
     if snapshot is None:
         return jsonify({"status": "ok", "last_run_quality": None, "last_run_date": None,
-                        "daily_opportunity_count": 0, "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN)}), 200
+                        "daily_opportunity_count": 0, "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
+                        "provider_calls_triggered": False, "run_id": None, "generated_at": None}), 200
 
     tradier = report.get("tradier_snapshot", {}) or {}
     daily_opp = tradier.get("_daily_opportunity_engine") or {}
@@ -514,6 +602,9 @@ def status():
         "last_run_date": str(snapshot.get("completed_at") or "")[:10],
         "daily_opportunity_count": len(daily_opp.get("actions") or []),
         "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
+        "provider_calls_triggered": False,
+        "run_id": snapshot.get("run_id"),
+        "generated_at": snapshot.get("completed_at"),
     }), 200
 
 
