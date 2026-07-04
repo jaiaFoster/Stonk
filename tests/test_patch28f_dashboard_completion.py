@@ -208,3 +208,64 @@ def test_admin_users_endpoint_exposes_broker_optional_fields(tmp_path):
     signals_user = next(item for item in users if item["username"] == "signals@test.com")
     assert signals_user["broker_connected"] is False
     assert signals_user["broker_connection_optional"] is True
+
+
+def test_dashboard_stock_row_uses_raw_verdict_when_top_level_unknown():
+    from app.main import _build_signals_html
+
+    report = {
+        "tradier_snapshot": {
+            "_strategy_results": {
+                "stock_momentum": {
+                    "pass_count": 1,
+                    "watch_count": 0,
+                    "fail_count": 0,
+                    "canonical_opportunities": [
+                        {
+                            "ticker": "UNKNOWN",
+                            "verdict": "UNKNOWN",
+                            "score": 91.0,
+                            "verdict_tier": 100,
+                            "raw": {
+                                "ticker": "NVDA",
+                                "verdict": "PASS / STOCK MOMENTUM",
+                                "score": 91.0,
+                            },
+                        }
+                    ],
+                },
+                "forward_factor_calendar": {},
+                "earnings_calendar": {},
+                "skew_momentum_vertical": {},
+            }
+        }
+    }
+
+    html = _build_signals_html(report)
+    assert "PASS / STOCK MOMENTUM" in html
+    assert ">NVDA<" in html
+    assert "badge-fail\">UNKNOWN" not in html
+
+
+def test_dashboard_click_handler_html_is_escaped():
+    from app.main import _build_signals_html
+
+    report = {
+        "tradier_snapshot": {
+            "_strategy_results": {
+                "stock_momentum": {
+                    "pass_count": 1,
+                    "watch_count": 0,
+                    "fail_count": 0,
+                    "canonical_opportunities": [_strategy_row("NVDA", "PASS / STOCK MOMENTUM", 91.0)],
+                },
+                "forward_factor_calendar": {},
+                "earnings_calendar": {},
+                "skew_momentum_vertical": {},
+            }
+        }
+    }
+
+    html = _build_signals_html(report)
+    assert 'onclick="trackSignalView("' not in html
+    assert "onclick=\"trackSignalView(&quot;NVDA&quot;" in html

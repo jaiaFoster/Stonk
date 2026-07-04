@@ -760,6 +760,33 @@ def _dashboard_score(row: dict[str, Any]) -> float:
     return 0.0
 
 
+def _dashboard_resolved_verdict(row: dict[str, Any]) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    candidates = (
+        row.get("verdict"),
+        row.get("action"),
+        row.get("final_verdict") if isinstance(row.get("final_verdict"), str) else None,
+        raw.get("verdict"),
+        raw.get("action"),
+        raw.get("final_verdict") if isinstance(raw.get("final_verdict"), str) else None,
+    )
+    for value in candidates:
+        text = str(value or "").strip()
+        if text and text.upper() != "UNKNOWN":
+            return text
+    return "UNKNOWN"
+
+
+def _dashboard_resolved_ticker(row: dict[str, Any]) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    candidates = (row.get("ticker"), raw.get("ticker"), raw.get("symbol"))
+    for value in candidates:
+        text = str(value or "").strip()
+        if text and text.upper() != "UNKNOWN":
+            return text.upper()
+    return "UNKNOWN"
+
+
 def _dashboard_badge(text: str, tone: str = "muted") -> str:
     safe = escape(text)
     return f'<span class="badge badge-{tone}">{safe}</span>'
@@ -943,6 +970,8 @@ def _build_strategy_section(title: str, strategy_id: str, result: dict[str, Any]
     body = []
     for row in rows[:5]:
         raw = row.get("raw") if isinstance(row.get("raw"), dict) else row
+        ticker = _dashboard_resolved_ticker(row)
+        verdict = _dashboard_resolved_verdict(row)
         detail_bits = []
         if strategy_id == "forward_factor_calendar":
             ff_value = raw.get("source_forward_factor")
@@ -960,11 +989,16 @@ def _build_strategy_section(title: str, strategy_id: str, result: dict[str, Any]
         if strategy_id == "skew_momentum_vertical" and raw.get("direction"):
             detail_bits.append(str(raw.get("direction")))
         detail_html = " · ".join(escape(str(bit)) for bit in detail_bits if bit)
+        onclick_js = (
+            f"trackSignalView({json.dumps(ticker)}, {json.dumps(strategy_id)}, {json.dumps(verdict)})"
+        )
+        verdict_upper = verdict.upper()
+        badge_tone = "pass" if verdict_upper.startswith("PASS") else "watch" if verdict_upper.startswith("WATCH") else "fail"
         body.append(
-            f'<div class="signal-row {_verdict_cls(str(row.get("verdict") or ""))}" '
-            f'onclick="trackSignalView({json.dumps(str(row.get("ticker") or ""))}, {json.dumps(strategy_id)}, {json.dumps(str(row.get("verdict") or ""))})">'
-            f'<span class="ticker">{escape(str(row.get("ticker") or ""))}</span>'
-            f'{_dashboard_badge(str(row.get("verdict") or ""), "pass" if str(row.get("verdict") or "").upper().startswith("PASS") else "watch" if str(row.get("verdict") or "").upper().startswith("WATCH") else "fail")}'
+            f'<div class="signal-row {_verdict_cls(verdict)}" '
+            f'onclick="{escape(onclick_js, quote=True)}">'
+            f'<span class="ticker">{escape(ticker)}</span>'
+            f'{_dashboard_badge(verdict, badge_tone)}'
             f'<span>{detail_html or escape("Signal ready")}</span>'
             '</div>'
         )
