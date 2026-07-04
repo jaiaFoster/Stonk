@@ -89,6 +89,52 @@ class CalendarVerdictServiceTests(unittest.TestCase):
 
         self.assertEqual(result["trade_type"], "unknown_event_timing")
 
+    def test_front_leg_below_hard_minimum_fails(self):
+        candidate = {
+            "ticker": "CAG",
+            "front_dte": 1,
+            "max_leg_spread_pct": 5,
+            "min_leg_open_interest": 100,
+            "min_leg_volume": 25,
+            "iv_edge": 2,
+            "front_expiration": "2026-06-10",
+            "back_expiration": "2026-07-10",
+            "earnings_event": {
+                "earnings_date": "2026-06-12",
+                "session_label": "After Market Close",
+                "is_timestamp_confirmed": True,
+            },
+        }
+
+        verdict = build_final_calendar_verdict(candidate, {"action": "PASS / BACKTEST"})
+
+        self.assertEqual(verdict["status"], "FAIL")
+        self.assertEqual(verdict["main_blocker"], "FRONT_LEG_DTE_TOO_LOW")
+        self.assertIn("below hard minimum", " ".join(verdict["blockers"]))
+
+    def test_adverse_iv_relationship_is_hard_fail(self):
+        candidate = {
+            "ticker": "XYZ",
+            "front_dte": 10,
+            "max_leg_spread_pct": 5,
+            "min_leg_open_interest": 100,
+            "min_leg_volume": 25,
+            "iv_edge": -0.5,
+            "front_expiration": "2026-06-10",
+            "back_expiration": "2026-07-10",
+            "earnings_event": {
+                "earnings_date": "2026-06-12",
+                "session_label": "After Market Close",
+                "is_timestamp_confirmed": True,
+            },
+        }
+
+        verdict = build_final_calendar_verdict(candidate, {"action": "PASS / BACKTEST"})
+
+        self.assertEqual(verdict["status"], "FAIL")
+        self.assertEqual(verdict["main_blocker"], "IV_RELATIONSHIP_ADVERSE")
+        self.assertIn("IV_RELATIONSHIP_ADVERSE", " ".join(verdict["blockers"]))
+
     def test_cpb_bmo_short_before_earnings_is_pre_earnings_financing(self):
         candidate = {
             "ticker": "CPB",

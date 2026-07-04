@@ -108,6 +108,8 @@ def eligible_expiration_pairs(expirations: list[str], today: date | None = None)
     dated = sorted((str(value)[:10], (date.fromisoformat(str(value)[:10]) - now).days) for value in expirations)
     pairs = []
     for front, front_dte in dated:
+        if front_dte < int(config.FF_MIN_FRONT_LEG_DTE):
+            continue
         if not config.FF_FRONT_DTE_MIN <= front_dte <= config.FF_FRONT_DTE_MAX:
             continue
         for back, back_dte in dated:

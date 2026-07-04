@@ -742,10 +742,92 @@ function launchPlaid(){{
 if(window.location.search.indexOf('connect_plaid=1')!==-1){{setTimeout(launchPlaid,500);}}
 </script>
 </div>
+{signals_html}
+<div class="section">
+<p class="muted"><a href="/personalize?token={api_key}" style="color:#aaa">⚙ My Preferences</a></p>
+</div>
 <form method="POST" action="/logout" style="margin-top:1.5rem">
   <button type="submit" style="background:#ff4444">Log Out</button>
 </form>
 </div></body></html>"""
+
+
+def _verdict_cls(verdict: str) -> str:
+    v = str(verdict or "").upper()
+    if v.startswith("PASS"):
+        return "ok"
+    if v.startswith("WATCH"):
+        return "warn"
+    return "err"
+
+
+def _build_signals_html(report: dict) -> str:
+    """
+    TKT-037/058/050/048: Build signal sections from core run snapshot.
+    Returns HTML string for the three strategy sections.
+    Never raises — returns empty string on any error.
+    """
+    try:
+        from markupsafe import escape as _esc
+        tradier = (report or {}).get("tradier_snapshot", {}) or {}
+
+        # ── Forward Factor ──────────────────────────────────────────────────
+        ff_strategy = tradier.get("_forward_factor_strategy") or {}
+        ff_rows = ff_strategy.get("candidate_rows") or ff_strategy.get("rows") or []
+        ff_html = ""
+        for row in ff_rows[:8]:
+            verdict = str(row.get("verdict") or row.get("action") or "")
+            ticker = str(row.get("ticker") or "")
+            score = row.get("signal_score") or row.get("priority_score") or ""
+            score_txt = f" <span class='muted'>({score:.1f})</span>" if isinstance(score, (int, float)) else ""
+            cls = _verdict_cls(verdict)
+            ff_html += f'<div class="pill"><span class="{cls}">{_esc(verdict)}</span> {_esc(ticker)}{score_txt}</div>'
+        if not ff_html:
+            ff_html = '<p class="muted">No Forward Factor signals in current run.</p>'
+
+        # ── Calendar Scanner ────────────────────────────────────────────────
+        cal_ranking = tradier.get("_calendar_ranking") or {}
+        cal_items = cal_ranking.get("items") or []
+        cal_sorted = sorted(
+            cal_items,
+            key=lambda r: (0 if str(r.get("action") or "").upper().startswith("PASS") else
+                           1 if str(r.get("action") or "").upper().startswith("WATCH") else 2),
+        )
+        cal_html = ""
+        for row in cal_sorted[:10]:
+            action = str(row.get("action") or "")
+            ticker = str(row.get("ticker") or "")
+            dte = row.get("days_until_earnings")
+            dte_txt = f" | {dte}d to earnings" if dte is not None else ""
+            cls = _verdict_cls(action)
+            cal_html += f'<div class="pill"><span class="{cls}">{_esc(action)}</span> {_esc(ticker)}{_esc(dte_txt)}</div>'
+        if not cal_html:
+            cal_html = '<p class="muted">No calendar candidates in current run.</p>'
+
+        # ── Skew Momentum Verticals ─────────────────────────────────────────
+        skew_strategy = tradier.get("_skew_momentum_vertical_strategy") or {}
+        skew_items = skew_strategy.get("items") or []
+        skew_html = ""
+        for row in skew_items[:8]:
+            verdict = str(row.get("verdict") or "")
+            ticker = str(row.get("ticker") or "")
+            direction = str(row.get("direction") or "")
+            score = row.get("score") or 0
+            cls = _verdict_cls(verdict)
+            dir_txt = f" ({direction})" if direction else ""
+            skew_html += f'<div class="pill"><span class="{cls}">{_esc(verdict)}</span> {_esc(ticker)}{_esc(dir_txt)} <span class="muted">{score:.0f}</span></div>'
+        if not skew_html:
+            skew_html = '<p class="muted">No skew vertical signals in current run.</p>'
+
+        return (
+            f'<div class="section">'
+            f'<h2>Forward Factor Calendar <span class="pill" style="font-size:.75rem;color:#888">Dry-run — signal live, execution gated</span></h2>'
+            f'{ff_html}</div>'
+            f'<div class="section"><h2>Earnings Calendar Scanner</h2>{cal_html}</div>'
+            f'<div class="section"><h2>Skew Momentum Verticals</h2>{skew_html}</div>'
+        )
+    except Exception:
+        return ""
 
 
 def _get_session_user():
@@ -949,7 +1031,7 @@ def dashboard():
                 )
         from app.services.personalization import _load_latest_core_run, _core_run_freshness_hours
         from app import config as _cfg
-        snap, _ = _load_latest_core_run()
+        snap, report = _load_latest_core_run()
         if snap:
             fh = _core_run_freshness_hours(snap)
             stale = fh > float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
@@ -957,6 +1039,7 @@ def dashboard():
             stale_txt = ' <span class="warn">(STALE)</span>' if stale else ""
             core_freshness_html = f'Core run: <span class="{cls}">{fh:.1f}h old</span>{stale_txt}'
     except Exception:
+        report = None
         pass
 
     # TKT-FEAT-001: broker-optional users get a connect prompt instead of credential status
@@ -988,6 +1071,7 @@ def dashboard():
         cred_status_html=cred_status_html,
         cred_update_msg=cred_update_html,
         broker_prompt_html=broker_prompt_html,
+        signals_html=_build_signals_html(report or {}),
     )
     return html
 
