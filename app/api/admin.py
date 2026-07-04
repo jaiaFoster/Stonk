@@ -62,6 +62,8 @@ def list_users():
             "is_admin": bool(u.get("is_admin")),
             "is_dev": bool(u.get("is_dev")),
             "broker_type": u.get("broker_type") or "robinhood",
+            "broker_connected": bool(u.get("broker_connected")),
+            "broker_connection_optional": bool(u.get("broker_connection_optional")),
             "credentials_validated": bool(u.get("credentials_validated_at")),
             "credentials_validated_at": u.get("credentials_validated_at"),
             "credentials_last_error": u.get("credentials_last_error"),

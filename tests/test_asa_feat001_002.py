@@ -71,6 +71,36 @@ class TestBrokerOptionalMigration:
             conn.close()
         assert row[0] == 1
 
+    def test_backfill_marks_credentialless_null_broker_users_optional(self, tmp_path):
+        import sqlite3 as sq
+        from app.db import users as u
+        import app.config as _cfg
+
+        db = str(tmp_path / "users.db")
+        with patch.object(_cfg, "USERS_DB_PATH", db), \
+             patch("app.db.users._db_path", return_value=db):
+            u.init_db()
+            conn = sq.connect(db)
+            conn.execute(
+                "INSERT INTO users (username, password_hash, api_key, broker_type) "
+                "VALUES ('signals_user', 'hash', 'asa_key2', NULL)"
+            )
+            conn.execute(
+                "UPDATE users SET broker_connected=1, broker_connection_optional=0 WHERE username='signals_user'"
+            )
+            conn.commit()
+            conn.close()
+            from app.db.users import _connect, _migrate_feat001
+            with _connect() as c:
+                _migrate_feat001(c)
+            conn = sq.connect(db)
+            row = conn.execute(
+                "SELECT broker_connected, broker_connection_optional FROM users WHERE username='signals_user'"
+            ).fetchone()
+            conn.close()
+        assert row[0] == 0
+        assert row[1] == 1
+
 
 class TestCreateUserBrokerOptional:
     def _setup_db(self, tmp_path, monkeypatch):

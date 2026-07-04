@@ -630,23 +630,32 @@ _LOGIN_HTML = """<!DOCTYPE html><html><head><title>ASA — Login</title>
 
 _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <style>{css}
-.pill{{background:#00ff8822;border:1px solid #00ff8844;border-radius:4px;
-  padding:.3rem .6rem;font-size:.82rem;display:inline-block;margin:.2rem}}
-.ok{{color:#00ff88}}.warn{{color:#ffcc44}}.err{{color:#ff4444}}
-.section{{margin-top:1.5rem;border-top:1px solid #333;padding-top:1rem}}
-#run-btn{{background:#00ff8833;border:1px solid #00ff8866;color:#00ff88;
-  padding:.5rem 1.2rem;border-radius:4px;cursor:pointer;font-size:1rem}}
-#run-btn:disabled{{opacity:.4;cursor:not-allowed}}
-#run-result{{margin-top:.8rem;font-size:.9rem;white-space:pre-wrap}}
-</style></head><body><div class="card">
+:root {{
+  --bg:#0f172a; --surface:#1e293b; --border:#334155; --text:#f1f5f9; --text-muted:#94a3b8;
+  --pass:#22c55e; --watch:#f59e0b; --near-miss:#8b5cf6; --fail:#ef4444; --exit-stop:#dc2626; --monitor:#6b7280;
+}}
+.dashboard-card{{background:rgba(15,23,42,.94);border:1px solid var(--border);border-radius:16px;padding:1.25rem;
+  box-shadow:0 24px 80px rgba(0,0,0,.35);max-width:1120px;margin:1.5rem auto}}
+.muted{{color:var(--text-muted)}} .ok{{color:var(--pass)}} .warn{{color:var(--watch)}} .err{{color:var(--fail)}}
+.section{{margin-top:1.2rem;border-top:1px solid var(--border);padding-top:1rem}}
+.meta-row,.signal-row,.position-row{{display:flex;flex-wrap:wrap;gap:.55rem;align-items:center}}
+.meta-row{{background:#0b1220;border:1px solid var(--border);border-radius:10px;padding:.75rem}}
+.strategy-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:.9rem}}
+.strategy-section{{background:#0b1220;border:1px solid var(--border);border-radius:10px;padding:.85rem}}
+.signal-row,.position-row{{background:#111827;border:1px solid #1f2937;border-radius:8px;padding:.7rem;margin-top:.55rem;cursor:pointer}}
+.signal-row:hover,.position-row:hover{{border-color:#475569}}
+.ticker{{font-weight:700;color:var(--text)}} .section-title{{display:flex;justify-content:space-between;gap:.6rem;align-items:center;flex-wrap:wrap}}
+.badge{{display:inline-flex;align-items:center;gap:.3rem;border:1px solid var(--border);border-radius:999px;padding:.2rem .55rem;font-size:.78rem;background:#0b1220}}
+.badge-pass{{color:var(--pass);border-color:rgba(34,197,94,.4)}} .badge-watch{{color:var(--watch);border-color:rgba(245,158,11,.4)}}
+.badge-fail{{color:var(--fail);border-color:rgba(239,68,68,.4)}} .badge-muted{{color:var(--text-muted)}}
+.meta-link{{color:#cbd5e1;text-decoration:none}} .meta-link:hover{{text-decoration:underline}}
+.empty{{color:var(--text-muted);margin:.6rem 0 0}} .dry-note{{color:#cbd5e1;font-size:.8rem}}
+#run-btn{{background:#00ff8833;border:1px solid #00ff8866;color:#00ff88;padding:.5rem 1.2rem;border-radius:4px;cursor:pointer;font-size:1rem}}
+#run-btn:disabled{{opacity:.4;cursor:not-allowed}} #run-result{{margin-top:.8rem;font-size:.9rem;white-space:pre-wrap}}
+</style></head><body><div class="dashboard-card">
 <h1>Welcome, {username}</h1>
-<p><span class="pill">{role}</span></p>
-<p>Your API key (first 12 chars shown):</p>
-<div class="key-box">{key_prefix}</div>
-<p class="muted">Use full key in Authorization: Bearer header or ?token= param.</p>
-<p class="muted">Last login: {last_login}</p>
-<p><a href="/api/user/status?token={api_key}">View full status (JSON)</a></p>
-{broker_prompt_html}
+<p><span class="badge">{role}</span></p>
+<div class="meta-row">{run_meta_html}</div>
 <div class="section">
 <h2>Personalization Run</h2>
 <p>{run_status_html}</p>
@@ -654,12 +663,27 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <button id="run-btn" onclick="triggerRun()">Run Personalization</button>
 <div id="run-result"></div>
 <script>
+var userToken = {user_token_json};
+function getOrCreateSessionId(){{
+  if(!sessionStorage.getItem('asa_sid')) sessionStorage.setItem('asa_sid', Math.random().toString(36).substr(2,16));
+  return sessionStorage.getItem('asa_sid');
+}}
+function trackSignalView(ticker, strategyId, verdict){{
+  fetch('/api/telemetry/signal-engagement?token=' + encodeURIComponent(userToken), {{
+    method:'POST',
+    headers:{{'Content-Type':'application/json'}},
+    body:JSON.stringify({{
+      ticker:ticker, strategy_id:strategyId, verdict:verdict,
+      action:'expand_detail', session_id:getOrCreateSessionId()
+    }})
+  }}).catch(function(){{}});
+}}
 function triggerRun(){{
   var btn=document.getElementById('run-btn');
   var out=document.getElementById('run-result');
   btn.disabled=true; btn.textContent='Running…';
   out.textContent='Fetching signals…';
-  fetch('/api/user/run?token={api_key}',{{method:'POST'}})
+  fetch('/api/user/run?token=' + encodeURIComponent(userToken),{{method:'POST'}})
     .then(function(r){{return r.json();}})
     .then(function(d){{
       btn.disabled=false; btn.textContent='Run Personalization';
@@ -667,11 +691,11 @@ function triggerRun(){{
         var pos=d.positions_fetched||0;
         var opp=d.daily_opportunity_count||0;
         var mode=d.broker_mode==='signals_only'?' (signals only)':'';
-        out.textContent='✓ Done — '+pos+' positions, '+opp+' opportunities'+mode+(d.core_run_stale?' (core run stale)':'');
+        out.textContent='Done - '+pos+' positions, '+opp+' opportunities'+mode+(d.core_run_stale?' (core run stale)':'');
       }} else if(d.status==='already_running'){{
-        out.textContent='⏳ Already running since '+d.started_at;
+        out.textContent='Already running since '+d.started_at;
       }} else {{
-        out.textContent='✗ '+(d.error||'')+': '+(d.message||'');
+        out.textContent='Error: '+(d.error||'')+' '+(d.message||'');
       }}
     }})
     .catch(function(e){{
@@ -681,70 +705,15 @@ function triggerRun(){{
 }}
 </script>
 </div>
+{positions_html}
 <div class="section">
 <h2>Broker Connection</h2>
 <p>{cred_status_html}</p>
-<details style="margin-top:.8rem">
-<summary style="cursor:pointer;color:#aaa">Update Robinhood Credentials</summary>
-<form method="POST" action="/user/update-credentials" style="margin-top:.8rem">
-  <label>Robinhood Username (email)</label>
-  <input name="robinhood_username" type="email" required>
-  <label>Robinhood Password</label>
-  <input name="robinhood_password" type="password" required>
-  <button type="submit">Validate &amp; Save</button>
-</form>
 {cred_update_msg}
-</details>
-<details style="margin-top:.8rem">
-<summary style="cursor:pointer;color:#aaa">Connect via Plaid</summary>
-<p class="muted">Link your brokerage account securely through Plaid — no password stored on our servers.</p>
-<button id="plaid-btn" onclick="launchPlaid()" style="margin-top:.5rem">Connect Brokerage via Plaid</button>
-<div id="plaid-result" style="margin-top:.5rem;font-size:.9rem"></div>
-</details>
-<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
-<script>
-function launchPlaid(){{
-  var btn=document.getElementById('plaid-btn');
-  var out=document.getElementById('plaid-result');
-  btn.disabled=true; btn.textContent='Connecting…';
-  fetch('/api/plaid/link-token?token={api_key}',{{method:'POST'}})
-    .then(function(r){{return r.json();}})
-    .then(function(d){{
-      if(d.status!=='ok'){{
-        btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
-        out.textContent='✗ '+d.message; return;
-      }}
-      var handler=Plaid.create({{
-        token:d.link_token,
-        onSuccess:function(public_token){{
-          out.textContent='Exchanging token…';
-          fetch('/api/plaid/exchange?token={api_key}',{{
-            method:'POST',
-            headers:{{'Content-Type':'application/json'}},
-            body:JSON.stringify({{public_token:public_token}})
-          }}).then(function(r){{return r.json();}}).then(function(ex){{
-            btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
-            if(ex.status==='ok'){{out.textContent='✓ Connected! Run Personalization to fetch positions.';}}
-            else{{out.textContent='✗ '+ex.message;}}
-          }});
-        }},
-        onExit:function(){{
-          btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
-        }}
-      }});
-      handler.open();
-    }})
-    .catch(function(e){{
-      btn.disabled=false; btn.textContent='Connect Brokerage via Plaid';
-      out.textContent='Network error: '+e;
-    }});
-}}
-if(window.location.search.indexOf('connect_plaid=1')!==-1){{setTimeout(launchPlaid,500);}}
-</script>
 </div>
 {signals_html}
 <div class="section">
-<p class="muted"><a href="/personalize?token={api_key}" style="color:#aaa">⚙ My Preferences</a></p>
+<p class="muted"><a class="meta-link" href="/personalize?token={api_key}">Preferences</a> · <a class="meta-link" href="/api/user/status?token={api_key}">View full status (JSON)</a></p>
 </div>
 <form method="POST" action="/logout" style="margin-top:1.5rem">
   <button type="submit" style="background:#ff4444">Log Out</button>
@@ -761,73 +730,274 @@ def _verdict_cls(verdict: str) -> str:
     return "err"
 
 
-def _build_signals_html(report: dict) -> str:
-    """
-    TKT-037/058/050/048: Build signal sections from core run snapshot.
-    Returns HTML string for the three strategy sections.
-    Never raises — returns empty string on any error.
-    """
+ACCOUNT_LABELS = {
+    "individual": "Individual",
+    "ira_roth": "Roth IRA",
+    "joint_tenancy_with_ros": "Joint",
+    "rollover_ira": "Rollover IRA",
+}
+
+
+def _dashboard_tier(row: dict[str, Any]) -> float:
+    tier = row.get("verdict_tier")
+    if isinstance(tier, (int, float)):
+        return float(tier)
+    verdict = str(row.get("verdict") or row.get("action") or "").upper()
+    if verdict.startswith("PASS"):
+        return 100.0
+    if verdict.startswith("WATCH"):
+        return 80.0
+    if verdict.startswith("NEAR"):
+        return 60.0
+    return 35.0
+
+
+def _dashboard_score(row: dict[str, Any]) -> float:
+    for key in ("score", "signal_score", "priority_score", "actionability_score"):
+        value = row.get(key)
+        if isinstance(value, (int, float)):
+            return float(value)
+    return 0.0
+
+
+def _dashboard_badge(text: str, tone: str = "muted") -> str:
+    safe = escape(text)
+    return f'<span class="badge badge-{tone}">{safe}</span>'
+
+
+def _format_currency(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "unavailable"
+    return f"${value:,.2f}"
+
+
+def _format_pct(value: Any) -> str:
+    if not isinstance(value, (int, float)):
+        return "unavailable"
+    return f"{value:+.2f}%"
+
+
+def _account_label(account_type: Any, nickname: Any = None) -> str:
+    if nickname:
+        return str(nickname)
+    normalized = str(account_type or "").strip().lower()
+    if normalized in ACCOUNT_LABELS:
+        return ACCOUNT_LABELS[normalized]
+    if not normalized:
+        return "Account"
+    return normalized.replace("_", " ").title()
+
+
+def _resolve_dashboard_user():
+    user = _get_session_user()
+    if user:
+        return user
+    token = request.args.get("token")
+    if not token:
+        return None
     try:
-        from markupsafe import escape as _esc
+        from app.auth import _resolve_user
+        user = _resolve_user(token)
+        if user and user.get("is_active"):
+            return user
+    except Exception:
+        return None
+    return None
+
+
+def _load_dashboard_core_report() -> tuple[dict[str, Any] | None, dict[str, Any] | None, dict[str, Any] | None]:
+    try:
+        from app.services.personalization import _load_latest_core_run
+        snapshot, report = _load_latest_core_run()
         tradier = (report or {}).get("tradier_snapshot", {}) or {}
+        return snapshot, report, tradier
+    except Exception:
+        return None, None, None
 
-        # ── Forward Factor ──────────────────────────────────────────────────
-        ff_strategy = tradier.get("_forward_factor_strategy") or {}
-        ff_rows = ff_strategy.get("candidate_rows") or ff_strategy.get("rows") or []
-        ff_html = ""
-        for row in ff_rows[:8]:
-            verdict = str(row.get("verdict") or row.get("action") or "")
-            ticker = str(row.get("ticker") or "")
-            score = row.get("signal_score") or row.get("priority_score") or ""
-            score_txt = f" <span class='muted'>({score:.1f})</span>" if isinstance(score, (int, float)) else ""
-            cls = _verdict_cls(verdict)
-            ff_html += f'<div class="pill"><span class="{cls}">{_esc(verdict)}</span> {_esc(ticker)}{score_txt}</div>'
-        if not ff_html:
-            ff_html = '<p class="muted">No Forward Factor signals in current run.</p>'
 
-        # ── Calendar Scanner ────────────────────────────────────────────────
-        cal_ranking = tradier.get("_calendar_ranking") or {}
-        cal_items = cal_ranking.get("items") or []
-        cal_sorted = sorted(
-            cal_items,
-            key=lambda r: (0 if str(r.get("action") or "").upper().startswith("PASS") else
-                           1 if str(r.get("action") or "").upper().startswith("WATCH") else 2),
-        )
-        cal_html = ""
-        for row in cal_sorted[:10]:
-            action = str(row.get("action") or "")
-            ticker = str(row.get("ticker") or "")
-            dte = row.get("days_until_earnings")
-            dte_txt = f" | {dte}d to earnings" if dte is not None else ""
-            cls = _verdict_cls(action)
-            cal_html += f'<div class="pill"><span class="{cls}">{_esc(action)}</span> {_esc(ticker)}{_esc(dte_txt)}</div>'
-        if not cal_html:
-            cal_html = '<p class="muted">No calendar candidates in current run.</p>'
-
-        # ── Skew Momentum Verticals ─────────────────────────────────────────
-        skew_strategy = tradier.get("_skew_momentum_vertical_strategy") or {}
-        skew_items = skew_strategy.get("items") or []
-        skew_html = ""
-        for row in skew_items[:8]:
-            verdict = str(row.get("verdict") or "")
-            ticker = str(row.get("ticker") or "")
-            direction = str(row.get("direction") or "")
-            score = row.get("score") or 0
-            cls = _verdict_cls(verdict)
-            dir_txt = f" ({direction})" if direction else ""
-            skew_html += f'<div class="pill"><span class="{cls}">{_esc(verdict)}</span> {_esc(ticker)}{_esc(dir_txt)} <span class="muted">{score:.0f}</span></div>'
-        if not skew_html:
-            skew_html = '<p class="muted">No skew vertical signals in current run.</p>'
-
+def _build_dashboard_positions_html(user: dict[str, Any]) -> tuple[str, float | None]:
+    user_id = user.get("id")
+    if not user_id:
+        return "", None
+    broker_connection_optional = bool(user.get("broker_connection_optional"))
+    broker_connected_flag = bool(user.get("broker_connected"))
+    if broker_connection_optional and not broker_connected_flag:
         return (
-            f'<div class="section">'
-            f'<h2>Forward Factor Calendar <span class="pill" style="font-size:.75rem;color:#888">Dry-run — signal live, execution gated</span></h2>'
-            f'{ff_html}</div>'
-            f'<div class="section"><h2>Earnings Calendar Scanner</h2>{cal_html}</div>'
-            f'<div class="section"><h2>Skew Momentum Verticals</h2>{skew_html}</div>'
+            '<div class="section"><h2>Track Your Portfolio</h2>'
+            '<p>Connect your brokerage to see open positions, P&amp;L, and exit signals alongside market signals.</p>'
+            '<p><a class="meta-link" href="/connect-broker">Connect Robinhood</a></p>'
+            '<p class="muted">All strategy signals remain visible without broker connection.</p></div>',
+            None,
+        )
+    try:
+        import json as _json
+        from app.db.users import (
+            get_latest_complete_user_run,
+            get_user_broker_accounts,
+            get_user_option_positions,
+            get_user_positions,
+        )
+
+        latest_run = get_latest_complete_user_run(user_id)
+        if not latest_run:
+            return '<div class="section"><h2>Open Positions</h2><p class="empty">No personalization run yet.</p></div>', None
+
+        broker_accounts = get_user_broker_accounts(user_id)
+        nickname_map = {
+            str(row.get("account_number") or ""): _account_label(row.get("account_type"), row.get("nickname"))
+            for row in broker_accounts
+        }
+        user_positions = get_user_positions(user_id, run_id=latest_run.get("run_id"))
+        account_value = sum(float(p.get("market_value") or 0) for p in user_positions if p.get("position_type") != "options")
+        account_value = round(account_value, 2) if account_value else None
+
+        calendars = []
+        for row in get_user_option_positions(user_id, run_id=latest_run.get("run_id")):
+            payload = {}
+            try:
+                payload = _json.loads(row.get("calendar_json") or "{}")
+            except Exception:
+                payload = {}
+            account_name = _account_label(
+                payload.get("account_label") or row.get("account_type"),
+                None,
+            )
+            calendars.append({
+                "ticker": str(row.get("underlying") or "").upper(),
+                "option_type": str(row.get("option_type") or "").upper(),
+                "front_expiration": row.get("front_expiration"),
+                "back_expiration": row.get("back_expiration"),
+                "action": str(row.get("action") or payload.get("action") or "MONITOR").upper(),
+                "pnl_pct_estimate": payload.get("pnl_pct_estimate") or payload.get("gain_pct_estimate"),
+                "account_name": account_name,
+            })
+
+        verticals = []
+        for row in user_positions:
+            if row.get("position_type") != "options":
+                continue
+            details = {}
+            try:
+                details = _json.loads(row.get("option_details") or "{}")
+            except Exception:
+                details = {}
+            if str(details.get("strategy_type") or "") != "skew_vertical":
+                continue
+            verticals.append({
+                "ticker": str(row.get("ticker") or "").upper(),
+                "option_type": str(details.get("option_type") or "").upper(),
+                "long_strike": details.get("legs", [{}])[0].get("strike") if details.get("legs") else None,
+                "short_strike": details.get("legs", [{}, {}])[1].get("strike") if len(details.get("legs") or []) > 1 else None,
+                "expiration": details.get("expiration"),
+                "dte": next((leg.get("dte") for leg in (details.get("legs") or []) if leg.get("dte") is not None), details.get("dte")),
+                "exit_signal": str(details.get("exit_signal") or "HOLD").upper(),
+                "unrealized_pnl_pct": row.get("unrealized_pnl_pct"),
+                "current_value": details.get("current_value"),
+                "account_name": nickname_map.get(str(row.get("account_number") or ""), _account_label(row.get("account_type"))),
+            })
+
+        if not calendars and not verticals:
+            return '<div class="section"><h2>Open Positions</h2><p class="empty">No open option structures detected in latest personalization run.</p></div>', account_value
+
+        cards = []
+        for cal in calendars:
+            tone = "watch" if cal["action"].startswith("MONITOR") else "fail" if cal["action"].startswith("EXIT") else "muted"
+            cards.append(
+                '<div class="position-row">'
+                f'<span class="ticker">{escape(cal["ticker"])}</span>'
+                f'{_dashboard_badge("Calendar", "muted")}'
+                f'<span>{escape(cal["option_type"] or "OPTION")} Calendar</span>'
+                f'<span>{escape(str(cal["front_expiration"] or "—"))} / {escape(str(cal["back_expiration"] or "—"))}</span>'
+                f'{_dashboard_badge(cal["action"], tone)}'
+                f'<span>{escape(cal["account_name"])}</span>'
+                f'<span>{escape(_format_pct(cal["pnl_pct_estimate"]))}</span>'
+                '</div>'
+            )
+        for vertical in verticals:
+            tone = "watch" if vertical["exit_signal"].startswith("MONITOR") or vertical["exit_signal"] == "HOLD" else "fail"
+            cards.append(
+                '<div class="position-row">'
+                f'<span class="ticker">{escape(vertical["ticker"])}</span>'
+                f'{_dashboard_badge("Vertical", "muted")}'
+                f'<span>{escape(str(vertical["long_strike"] or "—"))} / {escape(str(vertical["short_strike"] or "—"))} {escape(vertical["option_type"] or "OPTION")}</span>'
+                f'<span>{escape(str(vertical["expiration"] or "—"))}</span>'
+                f'<span>{escape(str(vertical["dte"] or "—"))} DTE</span>'
+                f'{_dashboard_badge(vertical["exit_signal"], tone)}'
+                f'<span>{escape(vertical["account_name"])}</span>'
+                f'<span>{escape(_format_pct(vertical["unrealized_pnl_pct"]))}</span>'
+                '</div>'
+            )
+        return '<div class="section"><h2>Open Positions</h2>' + "".join(cards) + "</div>", account_value
+    except Exception:
+        return '<div class="section"><h2>Open Positions</h2><p class="empty">Open positions unavailable.</p></div>', None
+
+
+def _build_strategy_section(title: str, strategy_id: str, result: dict[str, Any], note: str | None = None) -> str:
+    rows = list(result.get("canonical_opportunities") or result.get("rows") or [])
+    rows.sort(key=lambda item: (_dashboard_tier(item), _dashboard_score(item)), reverse=True)
+    counts = (
+        f'{int(result.get("pass_count", 0))} PASS · '
+        f'{int(result.get("watch_count", 0))} WATCH · '
+        f'{int(result.get("fail_count", 0))} FAIL'
+    )
+    body = []
+    for row in rows[:5]:
+        raw = row.get("raw") if isinstance(row.get("raw"), dict) else row
+        detail_bits = []
+        if strategy_id == "forward_factor_calendar":
+            ff_value = raw.get("source_forward_factor")
+            if ff_value is None:
+                ff_value = raw.get("diagnostic_raw_iv_forward_factor") or raw.get("forward_factor")
+            if isinstance(ff_value, (int, float)):
+                detail_bits.append(f"FF {ff_value:.3f}")
+        if strategy_id == "earnings_calendar":
+            if raw.get("date_confidence"):
+                detail_bits.append(str(raw.get("date_confidence")))
+            if raw.get("days_until_earnings") is not None:
+                detail_bits.append(f"{raw.get('days_until_earnings')}d")
+        if strategy_id in {"stock_momentum", "skew_momentum_vertical"} and isinstance(_dashboard_score(row), (int, float)):
+            detail_bits.append(f"Score {_dashboard_score(row):.1f}")
+        if strategy_id == "skew_momentum_vertical" and raw.get("direction"):
+            detail_bits.append(str(raw.get("direction")))
+        detail_html = " · ".join(escape(str(bit)) for bit in detail_bits if bit)
+        body.append(
+            f'<div class="signal-row {_verdict_cls(str(row.get("verdict") or ""))}" '
+            f'onclick="trackSignalView({json.dumps(str(row.get("ticker") or ""))}, {json.dumps(strategy_id)}, {json.dumps(str(row.get("verdict") or ""))})">'
+            f'<span class="ticker">{escape(str(row.get("ticker") or ""))}</span>'
+            f'{_dashboard_badge(str(row.get("verdict") or ""), "pass" if str(row.get("verdict") or "").upper().startswith("PASS") else "watch" if str(row.get("verdict") or "").upper().startswith("WATCH") else "fail")}'
+            f'<span>{detail_html or escape("Signal ready")}</span>'
+            '</div>'
+        )
+    if not body:
+        empty = '<p class="empty">No rows this run.</p>'
+    else:
+        empty = "".join(body)
+    note_html = f'<span class="dry-note">{escape(note)}</span>' if note else ""
+    return (
+        '<div class="strategy-section">'
+        f'<div class="section-title"><h3>{escape(title)}</h3><span>{_dashboard_badge(counts, "muted")} {note_html}</span></div>'
+        f'{empty}</div>'
+    )
+
+
+def _build_signals_html(report: dict) -> str:
+    try:
+        tradier = (report or {}).get("tradier_snapshot", {}) or {}
+        strategy_results = tradier.get("_strategy_results", {}) or {}
+        stock = strategy_results.get("stock_momentum", {})
+        ff = strategy_results.get("forward_factor_calendar", {})
+        calendar = strategy_results.get("earnings_calendar", {})
+        skew = strategy_results.get("skew_momentum_vertical", {})
+        return (
+            '<div class="section"><h2>Today\'s Signals</h2><div class="strategy-grid">'
+            + _build_strategy_section("Stock Momentum", "stock_momentum", stock)
+            + _build_strategy_section("Forward Factor Calendar", "forward_factor_calendar", ff, "dry-run: signal live, execution gated")
+            + _build_strategy_section("Earnings Calendar", "earnings_calendar", calendar)
+            + _build_strategy_section("Skew Momentum Verticals", "skew_momentum_vertical", skew)
+            + '</div></div>'
         )
     except Exception:
-        return ""
+        return '<div class="section"><h2>Today\'s Signals</h2><p class="empty">Signals unavailable.</p></div>'
 
 
 def _get_session_user():
@@ -981,13 +1151,17 @@ def login():
 
 @app.route("/dashboard")
 def dashboard():
-    user = _get_session_user()
+    user = _resolve_dashboard_user()
     if not user:
         return redirect("/login")
     api_key = user.get("api_key", "")
+    user_token = request.args.get("token") or api_key
     key_prefix = (api_key[:12] + "...") if len(api_key) > 12 else api_key
     is_admin = bool(user.get("is_admin"))
     last_login = user.get("last_login_at") or "—"
+    snapshot, report, tradier = _load_dashboard_core_report()
+    from app.services.run_manifest_repository import RunManifestRepository
+    manifest = RunManifestRepository().latest() or {}
 
     # 28C: credential status display
     validated_at = user.get("credentials_validated_at")
@@ -1029,35 +1203,32 @@ def dashboard():
                     f'Last run: <span class="{cls}">{st}</span> — {ts} '
                     f'({pos} positions, {opp} opportunities)'
                 )
-        from app.services.personalization import _load_latest_core_run, _core_run_freshness_hours
+        from app.services.personalization import _core_run_freshness_hours
         from app import config as _cfg
-        snap, report = _load_latest_core_run()
-        if snap:
-            fh = _core_run_freshness_hours(snap)
+        if snapshot:
+            fh = _core_run_freshness_hours(snapshot)
             stale = fh > float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
             cls = "err" if stale else "ok"
             stale_txt = ' <span class="warn">(STALE)</span>' if stale else ""
             core_freshness_html = f'Core run: <span class="{cls}">{fh:.1f}h old</span>{stale_txt}'
     except Exception:
-        report = None
         pass
 
-    # TKT-FEAT-001: broker-optional users get a connect prompt instead of credential status
-    broker_connection_optional = bool(user.get("broker_connection_optional"))
-    broker_connected_flag = bool(user.get("broker_connected"))
-    broker_prompt_html = ""
-    if broker_connection_optional and not broker_connected_flag:
-        broker_prompt_html = (
-            '<div class="section" style="border-color:#00ff8844">'
-            '<h2 style="color:#00ff88">Connect Your Brokerage</h2>'
-            '<p>Connect Robinhood to see your open positions, P&amp;L, and personalized exit signals '
-            'alongside these market signals.</p>'
-            f'<a href="/connect-broker" style="display:inline-block;margin-top:.5rem;'
-            f'padding:.5rem 1.2rem;background:#00ff8833;border:1px solid #00ff8866;'
-            f'color:#00ff88;border-radius:4px;text-decoration:none">Connect Robinhood</a>'
-            '<p class="muted" style="margin-top:.5rem">All strategy signals are fully visible without a broker connection.</p>'
-            '</div>'
-        )
+    positions_html, account_value = _build_dashboard_positions_html(user)
+    last_run_at = manifest.get("completed_at") or (snapshot or {}).get("completed_at") or "—"
+    report_quality = manifest.get("report_quality") or ((tradier or {}).get("_pipeline_status", {}) or {}).get("report_quality") or "UNKNOWN"
+    quality_tone = "pass" if str(report_quality).upper() == "SUCCESS_COMPLETE" else "watch"
+    provider_fetch_count = manifest.get("provider_fetch_count", 0)
+    broker_mode = manifest.get("broker_mode") or ("signals_only" if (user.get("broker_connection_optional") and not user.get("broker_connected")) else "connected")
+    account_html = f'<span>Account: {_format_currency(account_value)}</span>' if account_value is not None and broker_mode == "connected" else ""
+    run_meta_html = (
+        f'<span>Last run: {escape(str(last_run_at)[:19])}</span>'
+        f'{_dashboard_badge(str(report_quality), quality_tone)}'
+        f'<span>{escape(str(provider_fetch_count))} API calls</span>'
+        f'{account_html}'
+        f'<span>{_dashboard_badge("signals only", "watch") if broker_mode == "signals_only" else ""}</span>'
+        f'<a class="meta-link" href="/personalize?token={escape(api_key)}">Preferences</a>'
+    )
 
     html = _DASHBOARD_HTML.format(
         css=_AUTH_CSS,
@@ -1065,12 +1236,14 @@ def dashboard():
         role="Admin" if is_admin else "User",
         key_prefix=escape(key_prefix),
         api_key=escape(api_key),
+        user_token_json=json.dumps(str(user_token or "")),
         last_login=escape(str(last_login)),
+        run_meta_html=run_meta_html,
         run_status_html=run_status_html,
         core_freshness_html=core_freshness_html,
         cred_status_html=cred_status_html,
         cred_update_msg=cred_update_html,
-        broker_prompt_html=broker_prompt_html,
+        positions_html=positions_html,
         signals_html=_build_signals_html(report or {}),
     )
     return html
