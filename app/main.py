@@ -1034,6 +1034,466 @@ def _build_signals_html(report: dict) -> str:
         return '<div class="section"><h2>Today\'s Signals</h2><p class="empty">Signals unavailable.</p></div>'
 
 
+def _public_screener_verdict_meta(verdict: str, raw: dict[str, Any] | None = None) -> tuple[str, str, str]:
+    verdict_text = str(verdict or "UNKNOWN").strip() or "UNKNOWN"
+    verdict_upper = verdict_text.upper()
+    raw = raw or {}
+    if "DRY RUN" in verdict_upper or bool(raw.get("dry_run")):
+        return "Research Only", "info", verdict_text
+    if verdict_upper.startswith("PASS"):
+        return "Passed", "pass", verdict_text
+    if verdict_upper.startswith("WATCH"):
+        return "Watch", "watch", verdict_text
+    if verdict_upper.startswith("HIGH_SIGNAL_UNTRADEABLE"):
+        return "High Signal, Blocked", "near", verdict_text
+    if verdict_upper.startswith("NEAR"):
+        return "Near Miss", "near", verdict_text
+    if verdict_upper.startswith("FAIL"):
+        return "Rejected", "fail", verdict_text
+    return "Needs Review", "muted", "Needs Review" if verdict_upper == "UNKNOWN" else verdict_text
+
+
+def _public_signal_tone(row: dict[str, Any]) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    _, tone, _ = _public_screener_verdict_meta(_dashboard_resolved_verdict(row), raw)
+    return tone
+
+
+def _public_signal_confidence(row: dict[str, Any]) -> int:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    text = str(row.get("data_confidence") or row.get("confidence") or raw.get("data_confidence") or raw.get("confidence") or "").strip().lower()
+    if text == "high":
+        return 3
+    if text == "medium":
+        return 2
+    if text == "low":
+        return 1
+    return 0
+
+
+def _public_liquidity_rank(row: dict[str, Any]) -> int:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    status = str(
+        row.get("liquidity_status")
+        or ((row.get("liquidity_result") or {}).get("status") if isinstance(row.get("liquidity_result"), dict) else None)
+        or raw.get("liquidity_status")
+        or ((raw.get("liquidity_result") or {}).get("status") if isinstance(raw.get("liquidity_result"), dict) else None)
+        or ""
+    ).upper()
+    if status == "PASS":
+        return 3
+    if status == "WATCH":
+        return 2
+    if status == "FAIL":
+        return 1
+    return 0
+
+
+def _public_reason_fragments(row: dict[str, Any]) -> list[str]:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    candidates: list[Any] = [
+        row.get("display_reason"),
+        row.get("primary_reason"),
+        row.get("why"),
+        row.get("why_combined"),
+        row.get("notes"),
+        row.get("blocking_reason"),
+        row.get("blocking_reasons"),
+        row.get("gate_failures"),
+        row.get("failed_gates"),
+        row.get("diagnostics"),
+        raw.get("primary_reason"),
+        raw.get("why"),
+        raw.get("blocking_reasons"),
+    ]
+    bits: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                add(item)
+            return
+        if isinstance(value, dict):
+            for key in ("reason", "message", "summary", "detail"):
+                if value.get(key):
+                    add(value.get(key))
+            return
+        text = str(value or "").strip()
+        if not text:
+            return
+        normalized = " ".join(text.split())
+        if normalized not in seen:
+            seen.add(normalized)
+            bits.append(normalized)
+
+    for item in candidates:
+        add(item)
+
+    fields = [
+        ("Date confidence", row.get("date_confidence") or raw.get("date_confidence")),
+        ("Days to earnings", row.get("days_until_earnings") if row.get("days_until_earnings") is not None else raw.get("days_until_earnings")),
+        ("Front DTE", row.get("front_dte") if row.get("front_dte") is not None else raw.get("front_dte")),
+        ("Back DTE", row.get("back_dte") if row.get("back_dte") is not None else raw.get("back_dte")),
+        ("IV relationship", row.get("iv_relationship") or raw.get("iv_relationship")),
+        ("Forward Factor", row.get("source_forward_factor") if row.get("source_forward_factor") is not None else raw.get("source_forward_factor")),
+        ("Diagnostic FF", row.get("diagnostic_raw_iv_forward_factor") if row.get("diagnostic_raw_iv_forward_factor") is not None else raw.get("diagnostic_raw_iv_forward_factor")),
+        ("Spread width", row.get("spread_width") if row.get("spread_width") is not None else raw.get("spread_width")),
+        ("Bid/ask spread", row.get("bid_ask_spread") if row.get("bid_ask_spread") is not None else raw.get("bid_ask_spread")),
+        ("Open interest", row.get("open_interest") if row.get("open_interest") is not None else raw.get("open_interest")),
+        ("Volume", row.get("volume") if row.get("volume") is not None else raw.get("volume")),
+        ("Avg volume", row.get("avg_volume") if row.get("avg_volume") is not None else raw.get("avg_volume")),
+    ]
+    for label, value in fields:
+        if value is None or value == "":
+            continue
+        if isinstance(value, float):
+            if "Factor" in label:
+                add(f"{label}: {value:.3f}")
+            else:
+                add(f"{label}: {value:.2f}")
+        else:
+            add(f"{label}: {value}")
+
+    if row.get("stale_structure") or raw.get("stale_structure"):
+        add("Structure flagged stale.")
+    if row.get("near_miss") or raw.get("near_miss"):
+        add("Near miss setup.")
+    if row.get("can_enter_daily_opportunity") is False or raw.get("can_enter_daily_opportunity") is False:
+        add("Not eligible for Daily Opportunity.")
+    if row.get("can_trade_live") is False or raw.get("can_trade_live") is False:
+        add("Not live-tradable.")
+
+    return bits or ["No detailed reason available."]
+
+
+def _public_reason_summary(row: dict[str, Any]) -> str:
+    bits = _public_reason_fragments(row)
+    return bits[0] if bits else "No detailed reason available."
+
+
+def _public_detail_pairs(row: dict[str, Any]) -> list[tuple[str, str]]:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    details: list[tuple[str, str]] = []
+
+    def grab(*keys: str):
+        for key in keys:
+            if row.get(key) not in (None, ""):
+                return row.get(key)
+            if raw.get(key) not in (None, ""):
+                return raw.get(key)
+        return None
+
+    score = _dashboard_score(row)
+    if score:
+        details.append(("Score", f"{score:.1f}"))
+    confidence = grab("data_confidence", "confidence")
+    if confidence:
+        details.append(("Confidence", str(confidence)))
+    liquidity = grab("liquidity_status")
+    if not liquidity and isinstance(grab("liquidity_result"), dict):
+        liquidity = grab("liquidity_result").get("status")
+    if liquidity:
+        details.append(("Liquidity", str(liquidity)))
+    front_dte = grab("front_dte")
+    back_dte = grab("back_dte")
+    if front_dte is not None or back_dte is not None:
+        if front_dte is not None and back_dte is not None:
+            details.append(("DTE", f"{front_dte} / {back_dte}"))
+        else:
+            details.append(("DTE", str(front_dte if front_dte is not None else back_dte)))
+    expiration_pair = grab("expiration_pair")
+    if isinstance(expiration_pair, dict):
+        front = expiration_pair.get("front") or expiration_pair.get("front_expiration")
+        back = expiration_pair.get("back") or expiration_pair.get("back_expiration")
+        if front or back:
+            details.append(("Expirations", f"{front or '—'} / {back or '—'}"))
+    forward_factor = grab("source_forward_factor")
+    diagnostic_ff = grab("diagnostic_raw_iv_forward_factor", "forward_factor")
+    if forward_factor is not None:
+        details.append(("Forward Factor", f"{float(forward_factor):.3f}"))
+    elif diagnostic_ff is not None:
+        details.append(("Diagnostic FF", f"{float(diagnostic_ff):.3f}"))
+    front_iv = grab("front_iv", "front_raw_iv")
+    back_iv = grab("back_iv", "back_raw_iv")
+    if front_iv is not None or back_iv is not None:
+        details.append(("IV", f"{front_iv if front_iv is not None else '—'} / {back_iv if back_iv is not None else '—'}"))
+    debit = grab("net_debit", "conservative_debit")
+    if isinstance(debit, (int, float)):
+        details.append(("Debit", _format_currency(float(debit))))
+    can_enter = grab("can_enter_daily_opportunity")
+    if can_enter is not None:
+        details.append(("Daily Opp", "Yes" if bool(can_enter) else "No"))
+    can_trade = grab("can_trade_live")
+    if can_trade is not None:
+        details.append(("Live trade", "Yes" if bool(can_trade) else "No"))
+    return details
+
+
+def _public_fail_priority(row: dict[str, Any]) -> tuple[int, float]:
+    verdict = _dashboard_resolved_verdict(row).upper()
+    reason_blob = " ".join(_public_reason_fragments(row)).upper()
+    score = _dashboard_score(row)
+    if score >= 80:
+        bucket = 0
+    elif "UNTRADEABLE" in verdict or "UNTRADEABLE" in reason_blob:
+        bucket = 1
+    elif "DATE" in reason_blob or "EARNINGS" in reason_blob:
+        bucket = 2
+    elif "LIQUID" in reason_blob or "SPREAD" in reason_blob or "VOLUME" in reason_blob or "OPEN INTEREST" in reason_blob:
+        bucket = 3
+    elif "DTE" in reason_blob or "EXPIRATION" in reason_blob:
+        bucket = 4
+    elif "IV" in reason_blob:
+        bucket = 5
+    elif "STALE" in reason_blob:
+        bucket = 6
+    else:
+        bucket = 7
+    return bucket, -score
+
+
+def _sort_public_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        rows,
+        key=lambda item: (_dashboard_tier(item), _dashboard_score(item), _public_signal_confidence(item), _public_liquidity_rank(item)),
+        reverse=True,
+    )
+
+
+def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
+    raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
+    ticker = _dashboard_resolved_ticker(row)
+    verdict = _dashboard_resolved_verdict(row)
+    label, tone, verdict_text = _public_screener_verdict_meta(verdict, raw)
+    details = _public_detail_pairs(row)
+    detail_html = "".join(
+        f'<span class="mini">{escape(label_text)}: {escape(value_text)}</span>'
+        for label_text, value_text in details[:6]
+    )
+    reason_bits = _public_reason_fragments(row)
+    primary_reason = reason_bits[0]
+    why_html = ""
+    if len(reason_bits) > 1:
+        why_html = f'<div class="row-why"><strong>More context:</strong> {escape(reason_bits[1])}</div>'
+    extra_badges = []
+    if strategy_id == "forward_factor_calendar" and bool(config.FORWARD_FACTOR_DRY_RUN):
+        extra_badges.append(_dashboard_badge("DRY RUN", "info"))
+    if raw.get("is_diagnostic_only") or row.get("is_diagnostic_only"):
+        extra_badges.append(_dashboard_badge("Research Only", "info"))
+    if raw.get("can_enter_daily_opportunity") is False or row.get("can_enter_daily_opportunity") is False:
+        extra_badges.append(_dashboard_badge("Not in Daily Opportunity", "muted"))
+    return (
+        f'<div class="demo-row demo-row-{tone}">'
+        f'<div class="demo-row-head"><div><h4>{escape(ticker)}</h4><div class="demo-badges">{_dashboard_badge(label, tone)}{_dashboard_badge(verdict_text, tone)}{"".join(extra_badges)}</div></div></div>'
+        f'<div class="row-summary">{escape(primary_reason)}</div>'
+        f'<div class="mini-grid">{detail_html}</div>'
+        f'{why_html}'
+        '</div>'
+    )
+
+
+def _build_public_strategy_section(title: str, strategy_id: str, result: dict[str, Any], explainer: dict[str, str], dry_run: bool = False) -> str:
+    rows = list(result.get("canonical_opportunities") or result.get("rows") or result.get("items") or [])
+    ordered = _sort_public_candidates(rows)
+    top_rows = [row for row in ordered if not _dashboard_resolved_verdict(row).upper().startswith("FAIL")][:5]
+    fail_rows = sorted(
+        [row for row in ordered if _dashboard_resolved_verdict(row).upper().startswith("FAIL")],
+        key=_public_fail_priority,
+    )[:4]
+    counts_html = (
+        _dashboard_badge(f'PASS {int(result.get("pass_count", 0))}', "pass")
+        + _dashboard_badge(f'WATCH {int(result.get("watch_count", 0))}', "watch")
+        + _dashboard_badge(f'FAIL {int(result.get("fail_count", 0))}', "fail")
+    )
+    dry_html = _dashboard_badge("DRY RUN", "info") if dry_run else ""
+    candidate_html = "".join(_public_row_card(row, strategy_id) for row in top_rows) or '<p class="empty">No top candidates this run.</p>'
+    rejected_html = "".join(_public_row_card(row, strategy_id) for row in fail_rows) or '<p class="empty">No rejected examples this run.</p>'
+    return (
+        '<section class="demo-section">'
+        f'<div class="section-title"><div><h2>{escape(title)}</h2><p class="muted">{escape(explainer["short"])}</p></div><div class="demo-badges">{counts_html}{dry_html}</div></div>'
+        f'<div class="strategy-copy"><div><strong>Why it exists</strong><p>{escape(explainer["why"])}</p></div>'
+        f'<div><strong>What blocks a trade</strong><p>{escape(explainer["blocks"])}</p></div>'
+        f'<div><strong>Current status</strong><p>{escape(explainer["status"])}</p></div></div>'
+        f'<div class="section-subcopy">{escape(explainer["matters"])}</div>'
+        f'<div class="demo-group"><h3>Top candidates</h3>{candidate_html}</div>'
+        f'<div class="demo-group"><h3>Rejected by Risk Filters</h3><p class="muted">Rejected trades are part of edge. System shows what looked interesting, what failed, why trade stayed blocked.</p>{rejected_html}</div>'
+        '</section>'
+    )
+
+
+def _build_public_screener_context() -> dict[str, Any] | None:
+    snapshot, report, tradier = _load_dashboard_core_report()
+    if not snapshot or not report:
+        return None
+    strategies = (tradier or {}).get("_strategy_results", {}) or {}
+    pipeline = (tradier or {}).get("_pipeline_status", {}) or {}
+    count_total = 0
+    for sid in ("stock_momentum", "forward_factor_calendar", "earnings_calendar", "skew_momentum_vertical"):
+        result = strategies.get(sid, {}) or {}
+        count_total += int(result.get("pass_count", 0) or 0) + int(result.get("watch_count", 0) or 0) + int(result.get("fail_count", 0) or 0)
+    return {
+        "snapshot": snapshot,
+        "report": report,
+        "tradier": tradier,
+        "run_id": snapshot.get("run_id"),
+        "generated_at": snapshot.get("completed_at"),
+        "run_quality": pipeline.get("report_quality") or pipeline.get("overall_status") or "UNKNOWN",
+        "signals_found": count_total,
+        "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
+        "strategy_results": strategies,
+    }
+
+
+_PUBLIC_SCREENER_CSS = """
+body{background:#050816;color:#e5e7eb;font-family:Inter,ui-sans-serif,system-ui,sans-serif;margin:0;line-height:1.45}
+.wrap{max-width:1180px;margin:0 auto;padding:1.2rem}
+.hero,.demo-section,.copy-band,.cta-band{background:#0b1220;border:1px solid rgba(148,163,184,.18);border-radius:10px;padding:1rem 1.1rem;margin:0 0 1rem}
+.hero h1,.demo-section h2,.copy-band h2{margin:.1rem 0 .45rem}
+.hero p,.muted,.copy-band p,.strategy-copy p,.section-subcopy{color:#cbd5e1}
+.demo-badges,.mini-grid,.summary-badges{display:flex;gap:.45rem;flex-wrap:wrap;align-items:center}
+.badge{display:inline-flex;align-items:center;gap:.3rem;border:1px solid rgba(148,163,184,.28);border-radius:999px;padding:.2rem .55rem;font-size:.78rem;background:#09101c}
+.badge-pass{color:#22c55e;border-color:rgba(34,197,94,.4)}
+.badge-watch{color:#f59e0b;border-color:rgba(245,158,11,.4)}
+.badge-fail{color:#ef4444;border-color:rgba(239,68,68,.4)}
+.badge-info{color:#60a5fa;border-color:rgba(96,165,250,.4)}
+.badge-near{color:#c084fc;border-color:rgba(192,132,252,.4)}
+.badge-muted{color:#cbd5e1}
+.hero-grid,.strategy-copy,.guide-grid,.cta-grid{display:grid;gap:.8rem}
+.hero-grid{grid-template-columns:2fr 1fr}
+.guide-grid,.strategy-copy{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.section-title{display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap}
+.demo-group{margin-top:1rem}
+.demo-group h3{margin:.2rem 0 .5rem}
+.demo-row{border:1px solid rgba(148,163,184,.18);border-radius:8px;padding:.8rem;margin:.55rem 0;background:#07101b}
+.demo-row-pass{border-color:rgba(34,197,94,.32)}
+.demo-row-watch{border-color:rgba(245,158,11,.32)}
+.demo-row-fail{border-color:rgba(239,68,68,.32)}
+.demo-row-near{border-color:rgba(192,132,252,.32)}
+.demo-row-info{border-color:rgba(96,165,250,.32)}
+.demo-row-head{display:flex;justify-content:space-between;gap:.8rem;align-items:flex-start}
+.demo-row h4{margin:0 0 .25rem}
+.row-summary{margin:.55rem 0;color:#f8fafc}
+.row-why{margin-top:.45rem;color:#cbd5e1;font-size:.92rem}
+.mini{font-size:.8rem;color:#cbd5e1;background:#0a1322;border-radius:999px;padding:.18rem .45rem;border:1px solid rgba(148,163,184,.18)}
+.copy-band ul{margin:.5rem 0 0 1rem;padding:0}
+.empty{color:#94a3b8}
+.cta-grid{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:center}
+.cta-buttons{display:flex;gap:.7rem;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;padding:.7rem 1rem;border-radius:8px;text-decoration:none;font-weight:600}
+.btn-primary{background:#22c55e;color:#04110a}
+.btn-secondary{border:1px solid rgba(148,163,184,.28);color:#e5e7eb;background:#09101c}
+.note{font-size:.84rem;color:#94a3b8}
+@media (max-width:800px){.hero-grid{grid-template-columns:1fr}.wrap{padding:.9rem}.hero,.demo-section,.copy-band,.cta-band{padding:.9rem}}
+"""
+
+
+_PUBLIC_SCREENER_HTML = """<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>ASA Screener Demo</title><style>{css}</style></head><body><div class="wrap">{body}</div></body></html>"""
+
+
+def _render_public_screener(context: dict[str, Any]) -> str:
+    strategies = context.get("strategy_results", {}) or {}
+    run_quality = str(context.get("run_quality") or "UNKNOWN")
+    quality_tone = "pass" if run_quality.upper() == "SUCCESS_COMPLETE" else "watch"
+    generated_at = str(context.get("generated_at") or "—")
+    explainers = {
+        "stock_momentum": {
+            "short": "Looks for stocks showing strong trend or relative-strength behavior worth attention before options structure selection.",
+            "why": "Momentum can identify where institutional demand is already showing up.",
+            "blocks": "Weak trend, overextension, lack of confirmation, or poor risk/reward.",
+            "status": "Live signal module",
+            "matters": "Stock momentum often answers whether market already agrees with idea before structure complexity begins.",
+        },
+        "earnings_calendar": {
+            "short": "Looks for earnings-driven calendar spread candidates where event volatility and expiration spacing can create usable structure.",
+            "why": "Structure can benefit from volatility differences, time decay behavior, and post-event repricing when setup is liquid and correctly timed.",
+            "blocks": "Unverified earnings date, bad expiration pair, adverse IV relationship, low liquidity, too little DTE, wide spreads, or stale structure.",
+            "status": "Live strategy with safety gates",
+            "matters": "Calendars can look exciting fast. Filters matter more than excitement.",
+        },
+        "skew_momentum_vertical": {
+            "short": "Looks for directional debit spreads where momentum agrees with options skew and overpriced wings can help finance entry.",
+            "why": "Trade can use inflated wing pricing to reduce debit while staying aligned with trend.",
+            "blocks": "No momentum confirmation, weak skew edge, poor reward/risk, low open interest, poor volume, or wide bid/ask spreads.",
+            "status": "Live strategy with safety gates",
+            "matters": "Skew without trend, or trend without fair pricing, is usually not enough.",
+        },
+        "forward_factor_calendar": {
+            "short": "Looks for calendar or double-calendar setups where forward volatility appears cheap relative to front volatility.",
+            "why": "If near-term volatility is overpriced compared with forward volatility, structure may capture favorable volatility relationship.",
+            "blocks": "Forward factor below threshold, poor liquidity, bad expiration spacing, unstable pricing, or structure not yet validated.",
+            "status": "Dry-run only — visible for research, not promoted as a live trade recommendation.",
+            "matters": "Dry-run research can teach where signal exists before system is trusted to recommend live action.",
+        },
+    }
+    sections_html = (
+        _build_public_strategy_section("Stock Momentum", "stock_momentum", strategies.get("stock_momentum", {}) or {}, explainers["stock_momentum"])
+        + _build_public_strategy_section("Forward Factor Calendar", "forward_factor_calendar", strategies.get("forward_factor_calendar", {}) or {}, explainers["forward_factor_calendar"], dry_run=True)
+        + _build_public_strategy_section("Earnings Calendar", "earnings_calendar", strategies.get("earnings_calendar", {}) or {}, explainers["earnings_calendar"])
+        + _build_public_strategy_section("Skew Momentum Verticals", "skew_momentum_vertical", strategies.get("skew_momentum_vertical", {}) or {}, explainers["skew_momentum_vertical"])
+    )
+    body = f"""
+<section class="hero">
+  <div class="hero-grid">
+    <div>
+      <h1>Today&apos;s Options &amp; Stock Screener</h1>
+      <p>ASA scans momentum, earnings calendars, volatility skew, and forward volatility to find high-quality setups — and reject ones that do not meet risk rules.</p>
+      <div class="summary-badges">
+        {_dashboard_badge(f'Latest scan: {generated_at}', 'muted')}
+        {_dashboard_badge(f'Run quality: {run_quality}', quality_tone)}
+        {_dashboard_badge(f'Signals found: {int(context.get("signals_found", 0))}', 'muted')}
+        {_dashboard_badge('Forward Factor: DRY RUN', 'info') if context.get("ff_dry_run") else ''}
+        {_dashboard_badge('Read-only cached scan', 'info')}
+        {_dashboard_badge('Provider calls: none', 'info')}
+        {_dashboard_badge('No broker data shown', 'muted')}
+      </div>
+    </div>
+    <div class="copy-band" style="margin:0">
+      <h2>How to read this page</h2>
+      <div class="guide-grid">
+        <div><strong>PASS</strong><p>Setup meets strategy&apos;s current rules.</p></div>
+        <div><strong>WATCH</strong><p>Interesting, but needs confirmation or better pricing.</p></div>
+        <div><strong>FAIL</strong><p>Blocked by risk, liquidity, timing, or data-quality rules.</p></div>
+        <div><strong>DRY RUN</strong><p>Visible for research, not allowed into live trade recommendations yet.</p></div>
+      </div>
+      <p><strong>A failed setup is not wasted.</strong> It shows risk filter working.</p>
+    </div>
+  </div>
+</section>
+<section class="copy-band">
+  <h2>Why ASA rejects trades</h2>
+  <p>Most screeners only show what passed. ASA also shows what failed and why. That matters because edge is not just finding ideas — it is avoiding bad entries, bad liquidity, bad dates, and bad structures.</p>
+</section>
+{sections_html}
+<section class="copy-band">
+  <div class="guide-grid">
+    <div>
+      <h2>Why there are dry-run signals</h2>
+      <p>Some strategies are visible before they are allowed into live recommendations. Dry-run signals help validate model without pretending system is ready to trade them automatically.</p>
+    </div>
+    <div>
+      <h2>Why connect broker later</h2>
+      <p>This public page shows market scan. Private account can later personalize same scan against actual holdings, account size, open options positions, and risk limits.</p>
+    </div>
+  </div>
+</section>
+<section class="cta-band">
+  <div class="cta-grid">
+    <div>
+      <h2>See full system later</h2>
+      <p>ASA is risk-aware options decision system. Public screener shows market ideas. Private account layers in holdings, open structures, and account guardrails.</p>
+      <p class="note">ASA is research and decision-support tool. It is not financial advice, not broker, and does not place trades. All signals require independent review.</p>
+    </div>
+    <div class="cta-buttons">
+      <a class="btn btn-primary" href="/signup">Create a free screener account</a>
+      <a class="btn btn-secondary" href="/login">See how broker personalization works</a>
+    </div>
+  </div>
+</section>
+"""
+    return render_template_string(_PUBLIC_SCREENER_HTML.format(css=_PUBLIC_SCREENER_CSS, body=body))
+
+
 def _get_session_user():
     """Return user dict from session cookie, or None."""
     from flask import session
@@ -1181,6 +1641,30 @@ def login():
 
     err_html = f'<p class="err">{escape(error)}</p>' if error else ""
     return render_template_string(_LOGIN_HTML.format(css=_AUTH_CSS, error=err_html))
+
+
+@app.route("/demo/screener")
+def public_screener_alias():
+    return redirect("/screener", code=302)
+
+
+@app.route("/screener")
+def public_screener():
+    if not getattr(config, "PUBLIC_SCREENER_ENABLED", True):
+        abort(404)
+    context = _build_public_screener_context()
+    if not context:
+        return render_template_string(
+            _PUBLIC_SCREENER_HTML.format(
+                css=_PUBLIC_SCREENER_CSS,
+                body=(
+                    '<section class="hero"><h1>Today&apos;s Options &amp; Stock Screener</h1>'
+                    '<p>Demo temporarily unavailable.</p>'
+                    '<p class="note">Latest successful cached run was not available.</p></section>'
+                ),
+            )
+        ), 200
+    return _render_public_screener(context)
 
 
 @app.route("/dashboard")
