@@ -3044,7 +3044,6 @@ def _build_screener_ff_html(rows: list[dict], svc: Any) -> str:
     def _ff_row_html(row: dict) -> str:
         ticker = escape(str(row.get("ticker") or ""))
         pub_label, _orig = svc.public_verdict_label(row, "forward_factor")
-        # TKT-031A: never show original label — it may contain internal cap/budget language
         badge = _screener_label_badge(pub_label, "")
         src_label = escape(svc.public_ff_source_label(row))
         do_reason = escape(svc.public_daily_opportunity_reason(row, "forward_factor"))
@@ -3166,106 +3165,6 @@ def _build_screener_stock_html(items: list[dict], svc: Any) -> str:
             + "</div>"
         )
     return html
-
-
-@app.route("/screener")
-def public_screener():
-    """Public signal screener — no auth required. No private data exposed."""
-    from app.services import public_screener_gate_service as _svc
-
-    report: dict | None = None
-    scan_time_txt = "No scan data available"
-    try:
-        from app.services.personalization import _load_latest_core_run
-        _snap, report = _load_latest_core_run()
-        if report:
-            fetched = report.get("fetched_at") or report.get("created_at") or ""
-            if fetched:
-                scan_time_txt = f"Last scan: {str(fetched)[:16].replace('T', ' ')} UTC"
-    except Exception:
-        pass
-
-    tradier: dict = {}
-    if report:
-        tradier = (report.get("tradier_snapshot") or {}) or {}
-
-    ff_strategy = tradier.get("_forward_factor_strategy") or {}
-    ff_rows: list[dict] = ff_strategy.get("candidate_rows") or ff_strategy.get("rows") or []
-    cal_ranking = tradier.get("_calendar_ranking") or {}
-    cal_items: list[dict] = cal_ranking.get("items") or []
-    skew_strategy = tradier.get("_skew_momentum_vertical_strategy") or {}
-    skew_items: list[dict] = skew_strategy.get("items") or []
-    stock_strategy = tradier.get("_stock_momentum_strategy") or {}
-    stock_items: list[dict] = stock_strategy.get("items") or []
-
-    # Scan coverage summary (TKT-031A — no dev/cap language)
-    total_tickers = len({
-        str(r.get("ticker") or "") for r in (ff_rows + cal_items + skew_items + stock_items)
-        if r.get("ticker")
-    })
-    ff_groups = _svc.ff_grouping(ff_rows)
-    limited_scan_count = len(ff_groups["skipped"])
-    evaluated_count = len(ff_groups["evaluated"]) + len(ff_groups["rejected"])
-
-    if limited_scan_count > 0:
-        coverage_note = (
-            f"Limited coverage scan active — {evaluated_count} ticker(s) fully evaluated, "
-            f"{limited_scan_count} outside current scan window."
-        )
-    elif total_tickers > 0:
-        coverage_note = f"{total_tickers} ticker(s) scanned this run."
-    else:
-        coverage_note = "No scan data available for this period."
-
-    ff_html = _build_screener_ff_html(ff_rows, _svc)
-    cal_html = _build_screener_cal_html(cal_items, _svc)
-    skew_html = _build_screener_skew_html(skew_items, _svc)
-    stock_html = _build_screener_stock_html(stock_items, _svc)
-
-    page = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Signal Screener — Algo Stock Advisor</title>
-{_SCREENER_CSS}
-</head>
-<body>
-<p><a class="back" href="/">← Home</a></p>
-<h1>Signal Screener</h1>
-<p class="scan-meta">{escape(scan_time_txt)}</p>
-
-<div class="section">
-<h2>Scan Coverage</h2>
-<p class="muted">{escape(coverage_note)}</p>
-</div>
-
-<div class="section">
-<h2>Forward Factor Calendar <span class="label-badge label-dry-run" style="font-size:.72rem">Signal-only mode</span></h2>
-{ff_html}
-</div>
-
-<div class="section">
-<h2>Earnings Calendar Scanner</h2>
-{cal_html}
-</div>
-
-<div class="section">
-<h2>Skew Momentum Verticals</h2>
-{skew_html}
-</div>
-
-<div class="section">
-<h2>Stock Momentum</h2>
-{stock_html}
-</div>
-
-<p class="muted" style="margin-top:1rem;font-size:.75rem">
-All signals are informational only. No trade execution. Gate checklists reflect scan-time data only.
-</p>
-</body>
-</html>"""
-    return page
 
 
 def _run_lock_status() -> dict[str, Any]:
