@@ -157,6 +157,13 @@ def test_dashboard_renders_real_content_via_token_for_connected_user():
     assert "Earnings Calendar" in html
     assert "Skew Momentum Verticals" in html
     assert "Preferences" in html
+    assert "checkForNewRun" in html
+    assert "window.setInterval" in html
+    assert "var currentCoreRunId = \"run-1\"" in html
+    assert "var currentRunAgeSeconds = " in html
+    assert "fetch('/api/advisor/status'" in html
+    assert "/api/dev/status" not in html
+    assert "Data is over 24h old" in html
 
 
 def test_dashboard_shows_connect_prompt_for_signals_only_user():

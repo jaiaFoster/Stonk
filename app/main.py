@@ -648,6 +648,7 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 .badge{{display:inline-flex;align-items:center;gap:.3rem;border:1px solid var(--border);border-radius:999px;padding:.2rem .55rem;font-size:.78rem;background:#0b1220}}
 .badge-pass{{color:var(--pass);border-color:rgba(34,197,94,.4)}} .badge-watch{{color:var(--watch);border-color:rgba(245,158,11,.4)}}
 .badge-fail{{color:var(--fail);border-color:rgba(239,68,68,.4)}} .badge-muted{{color:var(--text-muted)}}
+.age.fresh{{color:var(--pass)}} .age.recent{{color:var(--watch)}} .age.stale,.stale-note{{color:var(--fail)}}
 .meta-link{{color:#cbd5e1;text-decoration:none}} .meta-link:hover{{text-decoration:underline}}
 .empty{{color:var(--text-muted);margin:.6rem 0 0}} .dry-note{{color:#cbd5e1;font-size:.8rem}}
 #run-btn{{background:#00ff8833;border:1px solid #00ff8866;color:#00ff88;padding:.5rem 1.2rem;border-radius:4px;cursor:pointer;font-size:1rem}}
@@ -664,6 +665,8 @@ _DASHBOARD_HTML = """<!DOCTYPE html><html><head><title>ASA — Dashboard</title>
 <div id="run-result"></div>
 <script>
 var userToken = {user_token_json};
+var currentCoreRunId = {current_run_id_json};
+var currentRunAgeSeconds = {current_run_age_seconds};
 function getOrCreateSessionId(){{
   if(!sessionStorage.getItem('asa_sid')) sessionStorage.setItem('asa_sid', Math.random().toString(36).substr(2,16));
   return sessionStorage.getItem('asa_sid');
@@ -703,6 +706,29 @@ function triggerRun(){{
       out.textContent='Network error: '+e;
     }});
 }}
+(function(){{
+  var POLL_INTERVAL_MS = 5 * 60 * 1000;
+  function checkForNewRun(){{
+    fetch('/api/advisor/status', {{cache:'no-store'}})
+      .then(function(r){{return r.json();}})
+      .then(function(data){{
+        if(data && data.run_id && data.run_id !== currentCoreRunId){{
+          window.location.reload();
+        }}
+      }})
+      .catch(function(){{}});
+  }}
+  window.setInterval(checkForNewRun, POLL_INTERVAL_MS);
+  if(currentRunAgeSeconds > 86400){{
+    var meta = document.querySelector('.meta-row');
+    if(meta){{
+      var staleNote = document.createElement('span');
+      staleNote.className = 'stale-note';
+      staleNote.textContent = 'Data is over 24h old';
+      meta.appendChild(staleNote);
+    }}
+  }}
+}})();
 </script>
 </div>
 {positions_html}
@@ -802,6 +828,44 @@ def _format_pct(value: Any) -> str:
     if not isinstance(value, (int, float)):
         return "unavailable"
     return f"{value:+.2f}%"
+
+
+def _run_freshness_meta(completed_at: Any, *, now: datetime | None = None) -> dict[str, Any]:
+    text = str(completed_at or "").strip()
+    if not text:
+        return {
+            "timestamp_human": "unavailable",
+            "age_seconds": 0,
+            "age_label": "age unavailable",
+            "age_class": "stale",
+        }
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        age_seconds = max(0, int((current.astimezone(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()))
+    except (TypeError, ValueError):
+        return {
+            "timestamp_human": text[:16].replace("T", " ") + " UTC",
+            "age_seconds": 0,
+            "age_label": "age unavailable",
+            "age_class": "stale",
+        }
+    if age_seconds < 3600:
+        age_label = f"{age_seconds // 60}m ago"
+    elif age_seconds < 86400:
+        age_label = f"{age_seconds // 3600}h ago"
+    else:
+        age_label = f"{age_seconds // 86400}d ago"
+    age_class = "fresh" if age_seconds < 7200 else "recent" if age_seconds < 86400 else "stale"
+    timestamp_human = parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return {
+        "timestamp_human": timestamp_human,
+        "age_seconds": age_seconds,
+        "age_label": age_label,
+        "age_class": age_class,
+    }
 
 
 def _account_label(account_type: Any, nickname: Any = None) -> str:
@@ -1034,23 +1098,31 @@ def _build_signals_html(report: dict) -> str:
         return '<div class="section"><h2>Today\'s Signals</h2><p class="empty">Signals unavailable.</p></div>'
 
 
+SCREENER_VERDICT_DISPLAY = {
+    "PASS": ("PASS", "pass", "Tradeable signal"),
+    "WATCH": ("WATCH", "watch", "Worth monitoring"),
+    "NEAR_MISS": ("NEAR MISS", "near", "Close — check manually"),
+    "FAIL": ("FILTERED", "fail", "Filtered by risk gates"),
+    "SKIP": ("SKIPPED", "muted", "Outside scan window"),
+    "DIAGNOSTIC": ("RESEARCH", "info", "Signal tracked, not live"),
+}
+
+
 def _public_screener_verdict_meta(verdict: str, raw: dict[str, Any] | None = None) -> tuple[str, str, str]:
     verdict_text = str(verdict or "UNKNOWN").strip() or "UNKNOWN"
     verdict_upper = verdict_text.upper()
     raw = raw or {}
     if "DRY RUN" in verdict_upper or bool(raw.get("dry_run")):
-        return "Research Only", "info", verdict_text
-    if verdict_upper.startswith("PASS"):
-        return "Passed", "pass", verdict_text
+        return SCREENER_VERDICT_DISPLAY["DIAGNOSTIC"]
+    if verdict_upper.startswith(("PASS", "CONSIDER ADDING", "ADD ON", "HIGH-PRIORITY CONSIDER ADDING")):
+        return SCREENER_VERDICT_DISPLAY["PASS"]
     if verdict_upper.startswith("WATCH"):
-        return "Watch", "watch", verdict_text
-    if verdict_upper.startswith("HIGH_SIGNAL_UNTRADEABLE"):
-        return "High Signal, Blocked", "near", verdict_text
-    if verdict_upper.startswith("NEAR"):
-        return "Near Miss", "near", verdict_text
-    if verdict_upper.startswith("FAIL"):
-        return "Rejected", "fail", verdict_text
-    return "Needs Review", "muted", "Needs Review" if verdict_upper == "UNKNOWN" else verdict_text
+        return SCREENER_VERDICT_DISPLAY["WATCH"]
+    if verdict_upper.startswith(("HIGH_SIGNAL_UNTRADEABLE", "NEAR")):
+        return SCREENER_VERDICT_DISPLAY["NEAR_MISS"]
+    if verdict_upper.startswith(("SKIP", "NOT EVALUATED")):
+        return SCREENER_VERDICT_DISPLAY["SKIP"]
+    return SCREENER_VERDICT_DISPLAY["FAIL"]
 
 
 def _public_signal_tone(row: dict[str, Any]) -> str:
@@ -1284,7 +1356,7 @@ def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     ticker = _dashboard_resolved_ticker(row)
     verdict = _dashboard_resolved_verdict(row)
-    label, tone, verdict_text = _public_screener_verdict_meta(verdict, raw)
+    label, tone, tooltip = _public_screener_verdict_meta(verdict, raw)
     details = _public_detail_pairs(row)
     detail_html = "".join(
         f'<span class="mini">{escape(label_text)}: {escape(value_text)}</span>'
@@ -1309,11 +1381,11 @@ def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
     card_payload = {
         "strategy_id": strategy_id,
         "ticker": ticker,
-        "verdict": verdict_text,
+        "verdict": label,
     }
     return (
         f'<div class="demo-row demo-row-{tone}" data-demo-card="1" data-demo="{escape(json.dumps(card_payload), quote=True)}">'
-        f'<div class="demo-row-head"><div><h4>{escape(ticker)}</h4><div class="demo-badges">{_dashboard_badge(label, tone)}{_dashboard_badge(verdict_text, tone)}{"".join(extra_badges)}</div></div></div>'
+        f'<div class="demo-row-head"><div><h4>{escape(ticker)}</h4><div class="demo-badges"><span class="badge badge-{escape(tone)}" title="{escape(tooltip, quote=True)}">{escape(label)}</span>{"".join(extra_badges)}</div></div></div>'
         f'<div class="row-summary">{escape(primary_reason)}</div>'
         f'<div class="mini-grid">{detail_html}</div>'
         f'{why_html}'
@@ -1398,12 +1470,17 @@ def _build_public_screener_context() -> dict[str, Any] | None:
         "conflict_count": conflict_count,
         "provider_order": list(getattr(config, "EARNINGS_PROVIDER_ORDER", ["finnhub", "alphavantage"]) or []),
     }
+    freshness = _run_freshness_meta(snapshot.get("completed_at"))
     return {
         "snapshot": snapshot,
         "report": report,
         "tradier": tradier,
         "run_id": snapshot.get("run_id"),
         "generated_at": snapshot.get("completed_at"),
+        "run_timestamp_human": freshness["timestamp_human"],
+        "run_age_seconds": freshness["age_seconds"],
+        "run_age_label": freshness["age_label"],
+        "run_age_class": freshness["age_class"],
         "run_quality": pipeline.get("report_quality") or pipeline.get("overall_status") or "UNKNOWN",
         "signals_found": count_total,
         "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
@@ -1422,6 +1499,8 @@ body{background:#050816;color:#e5e7eb;font-family:Inter,ui-sans-serif,system-ui,
 .hero,.demo-section,.copy-band,.cta-band{background:#0b1220;border:1px solid rgba(148,163,184,.18);border-radius:10px;padding:1rem 1.1rem;margin:0 0 1rem}
 .hero h1,.demo-section h2,.copy-band h2{margin:.1rem 0 .45rem}
 .hero p,.muted,.copy-band p,.strategy-copy p,.section-subcopy{color:#cbd5e1}
+.run-freshness{display:flex;align-items:center;gap:.5rem;font-size:.82rem;color:#94a3b8;margin:.35rem 0 1rem}
+.run-freshness .age.fresh{color:#22c55e}.run-freshness .age.recent{color:#f59e0b}.run-freshness .age.stale{color:#ef4444}
 .demo-badges,.mini-grid,.summary-badges{display:flex;gap:.45rem;flex-wrap:wrap;align-items:center}
 .badge{display:inline-flex;align-items:center;gap:.3rem;border:1px solid rgba(148,163,184,.28);border-radius:999px;padding:.2rem .55rem;font-size:.78rem;background:#09101c}
 .badge-pass{color:#22c55e;border-color:rgba(34,197,94,.4)}
@@ -1470,6 +1549,9 @@ def _render_public_screener(context: dict[str, Any]) -> str:
     run_quality = str(context.get("run_quality") or "UNKNOWN")
     quality_tone = "pass" if run_quality.upper() == "SUCCESS_COMPLETE" else "watch"
     generated_at = str(context.get("generated_at") or "—")
+    run_timestamp_human = str(context.get("run_timestamp_human") or generated_at[:16].replace("T", " ") + " UTC")
+    run_age_label = str(context.get("run_age_label") or "age unavailable")
+    run_age_class = str(context.get("run_age_class") or "stale")
     coverage = context.get("coverage") or {}
     earnings_trust = context.get("earnings_trust") or {}
     explainers = {
@@ -1594,6 +1676,7 @@ def _render_public_screener(context: dict[str, Any]) -> str:
     <div>
       <h1>Today&apos;s Options &amp; Stock Screener</h1>
       <p>ASA scans momentum, earnings calendars, volatility skew, and forward volatility to find high-quality setups — and reject ones that do not meet risk rules.</p>
+      <div class="run-freshness"><span class="as-of">Signals as of {escape(run_timestamp_human)}</span><span class="age {escape(run_age_class)}">{escape(run_age_label)}</span></div>
       <div class="summary-badges">
         {_dashboard_badge(f'Latest scan: {generated_at}', 'muted')}
         {_dashboard_badge(f'Run quality: {run_quality}', quality_tone)}
@@ -1900,14 +1983,17 @@ def dashboard():
         pass
 
     positions_html, account_value = _build_dashboard_positions_html(user)
-    last_run_at = manifest.get("completed_at") or (snapshot or {}).get("completed_at") or "—"
+    last_run_at = (snapshot or {}).get("completed_at") or manifest.get("completed_at") or "—"
+    current_run_id = (snapshot or {}).get("run_id") or manifest.get("run_id") or ""
+    freshness = _run_freshness_meta(last_run_at)
     report_quality = manifest.get("report_quality") or ((tradier or {}).get("_pipeline_status", {}) or {}).get("report_quality") or "UNKNOWN"
     quality_tone = "pass" if str(report_quality).upper() == "SUCCESS_COMPLETE" else "watch"
     provider_fetch_count = manifest.get("provider_fetch_count", 0)
     broker_mode = manifest.get("broker_mode") or ("signals_only" if (user.get("broker_connection_optional") and not user.get("broker_connected")) else "connected")
     account_html = f'<span>Account: {_format_currency(account_value)}</span>' if account_value is not None and broker_mode == "connected" else ""
     run_meta_html = (
-        f'<span>Last run: {escape(str(last_run_at)[:19])}</span>'
+        f'<span>Last run: {escape(freshness["timestamp_human"])}</span>'
+        f'<span class="age {escape(freshness["age_class"])}">{escape(freshness["age_label"])}</span>'
         f'{_dashboard_badge(str(report_quality), quality_tone)}'
         f'<span>{escape(str(provider_fetch_count))} API calls</span>'
         f'{account_html}'
@@ -1922,6 +2008,8 @@ def dashboard():
         key_prefix=escape(key_prefix),
         api_key=escape(api_key),
         user_token_json=json.dumps(str(user_token or "")),
+        current_run_id_json=json.dumps(str(current_run_id)),
+        current_run_age_seconds=int(freshness["age_seconds"]),
         last_login=escape(str(last_login)),
         run_meta_html=run_meta_html,
         run_status_html=run_status_html,
