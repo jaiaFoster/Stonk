@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 
@@ -137,9 +138,12 @@ class TestPublicScreener:
              patch("app.config.PUBLIC_SCREENER_ENABLED", True):
             html = self.client.get("/screener").get_data(as_text=True)
         assert "ALGN" in html
-        assert "CONSIDER ADDING" in html
         assert "MU" in html
-        assert "WATCH / CONFIRM TREND" in html
+        assert ">PASS</span>" in html
+        assert ">WATCH</span>" in html
+        assert ">FILTERED</span>" in html
+        assert "CONSIDER ADDING" not in html
+        assert "WATCH / CONFIRM TREND" not in html
         assert "Rejected by Risk Filters" in html
         assert "CAG" in html
         assert "Interesting event setup, but expiration pair failed." in html
@@ -177,6 +181,28 @@ class TestPublicScreener:
              patch("app.config.PUBLIC_SCREENER_ENABLED", True):
             html = self.client.get("/screener").get_data(as_text=True)
         assert "NVDA" in html
-        assert "PASS / STOCK MOMENTUM" in html
+        assert ">PASS</span>" in html
+        assert "PASS / STOCK MOMENTUM" not in html
         assert "No detailed reason available." in html
         assert "Needs Review" not in html
+
+    def test_page_surfaces_run_timestamp_and_age(self):
+        with patch("app.main._load_dashboard_core_report", return_value=_core_data()), \
+             patch("app.config.PUBLIC_SCREENER_ENABLED", True), \
+             patch("app.main.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 7, 5, 0, 56, tzinfo=timezone.utc)
+            mock_datetime.fromisoformat.side_effect = datetime.fromisoformat
+            html = self.client.get("/screener").get_data(as_text=True)
+        assert "Signals as of 2026-07-04 22:55 UTC" in html
+        assert "2h ago" in html
+        assert 'class="age recent"' in html
+
+
+def test_screener_verdict_mapping_is_canonical():
+    from app.main import _public_screener_verdict_meta
+
+    assert _public_screener_verdict_meta("CONSIDER ADDING")[0] == "PASS"
+    assert _public_screener_verdict_meta("WATCH / CONFIRM TREND")[0] == "WATCH"
+    assert _public_screener_verdict_meta("FAIL / OPTIONS ILLIQUID")[0] == "FILTERED"
+    assert _public_screener_verdict_meta("UNKNOWN")[0] == "FILTERED"
+    assert _public_screener_verdict_meta("PASS / FORWARD FACTOR", {"dry_run": True})[0] == "RESEARCH"
