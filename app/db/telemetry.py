@@ -44,10 +44,30 @@ CREATE INDEX IF NOT EXISTS idx_signal_engagement_ticker
     ON signal_engagement(ticker, strategy_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_signal_engagement_user
     ON signal_engagement(user_id, timestamp);
+CREATE TABLE IF NOT EXISTS public_demo_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    page TEXT NOT NULL,
+    session_id TEXT,
+    run_id TEXT,
+    strategy_id TEXT,
+    ticker TEXT,
+    verdict TEXT,
+    action TEXT,
+    referrer_host TEXT,
+    user_agent_family TEXT,
+    ip_hash TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_public_demo_events_created_at
+    ON public_demo_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_public_demo_events_session
+    ON public_demo_events(session_id, created_at);
 """
 
 _VALID_ACTIONS = {"bought", "watched", "ignored", "rejected"}
 _VALID_OUTCOMES = {"positive", "negative", "neutral", "pending", "null"}
+_VALID_PUBLIC_DEMO_EVENTS = {"page_view", "strategy_nav_click", "signal_card_click", "cta_click", "copy_link_click"}
 
 
 @contextmanager
@@ -77,6 +97,13 @@ def _token_identity(token: str | None) -> str | None:
         return "run_token"
     # Unknown token — store truncated sha256 only
     return "sha256:" + hashlib.sha256(token.encode()).hexdigest()[:12]
+
+
+def _salted_short_hash(value: str | None) -> str | None:
+    if not value:
+        return None
+    salt = str(config.RUN_TOKEN or config.TELEMETRY_DB_PATH or "asa-demo")
+    return hashlib.sha256(f"{salt}:{value}".encode()).hexdigest()[:16]
 
 
 def log_event(endpoint: str, token: str | None, run_id_served: str | None = None,
@@ -196,6 +223,122 @@ def signal_engagement_summary(days: int = 7, db_path: str | None = None) -> dict
                     f"WHERE timestamp >= {cutoff} AND broker_mode = 'signals_only'"
                 ).fetchone()[0] or 0
                 base["broker_optional_pct"] = round(100.0 * optional_count / total, 1)
+    except Exception:
+        pass
+    return base
+
+
+def record_public_demo_event(
+    *,
+    event_type: str,
+    page: str,
+    session_id: str | None = None,
+    run_id: str | None = None,
+    strategy_id: str | None = None,
+    ticker: str | None = None,
+    verdict: str | None = None,
+    action: str | None = None,
+    referrer_host: str | None = None,
+    user_agent_family: str | None = None,
+    ip: str | None = None,
+    db_path: str | None = None,
+) -> None:
+    if not config.TELEMETRY_ENABLED or not getattr(config, "PUBLIC_DEMO_TELEMETRY_ENABLED", True):
+        return
+    safe_event = str(event_type or "").strip()
+    if safe_event not in _VALID_PUBLIC_DEMO_EVENTS:
+        return
+    path = db_path or config.TELEMETRY_DB_PATH
+    try:
+        _ensure_schema(path)
+        with _connect(path) as conn:
+            conn.execute(
+                "INSERT INTO public_demo_events "
+                "(event_type, page, session_id, run_id, strategy_id, ticker, verdict, action, referrer_host, user_agent_family, ip_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    safe_event,
+                    str(page or "/screener")[:64],
+                    str(session_id)[:64] if session_id else None,
+                    str(run_id)[:64] if run_id else None,
+                    str(strategy_id)[:64] if strategy_id else None,
+                    str(ticker).upper()[:20] if ticker else None,
+                    str(verdict)[:64] if verdict else None,
+                    str(action)[:64] if action else None,
+                    str(referrer_host)[:128] if referrer_host else None,
+                    str(user_agent_family)[:64] if user_agent_family else None,
+                    _salted_short_hash(ip),
+                ),
+            )
+    except Exception:
+        pass
+
+
+def public_demo_summary(days: int = 7, db_path: str | None = None) -> dict[str, Any]:
+    path = db_path or config.TELEMETRY_DB_PATH
+    base: dict[str, Any] = {
+        "period_days": days,
+        "total_events": 0,
+        "page_views": 0,
+        "unique_sessions": 0,
+        "cta_clicks": 0,
+        "strategy_nav_clicks": 0,
+        "signal_card_clicks": 0,
+        "copy_link_clicks": 0,
+        "top_strategies": [],
+        "top_tickers": [],
+        "top_verdicts": [],
+        "last_seen_at": None,
+    }
+    try:
+        if not Path(path).exists():
+            return base
+        _ensure_schema(path)
+        cutoff = f"datetime('now', '-{int(days)} days')"
+        with _connect(path) as conn:
+            row = conn.execute(
+                f"SELECT COUNT(*) AS total, "
+                f"SUM(CASE WHEN event_type='page_view' THEN 1 ELSE 0 END) AS page_views, "
+                f"SUM(CASE WHEN event_type='cta_click' THEN 1 ELSE 0 END) AS cta_clicks, "
+                f"SUM(CASE WHEN event_type='strategy_nav_click' THEN 1 ELSE 0 END) AS nav_clicks, "
+                f"SUM(CASE WHEN event_type='signal_card_click' THEN 1 ELSE 0 END) AS signal_clicks, "
+                f"SUM(CASE WHEN event_type='copy_link_click' THEN 1 ELSE 0 END) AS copy_clicks, "
+                f"COUNT(DISTINCT session_id) AS unique_sessions, "
+                f"MAX(created_at) AS last_seen_at "
+                f"FROM public_demo_events WHERE created_at >= {cutoff}"
+            ).fetchone()
+            if row:
+                base.update({
+                    "total_events": row["total"] or 0,
+                    "page_views": row["page_views"] or 0,
+                    "unique_sessions": row["unique_sessions"] or 0,
+                    "cta_clicks": row["cta_clicks"] or 0,
+                    "strategy_nav_clicks": row["nav_clicks"] or 0,
+                    "signal_card_clicks": row["signal_clicks"] or 0,
+                    "copy_link_clicks": row["copy_clicks"] or 0,
+                    "last_seen_at": row["last_seen_at"],
+                })
+            base["top_strategies"] = [
+                dict(r) for r in conn.execute(
+                    f"SELECT strategy_id, COUNT(*) AS count FROM public_demo_events "
+                    f"WHERE created_at >= {cutoff} AND strategy_id IS NOT NULL "
+                    f"GROUP BY strategy_id ORDER BY count DESC LIMIT 10"
+                ).fetchall()
+            ]
+            base["top_tickers"] = [
+                dict(r) for r in conn.execute(
+                    f"SELECT ticker, COUNT(*) AS count FROM public_demo_events "
+                    f"WHERE created_at >= {cutoff} AND ticker IS NOT NULL "
+                    f"GROUP BY ticker ORDER BY count DESC LIMIT 10"
+                ).fetchall()
+            ]
+            base["top_verdicts"] = [
+                dict(r) for r in conn.execute(
+                    f"SELECT verdict, COUNT(*) AS count FROM public_demo_events "
+                    f"WHERE created_at >= {cutoff} AND verdict IS NOT NULL "
+                    f"GROUP BY verdict ORDER BY count DESC LIMIT 10"
+                ).fetchall()
+            ]
     except Exception:
         pass
     return base
