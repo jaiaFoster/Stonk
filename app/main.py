@@ -2009,6 +2009,319 @@ def _recover_stale_run_if_needed(now: float | None = None) -> bool:
         return True
 
 
+_SCREENER_CSS = """
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:monospace;background:#111;color:#ccc;padding:1rem;max-width:960px;margin:0 auto}
+h1{color:#fff;margin-bottom:.25rem}
+h2{color:#ddd;font-size:1rem;margin:1.25rem 0 .5rem}
+h3{color:#bbb;font-size:.9rem;margin:.75rem 0 .25rem;border-bottom:1px solid #333;padding-bottom:.2rem}
+.muted{color:#666;font-size:.8rem}
+.section{border:1px solid #2a2a2a;border-radius:4px;padding:.75rem 1rem;margin-bottom:1rem}
+.row{border:1px solid #1e2a1e;border-radius:3px;padding:.5rem .75rem;margin-bottom:.5rem;background:#141a14}
+.label-badge{display:inline-block;padding:.1rem .4rem;border-radius:3px;font-size:.75rem;margin-right:.4rem}
+.label-pass{background:#1a3a1a;color:#4f4}
+.label-watch{background:#3a2a00;color:#fa0}
+.label-fail{background:#3a1a1a;color:#f44}
+.label-skipped{background:#1e1e1e;color:#666}
+.label-dry-run{background:#1a1a3a;color:#88f}
+.label-original{background:#222;color:#888;font-size:.7rem}
+.do-reason{font-size:.78rem;color:#888;margin-top:.25rem}
+.source-label{font-size:.75rem;color:#669;margin-top:.2rem}
+details{margin-top:.4rem}
+summary{font-size:.75rem;color:#555;cursor:pointer;user-select:none}
+summary:hover{color:#999}
+.gate-list{margin:.3rem 0 0 1rem;font-size:.75rem}
+.gate-pass{color:#4a4}
+.gate-watch{color:#a80}
+.gate-fail{color:#a44}
+.gate-unknown{color:#666}
+.gate-na{color:#444}
+.gate-dry-run{color:#66a}
+.gate-skipped{color:#555}
+.group-header{color:#888;font-size:.8rem;font-style:italic;margin:.3rem 0}
+.empty-group{color:#444;font-size:.8rem;font-style:italic;margin:.25rem 0}
+a.back{color:#555;font-size:.8rem;text-decoration:none}
+a.back:hover{color:#999}
+.scan-meta{font-size:.8rem;color:#555;margin-bottom:.5rem}
+</style>
+"""
+
+_GATE_ICON = {
+    "pass": "✓",
+    "watch": "~",
+    "fail": "✗",
+    "unknown": "?",
+    "not_applicable": "—",
+    "dry_run": "⊘",
+    "skipped": "·",
+}
+
+
+def _screener_gate_html(checklist: list[dict]) -> str:
+    if not checklist:
+        return ""
+    items = ""
+    for g in checklist:
+        status = str(g.get("status") or "unknown")
+        name = escape(str(g.get("name") or ""))
+        detail = str(g.get("detail") or "")
+        icon = _GATE_ICON.get(status, "?")
+        detail_txt = f" — {escape(detail)}" if detail else ""
+        css = f"gate-{status.replace('_', '-')}"
+        items += f'<li class="{css}">{icon} {name}{detail_txt}</li>'
+    return f'<details><summary>Gate checklist ({len(checklist)})</summary><ul class="gate-list">{items}</ul></details>'
+
+
+def _screener_label_badge(public_label: str, original: str) -> str:
+    lc = public_label.lower()
+    if "pass" in lc or "candidate" in lc or "eligible" in lc:
+        cls = "label-pass"
+    elif "watch" in lc or "near" in lc:
+        cls = "label-watch"
+    elif "skipped" in lc or "limited" in lc:
+        cls = "label-skipped"
+    elif "dry" in lc or "gated" in lc:
+        cls = "label-dry-run"
+    else:
+        cls = "label-fail"
+    badge = f'<span class="label-badge {cls}">{escape(public_label)}</span>'
+    if original and original != public_label:
+        badge += f'<span class="label-badge label-original">{escape(original)}</span>'
+    return badge
+
+
+def _build_screener_ff_html(rows: list[dict], svc: Any) -> str:
+    groups = svc.ff_grouping(rows)
+    html = ""
+
+    def _ff_row_html(row: dict) -> str:
+        ticker = escape(str(row.get("ticker") or ""))
+        pub_label, _orig = svc.public_verdict_label(row, "forward_factor")
+        # TKT-031A: never show original label — it may contain internal cap/budget language
+        badge = _screener_label_badge(pub_label, "")
+        src_label = escape(svc.public_ff_source_label(row))
+        do_reason = escape(svc.public_daily_opportunity_reason(row, "forward_factor"))
+        gates = svc.build_public_gate_checklist(row, "forward_factor")
+        gate_html = _screener_gate_html(gates)
+        tier = str(row.get("signal_tier") or "")
+        tier_map = {
+            "SOURCE_QUALIFIED_POSITIVE": "Source-qualified positive",
+            "DIAGNOSTIC_POSITIVE": "Diagnostic positive",
+            "WATCH_NEAR_POSITIVE": "Near positive",
+            "NEGATIVE_OR_BLOCKED": "Negative / blocked",
+            "NOT_EVALUATED": "Not evaluated",
+        }
+        tier_txt = escape(tier_map.get(tier, tier)) if tier else ""
+        return (
+            f'<div class="row"><strong>{ticker}</strong> {badge}'
+            + (f'<br><span class="source-label">IV: {src_label}</span>' if src_label else "")
+            + (f'<br><span class="source-label">Signal tier: {tier_txt}</span>' if tier_txt else "")
+            + f'<div class="do-reason">{do_reason}</div>'
+            + gate_html
+            + "</div>"
+        )
+
+    html += "<h3>Evaluated Candidates</h3>"
+    if groups["evaluated"]:
+        for row in groups["evaluated"]:
+            html += _ff_row_html(row)
+    else:
+        html += '<p class="empty-group">No tickers reached the evaluation stage this scan.</p>'
+
+    html += "<h3>Skipped by Coverage</h3>"
+    if groups["skipped"]:
+        for row in groups["skipped"]:
+            html += _ff_row_html(row)
+    else:
+        html += '<p class="empty-group">No tickers were skipped by coverage limits this scan.</p>'
+
+    html += "<h3>Rejected by Risk Filters</h3>"
+    if groups["rejected"]:
+        for row in groups["rejected"]:
+            html += _ff_row_html(row)
+    else:
+        html += '<p class="empty-group">No tickers were rejected by risk filters this scan.</p>'
+
+    return html
+
+
+def _build_screener_cal_html(items: list[dict], svc: Any) -> str:
+    if not items:
+        return '<p class="empty-group">No calendar candidates in current scan.</p>'
+    sorted_items = sorted(
+        items,
+        key=lambda r: (0 if "PASS" in str(r.get("action") or "").upper() else
+                       1 if "WATCH" in str(r.get("action") or "").upper() else 2),
+    )
+    html = ""
+    for row in sorted_items[:15]:
+        ticker = escape(str(row.get("ticker") or ""))
+        pub_label, orig = svc.public_verdict_label(row, "calendar")
+        badge = _screener_label_badge(pub_label, orig)
+        dte = row.get("days_until_earnings")
+        dte_txt = f" | {dte}d to earnings" if dte is not None else ""
+        timing = str(row.get("entry_timing") or "")
+        timing_txt = f" | {escape(timing)}" if timing and timing != "UNKNOWN" else ""
+        do_reason = escape(svc.public_daily_opportunity_reason(row, "calendar"))
+        gates = svc.build_public_gate_checklist(row, "calendar")
+        gate_html = _screener_gate_html(gates)
+        html += (
+            f'<div class="row"><strong>{ticker}</strong> {badge}'
+            + (f'<span class="muted">{escape(dte_txt)}{timing_txt}</span>' if (dte_txt or timing_txt) else "")
+            + f'<div class="do-reason">{do_reason}</div>'
+            + gate_html
+            + "</div>"
+        )
+    return html
+
+
+def _build_screener_skew_html(items: list[dict], svc: Any) -> str:
+    if not items:
+        return '<p class="empty-group">No skew vertical signals in current scan.</p>'
+    html = ""
+    for row in items[:12]:
+        ticker = escape(str(row.get("ticker") or ""))
+        direction = escape(str(row.get("direction") or ""))
+        pub_label, orig = svc.public_verdict_label(row, "skew")
+        badge = _screener_label_badge(pub_label, orig)
+        dir_txt = f" ({direction})" if direction else ""
+        do_reason = escape(svc.public_daily_opportunity_reason(row, "skew"))
+        gates = svc.build_public_gate_checklist(row, "skew")
+        gate_html = _screener_gate_html(gates)
+        html += (
+            f'<div class="row"><strong>{ticker}</strong>{escape(dir_txt)} {badge}'
+            + f'<div class="do-reason">{do_reason}</div>'
+            + gate_html
+            + "</div>"
+        )
+    return html
+
+
+def _build_screener_stock_html(items: list[dict], svc: Any) -> str:
+    if not items:
+        return '<p class="empty-group">No stock momentum signals in current scan.</p>'
+    sorted_items = sorted(
+        items,
+        key=lambda r: -(float(r.get("score") or 0)),
+    )
+    html = ""
+    for row in sorted_items[:15]:
+        ticker = escape(str(row.get("ticker") or ""))
+        pub_label, orig = svc.public_verdict_label(row, "stock_momentum")
+        badge = _screener_label_badge(pub_label, orig)
+        do_reason = escape(svc.public_daily_opportunity_reason(row, "stock_momentum"))
+        gates = svc.build_public_gate_checklist(row, "stock_momentum")
+        gate_html = _screener_gate_html(gates)
+        html += (
+            f'<div class="row"><strong>{ticker}</strong> {badge}'
+            + f'<div class="do-reason">{do_reason}</div>'
+            + gate_html
+            + "</div>"
+        )
+    return html
+
+
+@app.route("/screener")
+def public_screener():
+    """Public signal screener — no auth required. No private data exposed."""
+    from app.services import public_screener_gate_service as _svc
+
+    report: dict | None = None
+    scan_time_txt = "No scan data available"
+    try:
+        from app.services.personalization import _load_latest_core_run
+        _snap, report = _load_latest_core_run()
+        if report:
+            fetched = report.get("fetched_at") or report.get("created_at") or ""
+            if fetched:
+                scan_time_txt = f"Last scan: {str(fetched)[:16].replace('T', ' ')} UTC"
+    except Exception:
+        pass
+
+    tradier: dict = {}
+    if report:
+        tradier = (report.get("tradier_snapshot") or {}) or {}
+
+    ff_strategy = tradier.get("_forward_factor_strategy") or {}
+    ff_rows: list[dict] = ff_strategy.get("candidate_rows") or ff_strategy.get("rows") or []
+    cal_ranking = tradier.get("_calendar_ranking") or {}
+    cal_items: list[dict] = cal_ranking.get("items") or []
+    skew_strategy = tradier.get("_skew_momentum_vertical_strategy") or {}
+    skew_items: list[dict] = skew_strategy.get("items") or []
+    stock_strategy = tradier.get("_stock_momentum_strategy") or {}
+    stock_items: list[dict] = stock_strategy.get("items") or []
+
+    # Scan coverage summary (TKT-031A — no dev/cap language)
+    total_tickers = len({
+        str(r.get("ticker") or "") for r in (ff_rows + cal_items + skew_items + stock_items)
+        if r.get("ticker")
+    })
+    ff_groups = _svc.ff_grouping(ff_rows)
+    limited_scan_count = len(ff_groups["skipped"])
+    evaluated_count = len(ff_groups["evaluated"]) + len(ff_groups["rejected"])
+
+    if limited_scan_count > 0:
+        coverage_note = (
+            f"Limited coverage scan active — {evaluated_count} ticker(s) fully evaluated, "
+            f"{limited_scan_count} outside current scan window."
+        )
+    elif total_tickers > 0:
+        coverage_note = f"{total_tickers} ticker(s) scanned this run."
+    else:
+        coverage_note = "No scan data available for this period."
+
+    ff_html = _build_screener_ff_html(ff_rows, _svc)
+    cal_html = _build_screener_cal_html(cal_items, _svc)
+    skew_html = _build_screener_skew_html(skew_items, _svc)
+    stock_html = _build_screener_stock_html(stock_items, _svc)
+
+    page = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Signal Screener — Algo Stock Advisor</title>
+{_SCREENER_CSS}
+</head>
+<body>
+<p><a class="back" href="/">← Home</a></p>
+<h1>Signal Screener</h1>
+<p class="scan-meta">{escape(scan_time_txt)}</p>
+
+<div class="section">
+<h2>Scan Coverage</h2>
+<p class="muted">{escape(coverage_note)}</p>
+</div>
+
+<div class="section">
+<h2>Forward Factor Calendar <span class="label-badge label-dry-run" style="font-size:.72rem">Signal-only mode</span></h2>
+{ff_html}
+</div>
+
+<div class="section">
+<h2>Earnings Calendar Scanner</h2>
+{cal_html}
+</div>
+
+<div class="section">
+<h2>Skew Momentum Verticals</h2>
+{skew_html}
+</div>
+
+<div class="section">
+<h2>Stock Momentum</h2>
+{stock_html}
+</div>
+
+<p class="muted" style="margin-top:1rem;font-size:.75rem">
+All signals are informational only. No trade execution. Gate checklists reflect scan-time data only.
+</p>
+</body>
+</html>"""
+    return page
+
+
 def _run_lock_status() -> dict[str, Any]:
     job = RUN_JOBS.get(ACTIVE_JOB_ID or "") if ACTIVE_JOB_ID else None
     now = time.time()
