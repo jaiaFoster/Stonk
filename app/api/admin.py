@@ -403,6 +403,35 @@ def signal_telemetry():
     }), 200
 
 
+@admin_bp.route("/demo-telemetry")
+@require_admin
+def demo_telemetry():
+    from app.db.telemetry import public_demo_summary
+    days = min(request.args.get("days", 7, type=int), 90)
+    summary = public_demo_summary(days=days)
+    return jsonify({
+        "status": "ok",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        **summary,
+        "provider_calls_triggered": False,
+    }), 200
+
+
+@admin_bp.route("/ff-graduation")
+@require_admin
+def ff_graduation():
+    from app.services.ff_graduation_analysis_service import build_ff_graduation_analysis
+    days = min(request.args.get("days", 30, type=int), 90)
+    return jsonify(build_ff_graduation_analysis(days=days)), 200
+
+
+@admin_bp.route("/earnings-trust")
+@require_admin
+def earnings_trust():
+    from app.services.earnings_trust_service import build_earnings_trust_summary
+    return jsonify(build_earnings_trust_summary()), 200
+
+
 @admin_bp.route("/errors")
 @require_admin
 def admin_errors():

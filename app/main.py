@@ -1190,6 +1190,16 @@ def _public_detail_pairs(row: dict[str, Any]) -> list[tuple[str, str]]:
     confidence = grab("data_confidence", "confidence")
     if confidence:
         details.append(("Confidence", str(confidence)))
+    earnings_conf = grab("earnings_confidence", "date_confidence", "earnings_date_confidence")
+    if earnings_conf:
+        details.append(("Date trust", str(earnings_conf)))
+    earnings_date = grab("earnings_date", "date")
+    earnings_time = grab("earnings_time", "session_label")
+    if earnings_date:
+        details.append(("Earnings", f"{earnings_date}{(' ' + str(earnings_time)) if earnings_time else ''}"))
+    sources = grab("date_sources", "sources_seen")
+    if isinstance(sources, (list, tuple)) and sources:
+        details.append(("Sources", f"{len(sources)}: {', '.join(str(item) for item in sources[:2])}"))
     liquidity = grab("liquidity_status")
     if not liquidity and isinstance(grab("liquidity_result"), dict):
         liquidity = grab("liquidity_result").get("status")
@@ -1218,9 +1228,18 @@ def _public_detail_pairs(row: dict[str, Any]) -> list[tuple[str, str]]:
     back_iv = grab("back_iv", "back_raw_iv")
     if front_iv is not None or back_iv is not None:
         details.append(("IV", f"{front_iv if front_iv is not None else '—'} / {back_iv if back_iv is not None else '—'}"))
+    source_iv_status = grab("source_iv_status")
+    if source_iv_status:
+        details.append(("FF source mode", str(source_iv_status)))
+    contamination = grab("earnings_contamination_reason")
+    if row.get("earnings_contaminated") or raw.get("earnings_contaminated"):
+        details.append(("Earnings risk", str(contamination or "Contaminated")))
     debit = grab("net_debit", "conservative_debit")
     if isinstance(debit, (int, float)):
         details.append(("Debit", _format_currency(float(debit))))
+    structure_status = grab("structure_status")
+    if structure_status:
+        details.append(("Structure", str(structure_status)))
     can_enter = grab("can_enter_daily_opportunity")
     if can_enter is not None:
         details.append(("Daily Opp", "Yes" if bool(can_enter) else "No"))
@@ -1283,8 +1302,17 @@ def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
         extra_badges.append(_dashboard_badge("Research Only", "info"))
     if raw.get("can_enter_daily_opportunity") is False or row.get("can_enter_daily_opportunity") is False:
         extra_badges.append(_dashboard_badge("Not in Daily Opportunity", "muted"))
+    if (row.get("date_confidence") or raw.get("date_confidence")) == "single_source":
+        extra_badges.append(_dashboard_badge("Single source — verify", "watch"))
+    if row.get("date_conflict") or raw.get("date_conflict"):
+        extra_badges.append(_dashboard_badge("Date conflict", "fail"))
+    card_payload = {
+        "strategy_id": strategy_id,
+        "ticker": ticker,
+        "verdict": verdict_text,
+    }
     return (
-        f'<div class="demo-row demo-row-{tone}">'
+        f'<div class="demo-row demo-row-{tone}" data-demo-card="1" data-demo="{escape(json.dumps(card_payload), quote=True)}">'
         f'<div class="demo-row-head"><div><h4>{escape(ticker)}</h4><div class="demo-badges">{_dashboard_badge(label, tone)}{_dashboard_badge(verdict_text, tone)}{"".join(extra_badges)}</div></div></div>'
         f'<div class="row-summary">{escape(primary_reason)}</div>'
         f'<div class="mini-grid">{detail_html}</div>'
@@ -1306,16 +1334,24 @@ def _build_public_strategy_section(title: str, strategy_id: str, result: dict[st
         + _dashboard_badge(f'WATCH {int(result.get("watch_count", 0))}', "watch")
         + _dashboard_badge(f'FAIL {int(result.get("fail_count", 0))}', "fail")
     )
+    anchors = {
+        "stock_momentum": "stock-momentum",
+        "forward_factor_calendar": "forward-factor",
+        "earnings_calendar": "earnings-calendar",
+        "skew_momentum_vertical": "skew-verticals",
+    }
+    anchor = anchors.get(strategy_id, strategy_id.replace("_", "-"))
     dry_html = _dashboard_badge("DRY RUN", "info") if dry_run else ""
     candidate_html = "".join(_public_row_card(row, strategy_id) for row in top_rows) or '<p class="empty">No top candidates this run.</p>'
     rejected_html = "".join(_public_row_card(row, strategy_id) for row in fail_rows) or '<p class="empty">No rejected examples this run.</p>'
     return (
-        '<section class="demo-section">'
-        f'<div class="section-title"><div><h2>{escape(title)}</h2><p class="muted">{escape(explainer["short"])}</p></div><div class="demo-badges">{counts_html}{dry_html}</div></div>'
+        f'<section class="demo-section" id="{escape(anchor)}">'
+        f'<div class="section-title"><div><h2>{escape(title)}</h2><p class="muted">{escape(explainer["short"])}</p></div><div class="demo-badges">{counts_html}{dry_html}<a class="mini anchor-link" href="#{escape(anchor)}" data-demo-copy-link="1" data-anchor="{escape(anchor)}">Copy link</a></div></div>'
         f'<div class="strategy-copy"><div><strong>Why it exists</strong><p>{escape(explainer["why"])}</p></div>'
         f'<div><strong>What blocks a trade</strong><p>{escape(explainer["blocks"])}</p></div>'
         f'<div><strong>Current status</strong><p>{escape(explainer["status"])}</p></div></div>'
         f'<div class="section-subcopy">{escape(explainer["matters"])}</div>'
+        f'{f"<div class=\"note\">Forward Factor is being observed in dry-run mode. PASS means volatility relationship looked attractive, not that ASA is ready to recommend live trade.</div>" if strategy_id == "forward_factor_calendar" else ""}'
         f'<div class="demo-group"><h3>Top candidates</h3>{candidate_html}</div>'
         f'<div class="demo-group"><h3>Rejected by Risk Filters</h3><p class="muted">Rejected trades are part of edge. System shows what looked interesting, what failed, why trade stayed blocked.</p>{rejected_html}</div>'
         '</section>'
@@ -1332,6 +1368,36 @@ def _build_public_screener_context() -> dict[str, Any] | None:
     for sid in ("stock_momentum", "forward_factor_calendar", "earnings_calendar", "skew_momentum_vertical"):
         result = strategies.get(sid, {}) or {}
         count_total += int(result.get("pass_count", 0) or 0) + int(result.get("watch_count", 0) or 0) + int(result.get("fail_count", 0) or 0)
+    ff = (tradier.get("_forward_factor_strategy") or {}) if isinstance(tradier, dict) else {}
+    ff_stage = (ff.get("stage_counts") or ((ff.get("summary") or {}).get("stage_counts")) or {}) if isinstance(ff, dict) else {}
+    earnings_quality = (tradier.get("_earnings_discovery_quality") or {}) if isinstance(tradier, dict) else {}
+    earnings_rows = list((tradier.get("_earnings_calendar_strategy") or {}).get("items") or [])
+    single_source_count = sum(1 for row in earnings_rows if str(row.get("date_confidence") or row.get("earnings_date_confidence") or "").lower() == "single_source")
+    conflict_count = sum(1 for row in earnings_rows if bool(row.get("date_conflict")))
+    coverage = {
+        "run_mode": snapshot.get("mode") or ((tradier.get("_pipeline_status") or {}).get("run_mode") if isinstance(tradier, dict) else None) or "unknown",
+        "ff_universe": int(ff_stage.get("universe", 0) or len(ff.get("scanned_tickers") or []) or 0),
+        "ff_evaluated": int(ff_stage.get("cheap_evaluated", 0) or 0),
+        "ff_skipped_dev_cap": int(ff_stage.get("skipped_dev_cap", 0) or 0),
+        "ff_skipped_provider_budget": int(ff_stage.get("skipped_provider_budget", 0) or 0),
+        "ff_chain_sets": int(ff_stage.get("chain_sets", 0) or 0),
+        "earnings_candidates_returned": int(earnings_quality.get("passed_count", 0) or len(earnings_quality.get("items") or []) or 0),
+        "skew_universe_cap": int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 50) or 50),
+        "warnings": [],
+    }
+    if coverage["ff_skipped_dev_cap"] > 0:
+        coverage["warnings"].append("Forward Factor demo looks capped by dev limits.")
+    if coverage["ff_skipped_provider_budget"] > 0:
+        coverage["warnings"].append("Forward Factor demo looks capped by provider budget.")
+    if str(coverage["run_mode"]).lower() == "dev":
+        coverage["warnings"].append("Run mode is dev; demo may show fewer opportunities than production.")
+    if coverage["earnings_candidates_returned"] <= 6 and str(coverage["run_mode"]).lower() == "dev":
+        coverage["warnings"].append("Earnings discovery appears narrow in this dev run.")
+    earnings_trust = {
+        "single_source_count": single_source_count,
+        "conflict_count": conflict_count,
+        "provider_order": list(getattr(config, "EARNINGS_PROVIDER_ORDER", ["finnhub", "alphavantage"]) or []),
+    }
     return {
         "snapshot": snapshot,
         "report": report,
@@ -1342,12 +1408,17 @@ def _build_public_screener_context() -> dict[str, Any] | None:
         "signals_found": count_total,
         "ff_dry_run": bool(config.FORWARD_FACTOR_DRY_RUN),
         "strategy_results": strategies,
+        "coverage": coverage,
+        "earnings_trust": earnings_trust,
     }
 
 
 _PUBLIC_SCREENER_CSS = """
 body{background:#050816;color:#e5e7eb;font-family:Inter,ui-sans-serif,system-ui,sans-serif;margin:0;line-height:1.45}
 .wrap{max-width:1180px;margin:0 auto;padding:1.2rem}
+.topnav{position:sticky;top:0;z-index:20;display:flex;gap:.55rem;flex-wrap:nowrap;overflow:auto;padding:.7rem 1.2rem;background:rgba(5,8,22,.93);backdrop-filter:blur(8px);border-bottom:1px solid rgba(148,163,184,.18)}
+.topnav a{color:#e5e7eb;text-decoration:none;white-space:nowrap;padding:.35rem .6rem;border-radius:999px;border:1px solid rgba(148,163,184,.16);background:#09101c;font-size:.84rem}
+.topnav a:hover{text-decoration:none;border-color:rgba(96,165,250,.32)}
 .hero,.demo-section,.copy-band,.cta-band{background:#0b1220;border:1px solid rgba(148,163,184,.18);border-radius:10px;padding:1rem 1.1rem;margin:0 0 1rem}
 .hero h1,.demo-section h2,.copy-band h2{margin:.1rem 0 .45rem}
 .hero p,.muted,.copy-band p,.strategy-copy p,.section-subcopy{color:#cbd5e1}
@@ -1384,6 +1455,9 @@ body{background:#050816;color:#e5e7eb;font-family:Inter,ui-sans-serif,system-ui,
 .btn-primary{background:#22c55e;color:#04110a}
 .btn-secondary{border:1px solid rgba(148,163,184,.28);color:#e5e7eb;background:#09101c}
 .note{font-size:.84rem;color:#94a3b8}
+.coverage-grid{display:grid;gap:.55rem;grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+.anchor-link{text-decoration:none}
+html{scroll-behavior:smooth}
 @media (max-width:800px){.hero-grid{grid-template-columns:1fr}.wrap{padding:.9rem}.hero,.demo-section,.copy-band,.cta-band{padding:.9rem}}
 """
 
@@ -1396,6 +1470,8 @@ def _render_public_screener(context: dict[str, Any]) -> str:
     run_quality = str(context.get("run_quality") or "UNKNOWN")
     quality_tone = "pass" if run_quality.upper() == "SUCCESS_COMPLETE" else "watch"
     generated_at = str(context.get("generated_at") or "—")
+    coverage = context.get("coverage") or {}
+    earnings_trust = context.get("earnings_trust") or {}
     explainers = {
         "stock_momentum": {
             "short": "Looks for stocks showing strong trend or relative-strength behavior worth attention before options structure selection.",
@@ -1432,7 +1508,87 @@ def _render_public_screener(context: dict[str, Any]) -> str:
         + _build_public_strategy_section("Earnings Calendar", "earnings_calendar", strategies.get("earnings_calendar", {}) or {}, explainers["earnings_calendar"])
         + _build_public_strategy_section("Skew Momentum Verticals", "skew_momentum_vertical", strategies.get("skew_momentum_vertical", {}) or {}, explainers["skew_momentum_vertical"])
     )
+    nav_html = """
+<nav class="topnav">
+  <a href="#stock-momentum" data-demo-nav="stock_momentum">Stock Momentum</a>
+  <a href="#forward-factor" data-demo-nav="forward_factor_calendar">Forward Factor</a>
+  <a href="#earnings-calendar" data-demo-nav="earnings_calendar">Earnings Calendar</a>
+  <a href="#skew-verticals" data-demo-nav="skew_momentum_vertical">Skew Verticals</a>
+  <a href="#why-rejects" data-demo-nav="why_rejects">Why ASA Rejects Trades</a>
+  <a href="#cta" data-demo-nav="cta">Create Account</a>
+</nav>
+"""
+    coverage_html = f"""
+<section class="copy-band">
+  <h2>Scan Coverage</h2>
+  <div class="coverage-grid">
+    <div><strong>Universe Discovery</strong><p>enabled</p></div>
+    <div><strong>Core universe source</strong><p>S&amp;P 500 + Russell supplement</p></div>
+    <div><strong>FF universe</strong><p>{int(coverage.get('ff_universe', 0))}</p></div>
+    <div><strong>FF evaluated</strong><p>{int(coverage.get('ff_evaluated', 0))}</p></div>
+    <div><strong>FF skipped by dev cap</strong><p>{int(coverage.get('ff_skipped_dev_cap', 0))}</p></div>
+    <div><strong>FF skipped by provider budget</strong><p>{int(coverage.get('ff_skipped_provider_budget', 0))}</p></div>
+    <div><strong>Earnings candidates returned</strong><p>{int(coverage.get('earnings_candidates_returned', 0))}</p></div>
+    <div><strong>Skew universe cap</strong><p>{int(coverage.get('skew_universe_cap', 0))}</p></div>
+  </div>
+  {''.join(f'<p class="note">{escape(str(w))}</p>' for w in (coverage.get('warnings') or []))}
+</section>
+"""
+    demo_js = f"""
+<script>
+(function(){{
+  const runId = {json.dumps(str(context.get("run_id") or ""))};
+  const page = "/screener";
+  let sid = null;
+  try {{
+    sid = localStorage.getItem("asa_demo_sid");
+    if (!sid) {{
+      sid = "demo_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem("asa_demo_sid", sid);
+    }}
+  }} catch (_err) {{
+    sid = "demo_fallback";
+  }}
+  function send(ev) {{
+    try {{
+      fetch("/api/telemetry/public-demo", {{
+        method: "POST",
+        headers: {{ "Content-Type": "application/json" }},
+        body: JSON.stringify(Object.assign({{ session_id: sid, page: page, run_id: runId }}, ev))
+      }});
+    }} catch (_err) {{}}
+  }}
+  send({{ event_type: "page_view", action: "load" }});
+  document.querySelectorAll("[data-demo-nav]").forEach((el) => {{
+    el.addEventListener("click", () => send({{ event_type: "strategy_nav_click", strategy_id: el.getAttribute("data-demo-nav"), action: "nav_click" }}));
+  }});
+  document.querySelectorAll("[data-demo-card]").forEach((el) => {{
+    el.addEventListener("click", () => {{
+      try {{
+        const payload = JSON.parse(el.getAttribute("data-demo") || "{{}}");
+        send({{ event_type: "signal_card_click", strategy_id: payload.strategy_id || null, ticker: payload.ticker || null, verdict: payload.verdict || null, action: "card_click" }});
+      }} catch (_err) {{}}
+    }});
+  }});
+  document.querySelectorAll("[data-demo-cta]").forEach((el) => {{
+    el.addEventListener("click", () => send({{ event_type: "cta_click", action: el.getAttribute("data-demo-cta") || "cta_click" }}));
+  }});
+  document.querySelectorAll("[data-demo-copy-link]").forEach((el) => {{
+    el.addEventListener("click", (evt) => {{
+      const anchor = el.getAttribute("data-anchor");
+      const url = window.location.origin + window.location.pathname + "#" + anchor;
+      if (navigator.clipboard && anchor) {{
+        evt.preventDefault();
+        navigator.clipboard.writeText(url).catch(() => null);
+      }}
+      send({{ event_type: "copy_link_click", strategy_id: anchor || null, action: "copy_link" }});
+    }});
+  }});
+}})();
+</script>
+"""
     body = f"""
+{nav_html}
 <section class="hero">
   <div class="hero-grid">
     <div>
@@ -1460,7 +1616,17 @@ def _render_public_screener(context: dict[str, Any]) -> str:
     </div>
   </div>
 </section>
+{coverage_html}
 <section class="copy-band">
+  <h2>Earnings date trust</h2>
+  <p>Earnings dates can move or differ between providers. ASA marks whether earnings signal is single-source, multi-source, or conflicting. Single-source event trades should be reviewed before any real order.</p>
+  <div class="summary-badges">
+    {_dashboard_badge(f"Provider order: {', '.join(str(x) for x in (earnings_trust.get('provider_order') or []))}", 'muted')}
+    {_dashboard_badge(f"Single-source rows: {int(earnings_trust.get('single_source_count', 0))}", 'watch')}
+    {_dashboard_badge(f"Conflicts: {int(earnings_trust.get('conflict_count', 0))}", 'fail' if int(earnings_trust.get('conflict_count', 0)) else 'muted')}
+  </div>
+</section>
+<section class="copy-band" id="why-rejects">
   <h2>Why ASA rejects trades</h2>
   <p>Most screeners only show what passed. ASA also shows what failed and why. That matters because edge is not just finding ideas — it is avoiding bad entries, bad liquidity, bad dates, and bad structures.</p>
 </section>
@@ -1477,7 +1643,7 @@ def _render_public_screener(context: dict[str, Any]) -> str:
     </div>
   </div>
 </section>
-<section class="cta-band">
+<section class="cta-band" id="cta">
   <div class="cta-grid">
     <div>
       <h2>See full system later</h2>
@@ -1485,11 +1651,12 @@ def _render_public_screener(context: dict[str, Any]) -> str:
       <p class="note">ASA is research and decision-support tool. It is not financial advice, not broker, and does not place trades. All signals require independent review.</p>
     </div>
     <div class="cta-buttons">
-      <a class="btn btn-primary" href="/signup">Create a free screener account</a>
-      <a class="btn btn-secondary" href="/login">See how broker personalization works</a>
+      <a class="btn btn-primary" href="/signup" data-demo-cta="create_account">Create a free screener account</a>
+      <a class="btn btn-secondary" href="/login" data-demo-cta="personalization_info">See how broker personalization works</a>
     </div>
   </div>
 </section>
+{demo_js}
 """
     return render_template_string(_PUBLIC_SCREENER_HTML.format(css=_PUBLIC_SCREENER_CSS, body=body))
 
