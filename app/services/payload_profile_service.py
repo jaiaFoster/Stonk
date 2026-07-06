@@ -26,6 +26,11 @@ def build_payload_size_profile(
     snapshot: dict[str, Any], log: list[str], report_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     strategy = snapshot.get("_strategy_results", {}) or {}
+    calendar_data = snapshot.get("_unified_calendar_engine") or snapshot.get("_calendar_ranking")
+    skew_data = strategy.get("skew_momentum_vertical") or snapshot.get("_skew_momentum_vertical_strategy")
+    ff_data = strategy.get("forward_factor_calendar") or snapshot.get("_forward_factor_strategy")
+    stock_data = strategy.get("stock_momentum") or snapshot.get("_stock_momentum_strategy")
+
     sections = {
         "payload_text": len((payload or "").encode("utf-8")),
         "report_summary_json": json_bytes(report_summary or {}),
@@ -33,10 +38,10 @@ def build_payload_size_profile(
         "positions": json_bytes(positions),
         "news": json_bytes(news),
         "recommendations": json_bytes(recommendations),
-        "calendar": json_bytes(snapshot.get("_unified_calendar_engine") or snapshot.get("_calendar_ranking")),
-        "skew": json_bytes(strategy.get("skew_momentum_vertical") or snapshot.get("_skew_momentum_vertical_strategy")),
-        "forward_factor": json_bytes(strategy.get("forward_factor_calendar") or snapshot.get("_forward_factor_strategy")),
-        "stock_momentum": json_bytes(strategy.get("stock_momentum") or snapshot.get("_stock_momentum_strategy")),
+        "calendar": json_bytes(calendar_data),
+        "skew": json_bytes(skew_data),
+        "forward_factor": json_bytes(ff_data),
+        "stock_momentum": json_bytes(stock_data),
         "portfolio_gap": json_bytes(snapshot.get("_portfolio_gap")),
         "daily_opportunity": json_bytes(snapshot.get("_daily_opportunity_engine")),
         "pipeline_status": json_bytes(snapshot.get("_pipeline_status")),
@@ -47,10 +52,17 @@ def build_payload_size_profile(
     sections["tradier_snapshot_compact"] = provider_budget["compact_tradier_snapshot_bytes"]
     summary_json_bytes = sections.get("report_summary_json", 0)
     largest_top_level_keys = _largest_snapshot_keys(snapshot)
+
+    # TKT-038: per-strategy row-level breakdown.
+    strategy_row_profile = _strategy_row_profile(
+        calendar=calendar_data, skew=skew_data, ff=ff_data, stock=stock_data,
+    )
+
     return {
         "total_profiled_bytes": sum(sections.values()),
         "summary_json_bytes": summary_json_bytes,
         "sections_bytes": sections,
+        "strategy_row_profile": strategy_row_profile,
         "provider_payload_budget": provider_budget,
         "largest_top_level_keys": largest_top_level_keys,
     }
@@ -91,6 +103,44 @@ def compact_payload_log(profile: dict[str, Any]) -> str:
     sections = profile.get("sections_bytes", {}) or {}
     largest = sorted(sections.items(), key=lambda item: item[1], reverse=True)[:5]
     return "PayloadProfile: " + ", ".join(f"{key}={value}B" for key, value in largest)
+
+
+def _strategy_row_profile(
+    *,
+    calendar: Any = None,
+    skew: Any = None,
+    ff: Any = None,
+    stock: Any = None,
+) -> dict[str, Any]:
+    """TKT-038: Per-strategy row-level byte breakdown for payload diagnostics."""
+
+    def _rows_bytes(data: Any) -> tuple[int, int]:
+        """Return (total_bytes, row_count) for a strategy result dict."""
+        if not isinstance(data, dict):
+            return 0, 0
+        rows = data.get("canonical_opportunities") or data.get("rows") or data.get("items") or []
+        if not isinstance(rows, list):
+            return 0, 0
+        total = sum(json_bytes(r) for r in rows if isinstance(r, dict))
+        return total, len(rows)
+
+    cal_bytes, cal_rows = _rows_bytes(calendar)
+    skew_bytes, skew_rows = _rows_bytes(skew)
+    ff_bytes, ff_rows = _rows_bytes(ff)
+    stock_bytes, stock_rows = _rows_bytes(stock)
+    strategy_results_bytes = cal_bytes + skew_bytes + ff_bytes + stock_bytes
+
+    return {
+        "strategy_results_bytes": strategy_results_bytes,
+        "calendar_rows_bytes": cal_bytes,
+        "calendar_row_count": cal_rows,
+        "skew_rows_bytes": skew_bytes,
+        "skew_row_count": skew_rows,
+        "ff_rows_bytes": ff_bytes,
+        "ff_row_count": ff_rows,
+        "stock_rows_bytes": stock_bytes,
+        "stock_row_count": stock_rows,
+    }
 
 
 def _largest_snapshot_keys(snapshot: dict[str, Any], top_n: int = 10) -> list[dict[str, Any]]:

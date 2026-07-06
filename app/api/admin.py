@@ -432,6 +432,14 @@ def earnings_trust():
     return jsonify(build_earnings_trust_summary()), 200
 
 
+@admin_bp.route("/scan-coverage")
+@require_admin
+def scan_coverage():
+    """29H: Read-only scan-coverage summary for production quality validation."""
+    from app.services.scan_coverage_service import build_scan_coverage
+    return jsonify(build_scan_coverage()), 200
+
+
 @admin_bp.route("/errors")
 @require_admin
 def admin_errors():

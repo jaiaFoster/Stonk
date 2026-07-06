@@ -210,16 +210,41 @@ def _ff_gate_checklist(row: dict[str, Any]) -> list[dict[str, Any]]:
 
 def _calendar_gate_checklist(row: dict[str, Any]) -> list[dict[str, Any]]:
     criteria = row.get("criteria") or []
-    if not criteria:
+    checklist = []
+    if criteria:
+        for c in criteria:
+            name = str(c.get("name") or c.get("code") or "Check")
+            raw = str(c.get("status") or "").upper()
+            status = "pass" if raw == "PASS" else ("watch" if raw == "WARN" else "fail")
+            checklist.append(_gate(name, status, str(c.get("detail") or "")))
+    else:
         action = str(row.get("action") or "").upper()
         overall = "pass" if "PASS" in action else ("watch" if "WATCH" in action else "fail")
-        return [_gate("Calendar criteria", overall, action)]
-    checklist = []
-    for c in criteria:
-        name = str(c.get("name") or c.get("code") or "Check")
-        raw = str(c.get("status") or "").upper()
-        status = "pass" if raw == "PASS" else ("watch" if raw == "WARN" else "fail")
-        checklist.append(_gate(name, status, str(c.get("detail") or "")))
+        checklist.append(_gate("Calendar criteria", overall, action))
+
+    # Append expiration pair gate when diagnostics are present.
+    epd = row.get("expiration_pair_diagnostics") or {}
+    ep_status = str(epd.get("expiration_pair_status") or "").lower()
+    if ep_status in ("pass", "near_miss", "fail", "error"):
+        if ep_status == "pass":
+            front = epd.get("actual_front_expiration_found") or ""
+            back = epd.get("actual_back_expiration_found") or ""
+            detail = f"{front} / {back}" if front and back else ""
+            checklist.append(_gate("Expiration pair", "pass", detail))
+        elif ep_status == "near_miss":
+            reject = str(epd.get("expiration_pair_reject_reason") or "near-miss gap")
+            checklist.append(_gate("Expiration pair", "watch", f"Near-miss: {reject}"))
+        elif ep_status == "fail":
+            reject = str(epd.get("expiration_pair_reject_reason") or "no valid pair")
+            near = epd.get("near_miss_expiry")
+            detail = f"{reject}" + (f" — {near}" if near else "")
+            checklist.append(_gate("Expiration pair", "fail", detail))
+        else:
+            checklist.append(_gate("Expiration pair", "fail", str(epd.get("error") or "lookup error")))
+    elif bool(row.get("expiry_near_miss")):
+        note = str(row.get("expiry_gap_note") or "Expiration near-miss detected.")
+        checklist.append(_gate("Expiration pair", "watch", note))
+
     return checklist
 
 
