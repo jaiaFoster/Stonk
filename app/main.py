@@ -1245,6 +1245,8 @@ def _public_reason_summary(row: dict[str, Any]) -> str:
 
 
 def _public_detail_pairs(row: dict[str, Any]) -> list[tuple[str, str]]:
+    from app.services.earnings_trust_service import public_earnings_trust_label
+
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     details: list[tuple[str, str]] = []
 
@@ -1262,10 +1264,9 @@ def _public_detail_pairs(row: dict[str, Any]) -> list[tuple[str, str]]:
     confidence = grab("data_confidence", "confidence")
     if confidence:
         details.append(("Confidence", str(confidence)))
-    earnings_conf = grab("earnings_confidence", "date_confidence", "earnings_date_confidence")
-    if earnings_conf:
-        details.append(("Date trust", str(earnings_conf)))
     earnings_date = grab("earnings_date", "date")
+    if earnings_date or grab("earnings_trust_label", "earnings_source_conflict", "date_conflict") is not None:
+        details.append(("Earnings Trust", public_earnings_trust_label({**raw, **row})))
     earnings_time = grab("earnings_time", "session_label")
     if earnings_date:
         details.append(("Earnings", f"{earnings_date}{(' ' + str(earnings_time)) if earnings_time else ''}"))
@@ -1353,6 +1354,8 @@ def _sort_public_candidates(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
+    from app.services.earnings_trust_service import public_earnings_trust_label
+
     raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
     ticker = _dashboard_resolved_ticker(row)
     verdict = _dashboard_resolved_verdict(row)
@@ -1378,6 +1381,10 @@ def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
         extra_badges.append(_dashboard_badge("Single source — verify", "watch"))
     if row.get("date_conflict") or raw.get("date_conflict"):
         extra_badges.append(_dashboard_badge("Date conflict", "fail"))
+    if strategy_id in {"earnings_calendar", "forward_factor_calendar", "skew_momentum_vertical"}:
+        trust_label = public_earnings_trust_label({**raw, **row})
+        trust_tone = "pass" if trust_label == "Multi-source confirmed" else ("fail" if trust_label == "Conflict — do not trade" else "watch")
+        extra_badges.append(_dashboard_badge(f"Earnings Trust: {trust_label}", trust_tone))
     card_payload = {
         "strategy_id": strategy_id,
         "ticker": ticker,
@@ -3046,6 +3053,7 @@ def _build_screener_ff_html(rows: list[dict], svc: Any) -> str:
         pub_label, _orig = svc.public_verdict_label(row, "forward_factor")
         badge = _screener_label_badge(pub_label, "")
         src_label = escape(svc.public_ff_source_label(row))
+        trust_label = escape(svc.earnings_trust_public_label(row))
         do_reason = escape(svc.public_daily_opportunity_reason(row, "forward_factor"))
         gates = svc.build_public_gate_checklist(row, "forward_factor")
         gate_html = _screener_gate_html(gates)
@@ -3062,6 +3070,7 @@ def _build_screener_ff_html(rows: list[dict], svc: Any) -> str:
             f'<div class="row"><strong>{ticker}</strong> {badge}'
             + (f'<br><span class="source-label">IV: {src_label}</span>' if src_label else "")
             + (f'<br><span class="source-label">Signal tier: {tier_txt}</span>' if tier_txt else "")
+            + f'<br><span class="source-label">Earnings Trust: {trust_label}</span>'
             + f'<div class="do-reason">{do_reason}</div>'
             + gate_html
             + "</div>"
@@ -3109,11 +3118,13 @@ def _build_screener_cal_html(items: list[dict], svc: Any) -> str:
         timing = str(row.get("entry_timing") or "")
         timing_txt = f" | {escape(timing)}" if timing and timing != "UNKNOWN" else ""
         do_reason = escape(svc.public_daily_opportunity_reason(row, "calendar"))
+        trust_label = escape(svc.earnings_trust_public_label(row))
         gates = svc.build_public_gate_checklist(row, "calendar")
         gate_html = _screener_gate_html(gates)
         html += (
             f'<div class="row"><strong>{ticker}</strong> {badge}'
             + (f'<span class="muted">{escape(dte_txt)}{timing_txt}</span>' if (dte_txt or timing_txt) else "")
+            + f'<br><span class="source-label">Earnings Trust: {trust_label}</span>'
             + f'<div class="do-reason">{do_reason}</div>'
             + gate_html
             + "</div>"
@@ -3132,10 +3143,12 @@ def _build_screener_skew_html(items: list[dict], svc: Any) -> str:
         badge = _screener_label_badge(pub_label, orig)
         dir_txt = f" ({direction})" if direction else ""
         do_reason = escape(svc.public_daily_opportunity_reason(row, "skew"))
+        trust_label = escape(svc.earnings_trust_public_label(row))
         gates = svc.build_public_gate_checklist(row, "skew")
         gate_html = _screener_gate_html(gates)
         html += (
             f'<div class="row"><strong>{ticker}</strong>{escape(dir_txt)} {badge}'
+            + f'<br><span class="source-label">Earnings Trust: {trust_label}</span>'
             + f'<div class="do-reason">{do_reason}</div>'
             + gate_html
             + "</div>"

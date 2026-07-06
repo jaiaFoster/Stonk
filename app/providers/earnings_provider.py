@@ -463,6 +463,7 @@ def _merge_dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
     # TKT-025: flag cross-source date disagreements within threshold.
     conflict_threshold = int(getattr(config, "EARNINGS_DATE_CONFLICT_THRESHOLD_DAYS", 2) or 2)
+    bleed_window = max(conflict_threshold, int(getattr(config, "EARNINGS_DATE_BLEED_SUSPECT_WINDOW_DAYS", 10) or 10))
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     for ev in result:
         t = str(ev.get("ticker") or "").upper().strip()
@@ -476,9 +477,19 @@ def _merge_dedupe_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for i in range(len(dated) - 1):
             ev_a, d_a = dated[i]
             ev_b, d_b = dated[i + 1]
-            if (d_b - d_a).days <= conflict_threshold:
+            delta_days = (d_b - d_a).days
+            if delta_days <= bleed_window:
+                details = [
+                    {"date": d_a.isoformat(), "sources": list(ev_a.get("sources_seen") or [])},
+                    {"date": d_b.isoformat(), "sources": list(ev_b.get("sources_seen") or [])},
+                ]
                 ev_a["earnings_source_conflict"] = True
                 ev_b["earnings_source_conflict"] = True
+                ev_a["earnings_conflict_details"] = details
+                ev_b["earnings_conflict_details"] = details
+                if delta_days > conflict_threshold:
+                    ev_a["provider_date_bleed_suspect"] = True
+                    ev_b["provider_date_bleed_suspect"] = True
 
     for ev in result:
         ev["earnings_date_confidence"] = _compute_earnings_confidence(ev)

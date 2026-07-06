@@ -1612,6 +1612,8 @@ def _build_daily_brief_export(
     skew_vertical: dict[str, Any],
     forward_factor: dict[str, Any],
 ) -> str:
+    from app.services.earnings_trust_service import earnings_trust_caveats
+
     skew = _skew_vertical_summary(skew_vertical)
     lines = [
         f"Daily Brief - {today}",
@@ -1651,6 +1653,9 @@ def _build_daily_brief_export(
         "No FF row entered Daily Opportunity because the strategy is in dry-run validation.",
     ]
     lines += ["", f"Risk review rows: {len(groups.get('risk', []))}", f"Blocked calendar candidates: {len(blocked_rows)}"]
+    caveats = earnings_trust_caveats(list(blocked_rows) + list((skew_vertical or {}).get("rows") or []) + list((forward_factor or {}).get("rows") or []))
+    if caveats:
+        lines += ["", "Data caveats today:"] + [f"- {item}" for item in caveats]
     exposures = portfolio_gap.get("exposure_rows", []) or []
     if exposures:
         lines += ["", "Portfolio context:"]

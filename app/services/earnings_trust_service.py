@@ -9,6 +9,88 @@ from typing import Any
 from app import config
 from app.services.report_snapshot_service import ReportSnapshotRepository
 
+TRUST_PUBLIC_LABELS = {
+    "multi_source_confirmed": "Multi-source confirmed",
+    "single_source_verify": "Single-source — verify before trading",
+    "conflict_do_not_trade": "Conflict — do not trade",
+    "unknown_research_only": "Unknown — research only",
+    "not_applicable": "N/A",
+}
+
+
+def normalize_earnings_trust(payload: dict[str, Any] | None, *, applicable: bool = True) -> dict[str, Any]:
+    """Normalize provider/strategy earnings metadata into one safety contract."""
+    root = payload if isinstance(payload, dict) else {}
+    nested = root.get("event") if isinstance(root.get("event"), dict) else {}
+    earnings = root.get("earnings") if isinstance(root.get("earnings"), dict) else {}
+    source = {**nested, **earnings, **root}
+    date = source.get("earnings_date") or source.get("date")
+    time = source.get("earnings_time") or source.get("session_label")
+    sources = source.get("earnings_sources_seen") or source.get("sources_seen") or source.get("date_sources") or []
+    if not sources and source.get("source"):
+        sources = [source.get("source")]
+    if isinstance(sources, str):
+        sources = [sources]
+    sources = list(dict.fromkeys(str(item) for item in sources if item))
+    conflict = bool(source.get("earnings_source_conflict") or source.get("date_conflict"))
+    details = list(source.get("earnings_conflict_details") or [])
+    if not applicable:
+        label, reason = "not_applicable", "Earnings date trust is not applicable to this row."
+    elif conflict:
+        label, reason = "conflict_do_not_trade", "Conflicting earnings dates were reported. Do not use this row for calendar entry."
+    elif not date:
+        label, reason = "unknown_research_only", "Earnings date is unavailable. Research only."
+    elif len(sources) >= 2:
+        label, reason = "multi_source_confirmed", f"Earnings date confirmed by {len(sources)} sources."
+    elif len(sources) == 1:
+        label, reason = "single_source_verify", "Earnings date has one source and must be verified before trade review."
+    else:
+        label, reason = "unknown_research_only", "Earnings date has no attributable source. Research only."
+    allowed = label == "multi_source_confirmed"
+    if label == "single_source_verify" and not config.EARNINGS_TRUST_REQUIRE_MULTI_SOURCE_FOR_CALENDAR_PASS:
+        allowed = True
+    if label == "conflict_do_not_trade" and config.EARNINGS_TRUST_CONFLICT_CAN_PASS:
+        allowed = True
+    if label == "unknown_research_only" and config.EARNINGS_TRUST_UNKNOWN_CAN_PASS:
+        allowed = True
+    confidence = source.get("earnings_date_confidence") or source.get("date_confidence")
+    if not confidence:
+        confidence = "confirmed" if label == "multi_source_confirmed" else ("single_source" if label == "single_source_verify" else "disputed" if conflict else "no_data")
+    return {
+        "earnings_date": date,
+        "earnings_time": time,
+        "earnings_date_confidence": confidence,
+        "earnings_source_count": len(sources),
+        "earnings_sources_seen": sources,
+        "earnings_source_conflict": conflict,
+        "earnings_conflict_details": details,
+        "earnings_trust_label": label,
+        "earnings_trust_reason": reason,
+        "calendar_entry_allowed": bool(allowed),
+        "provider_date_bleed_suspect": bool(source.get("provider_date_bleed_suspect")),
+    }
+
+
+def public_earnings_trust_label(payload: dict[str, Any] | None) -> str:
+    trust = normalize_earnings_trust(payload)
+    return TRUST_PUBLIC_LABELS[trust["earnings_trust_label"]]
+
+
+def earnings_trust_caveats(rows: list[dict[str, Any]]) -> list[str]:
+    labels = [normalize_earnings_trust(row) for row in rows if isinstance(row, dict)]
+    caveats = []
+    conflicts = [row for row in labels if row["earnings_trust_label"] == "conflict_do_not_trade"]
+    singles = [row for row in labels if row["earnings_trust_label"] == "single_source_verify"]
+    unknowns = [row for row in labels if row["earnings_trust_label"] == "unknown_research_only"]
+    if conflicts:
+        tickers = ", ".join(str(row.get("ticker") or "candidate") for row in rows if normalize_earnings_trust(row)["earnings_trust_label"] == "conflict_do_not_trade")
+        caveats.append(f"Blocked: earnings date conflict detected for {tickers}. Do not use these rows for calendar entry.")
+    if singles:
+        caveats.append("Caution: single-source earnings dates should be verified before trade review.")
+    if unknowns:
+        caveats.append("Research only: earnings date confidence unavailable for one or more rows.")
+    return caveats
+
 
 def build_earnings_trust_summary() -> dict[str, Any]:
     checked_at = datetime.now(timezone.utc).isoformat()
@@ -24,6 +106,8 @@ def build_earnings_trust_summary() -> dict[str, Any]:
             "merge_provider_events": bool(config.EARNINGS_MERGE_PROVIDER_EVENTS),
             "alpha_vantage_configured": bool(config.ALPHA_VANTAGE_API_KEY),
             "finnhub_configured": bool(config.FINNHUB_API_KEY),
+            "alpha_vantage_events_returned": 0,
+            "finnhub_events_returned": 0,
             "total_earnings_events": 0,
             "multi_source_count": 0,
             "single_source_count": 0,
@@ -34,6 +118,10 @@ def build_earnings_trust_summary() -> dict[str, Any]:
             "low_confidence_count": 0,
             "top_single_source_rows": [],
             "top_conflict_rows": [],
+            "calendar_candidates_blocked_by_date_trust": 0,
+            "single_source_calendar_candidates": 0,
+            "wrong_date_suspects": [],
+            "provider_date_bleed_suspects": [],
             "provider_errors": [],
             "provider_calls_triggered": False,
         }
@@ -42,12 +130,14 @@ def build_earnings_trust_summary() -> dict[str, Any]:
     tradier = (report.get("tradier_snapshot") or {}) if isinstance(report, dict) else {}
     provider_status = _provider_status(snapshot, tradier)
     rows = _earnings_rows(tradier)
-    alpha_sources = sum(1 for row in rows if "alphavantage" in ",".join(str(x).lower() for x in row.get("date_sources", [])))
+    alpha_sources = sum(1 for row in rows if "alphavantage" in ",".join(str(x).lower() for x in normalize_earnings_trust(row)["earnings_sources_seen"]))
     rows_scored = []
     for row in rows:
-        sources = list(row.get("date_sources") or [])
+        trust = normalize_earnings_trust(row)
+        row.update(trust)
+        sources = list(row.get("earnings_sources_seen") or row.get("date_sources") or [])
         confidence = str(row.get("date_confidence") or row.get("earnings_date_confidence") or "unknown").lower()
-        conflict = bool(row.get("date_conflict"))
+        conflict = bool(row.get("earnings_source_conflict") or row.get("date_conflict"))
         time_unknown = str(row.get("earnings_time") or row.get("session_label") or "unknown").lower() in {"", "unknown", "tbd", "none"}
         row["_source_count"] = len(sources)
         row["_confidence"] = confidence
@@ -63,6 +153,8 @@ def build_earnings_trust_summary() -> dict[str, Any]:
         "merge_provider_events": bool(config.EARNINGS_MERGE_PROVIDER_EVENTS),
         "alpha_vantage_configured": bool(config.ALPHA_VANTAGE_API_KEY),
         "finnhub_configured": bool(config.FINNHUB_API_KEY),
+        "alpha_vantage_events_returned": alpha_sources,
+        "finnhub_events_returned": sum(1 for row in rows_scored if "finnhub" in ",".join(str(x).lower() for x in row.get("earnings_sources_seen", []))),
         "total_earnings_events": len(rows_scored),
         "multi_source_count": sum(1 for row in rows_scored if row["_source_count"] >= 2),
         "single_source_count": sum(1 for row in rows_scored if row["_source_count"] == 1),
@@ -73,6 +165,10 @@ def build_earnings_trust_summary() -> dict[str, Any]:
         "low_confidence_count": sum(1 for row in rows_scored if row["_confidence"] in {"unknown", "disputed", "low", "no_data"}),
         "top_single_source_rows": [_trust_row(row) for row in sorted([r for r in rows_scored if r["_source_count"] == 1], key=lambda r: (_score_row(r), r.get("ticker") or ""))[:10]],
         "top_conflict_rows": [_trust_row(row) for row in sorted([r for r in rows_scored if r["_conflict"]], key=lambda r: (_score_row(r), r.get("ticker") or ""))[:10]],
+        "calendar_candidates_blocked_by_date_trust": sum(1 for row in rows_scored if row.get("calendar_entry_allowed") is False),
+        "single_source_calendar_candidates": sum(1 for row in rows_scored if row.get("earnings_trust_label") == "single_source_verify"),
+        "wrong_date_suspects": [_trust_row(row) for row in rows_scored if row.get("earnings_source_conflict")][:10],
+        "provider_date_bleed_suspects": [_trust_row(row) for row in rows_scored if row.get("provider_date_bleed_suspect")][:10],
         "provider_errors": _provider_errors(provider_status),
         "alpha_vantage": {
             "provider_name": "alpha_vantage",
@@ -84,9 +180,9 @@ def build_earnings_trust_summary() -> dict[str, Any]:
         "finnhub": {
             "provider_name": "finnhub",
             "configured": bool(config.FINNHUB_API_KEY),
-            "events_returned": sum(1 for row in rows_scored if "finnhub" in ",".join(str(x).lower() for x in row.get("date_sources", []))),
+            "events_returned": sum(1 for row in rows_scored if "finnhub" in ",".join(str(x).lower() for x in row.get("earnings_sources_seen", []))),
             "last_error": _provider_last_error(provider_status, "finnhub"),
-            "last_fetch_status": _provider_fetch_status(provider_status, "finnhub", sum(1 for row in rows_scored if "finnhub" in ",".join(str(x).lower() for x in row.get("date_sources", [])))),
+            "last_fetch_status": _provider_fetch_status(provider_status, "finnhub", sum(1 for row in rows_scored if "finnhub" in ",".join(str(x).lower() for x in row.get("earnings_sources_seen", [])))),
         },
         "provider_calls_triggered": False,
     }
@@ -128,6 +224,7 @@ def _score_row(row: dict[str, Any]) -> tuple[int, int]:
 
 
 def _trust_row(row: dict[str, Any]) -> dict[str, Any]:
+    trust = normalize_earnings_trust(row)
     return {
         "ticker": row.get("ticker"),
         "earnings_date": row.get("earnings_date") or row.get("date"),
@@ -136,6 +233,7 @@ def _trust_row(row: dict[str, Any]) -> dict[str, Any]:
         "date_conflict": bool(row.get("date_conflict")),
         "date_sources": list(row.get("date_sources") or row.get("sources_seen") or []),
         "verdict": row.get("verdict"),
+        **trust,
     }
 
 

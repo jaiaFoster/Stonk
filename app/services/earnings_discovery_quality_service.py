@@ -234,6 +234,9 @@ def filter_earnings_discovery_for_calendar_scan(
 
 
 def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]:
+    from app.services.earnings_trust_service import normalize_earnings_trust
+
+    trust = normalize_earnings_trust(event)
     ticker = str(event.get("ticker") or event.get("symbol") or "").upper().strip()
     price = _underlying_price(quote)
     volume = _number(quote.get("volume"))
@@ -267,18 +270,12 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
     else:
         checks.append(_check("Earnings timestamp", "WARN", "Earnings date/session is unconfirmed or unknown."))
 
-    confidence = event.get("earnings_date_confidence") or "unknown"
-    has_conflict = bool(event.get("earnings_source_conflict"))
-    sources_seen = event.get("sources_seen") or []
-    require_multi = bool(getattr(config, "EARNINGS_DATE_REQUIRE_MULTI_SOURCE", False))
-    if has_conflict:
-        conflict_status = "FAIL" if require_multi else "WARN"
-        checks.append(_check("Earnings date agreement", conflict_status, f"Cross-source date conflict detected (confidence={confidence}, sources={sources_seen})."))
-    elif len(sources_seen) >= 2:
-        checks.append(_check("Earnings date agreement", "PASS", f"Date confirmed by {len(sources_seen)} sources (confidence={confidence})."))
-    elif len(sources_seen) == 1:
-        single_status = "FAIL" if require_multi else "WARN"
-        checks.append(_check("Earnings date agreement", single_status, f"Single-source earnings date — only {sources_seen[0]} (confidence={confidence})."))
+    require_multi_setting = getattr(config, "EARNINGS_TRUST_REQUIRE_MULTI_SOURCE_FOR_CALENDAR_PASS", None)
+    require_multi = require_multi_setting if isinstance(require_multi_setting, bool) else bool(getattr(config, "EARNINGS_DATE_REQUIRE_MULTI_SOURCE", False))
+    single_can_watch_setting = getattr(config, "EARNINGS_TRUST_SINGLE_SOURCE_CAN_WATCH", None)
+    single_can_watch = single_can_watch_setting if isinstance(single_can_watch_setting, bool) else not require_multi
+    trust_status = "PASS" if trust["earnings_trust_label"] == "multi_source_confirmed" else ("WARN" if trust["earnings_trust_label"] == "single_source_verify" and single_can_watch and not require_multi else "FAIL")
+    checks.append(_check("Earnings date agreement", trust_status, trust["earnings_trust_reason"]))
 
     historical_move = _number(event.get("avg_historical_earnings_move"))
     high_move_threshold = float(getattr(config, "CALENDAR_HIGH_MOVE_WARNING_THRESHOLD", 0.08) or 0.08)
@@ -302,7 +299,7 @@ def _quality_row(event: dict[str, Any], quote: dict[str, Any]) -> dict[str, Any]
         "days_until_earnings": event.get("days_until_earnings"),
         "source": event.get("source"),
         "universe_source": event.get("universe_source"),
-        "earnings_date_confidence": event.get("earnings_date_confidence") or "unknown",
+        **trust,
         "date_confidence": event.get("earnings_date_confidence") or event.get("date_confidence") or "unknown",
         "date_conflict": bool(event.get("earnings_source_conflict") or event.get("date_conflict")),
         "date_sources": event.get("sources_seen") or event.get("date_sources") or [],
