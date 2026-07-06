@@ -30,10 +30,11 @@ def test_multi_source_confirmed():
     assert row["calendar_entry_allowed"] is True
 
 
-def test_single_source_verify_blocks_calendar_pass():
+def test_single_source_verify_warns_but_does_not_block():
+    # Patch 29.6: single-source is a warning, not a block (EARNINGS_TRUST_REQUIRE_MULTI_SOURCE_FOR_CALENDAR_PASS defaults False)
     row = normalize_earnings_trust(_event(sources=["finnhub"]))
     assert row["earnings_trust_label"] == "single_source_verify"
-    assert row["calendar_entry_allowed"] is False
+    assert row["calendar_entry_allowed"] is True
 
 
 def test_conflict_do_not_trade():
@@ -138,7 +139,7 @@ def test_trust_fields_survive_canonical_strategy_serialization():
     results = {"earnings_calendar": {"rows": [{"ticker": "CTAS", "verdict": "WATCH", **trust}]}}
     canonical = _attach_canonical_opportunities(results, SimpleNamespace(run_id="run-29g"))["earnings_calendar"]["canonical_opportunities"][0]
     assert canonical["earnings_trust_label"] == "single_source_verify"
-    assert canonical["calendar_entry_allowed"] is False
+    assert canonical["calendar_entry_allowed"] is True  # Patch 29.6: single-source = warning, not block
 
 
 def test_ff_safety_defaults_unchanged():

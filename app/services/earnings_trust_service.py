@@ -9,12 +9,25 @@ from typing import Any
 from app import config
 from app.services.report_snapshot_service import ReportSnapshotRepository
 
+# TKT-030C (future): Add third earnings-date source fallback.
+# Future provider candidates: Financial Modeling Prep, Polygon, Nasdaq earnings
+# calendar, company IR parser, manual/reference cache (admin override only).
+# Future rule: need 2 agreeing sources; try up to 3 providers; stop when 2
+# agree, conflict appears, or all providers fail.
+
 TRUST_PUBLIC_LABELS = {
     "multi_source_confirmed": "Multi-source confirmed",
-    "single_source_verify": "Single-source — verify before trading",
+    "single_source_verify": "Single source — lower confidence",
     "conflict_do_not_trade": "Conflict — do not trade",
     "unknown_research_only": "Unknown — research only",
     "not_applicable": "N/A",
+}
+
+# Maps known lowercase provider name fragments to display names.
+_PROVIDER_DISPLAY = {
+    "finnhub": "Finnhub",
+    "alphavantage": "Alpha Vantage",
+    "alpha_vantage": "Alpha Vantage",
 }
 
 
@@ -43,7 +56,7 @@ def normalize_earnings_trust(payload: dict[str, Any] | None, *, applicable: bool
     elif len(sources) >= 2:
         label, reason = "multi_source_confirmed", f"Earnings date confirmed by {len(sources)} sources."
     elif len(sources) == 1:
-        label, reason = "single_source_verify", "Earnings date has one source and must be verified before trade review."
+        label, reason = "single_source_verify", "ASA has only one source for this date. Treat as lower confidence."
     else:
         label, reason = "unknown_research_only", "Earnings date has no attributable source. Research only."
     allowed = label == "multi_source_confirmed"
@@ -73,7 +86,17 @@ def normalize_earnings_trust(payload: dict[str, Any] | None, *, applicable: bool
 
 def public_earnings_trust_label(payload: dict[str, Any] | None) -> str:
     trust = normalize_earnings_trust(payload)
-    return TRUST_PUBLIC_LABELS[trust["earnings_trust_label"]]
+    label = trust["earnings_trust_label"]
+    sources = trust.get("earnings_sources_seen") or []
+    if label == "multi_source_confirmed" and len(sources) >= 2:
+        display = " + ".join(
+            _PROVIDER_DISPLAY.get(str(s).lower(), str(s).title()) for s in sources[:3]
+        )
+        return f"{display} — confirmed"
+    if label == "single_source_verify" and len(sources) == 1:
+        display = _PROVIDER_DISPLAY.get(str(sources[0]).lower(), str(sources[0]).title())
+        return f"{display} only — single-source warning"
+    return TRUST_PUBLIC_LABELS[label]
 
 
 def earnings_trust_caveats(rows: list[dict[str, Any]]) -> list[str]:
@@ -86,7 +109,7 @@ def earnings_trust_caveats(rows: list[dict[str, Any]]) -> list[str]:
         tickers = ", ".join(str(row.get("ticker") or "candidate") for row in rows if normalize_earnings_trust(row)["earnings_trust_label"] == "conflict_do_not_trade")
         caveats.append(f"Blocked: earnings date conflict detected for {tickers}. Do not use these rows for calendar entry.")
     if singles:
-        caveats.append("Caution: single-source earnings dates should be verified before trade review.")
+        caveats.append("Caution: single-source earnings dates are lower confidence. ASA has only one source for these dates.")
     if unknowns:
         caveats.append("Research only: earnings date confidence unavailable for one or more rows.")
     return caveats

@@ -7,6 +7,12 @@ from typing import Any
 
 from app.services.provider_payload_compaction_service import build_provider_payload_budget
 
+# TKT-038: Payload warning thresholds
+_PAYLOAD_WARN_BYTES = 1_000_000      # 1 MB
+_PAYLOAD_CRITICAL_BYTES = 3_000_000  # 3 MB
+_PROVIDER_CALL_WARN = 200
+_STRATEGY_ROW_WARN_BYTES = 50_000    # any single strategy row this large is suspicious
+
 
 def json_bytes(value: Any) -> int:
     try:
@@ -39,14 +45,59 @@ def build_payload_size_profile(
     }
     provider_budget = build_provider_payload_budget(snapshot)
     sections["tradier_snapshot_compact"] = provider_budget["compact_tradier_snapshot_bytes"]
+    summary_json_bytes = sections.get("report_summary_json", 0)
+    largest_top_level_keys = _largest_snapshot_keys(snapshot)
     return {
         "total_profiled_bytes": sum(sections.values()),
+        "summary_json_bytes": summary_json_bytes,
         "sections_bytes": sections,
         "provider_payload_budget": provider_budget,
+        "largest_top_level_keys": largest_top_level_keys,
     }
+
+
+def build_payload_warnings(profile: dict[str, Any], provider_calls: int = 0) -> list[dict[str, Any]]:
+    """TKT-038: Emit named warnings when payload or provider call thresholds are exceeded."""
+    warnings: list[dict[str, Any]] = []
+    summary_bytes = profile.get("summary_json_bytes") or profile.get("total_profiled_bytes") or 0
+    if summary_bytes > _PAYLOAD_CRITICAL_BYTES:
+        warnings.append({
+            "name": "payload_size_warning",
+            "level": "critical",
+            "message": f"Summary payload is {summary_bytes // 1024}KB — exceeds 3MB critical threshold.",
+            "threshold_bytes": _PAYLOAD_CRITICAL_BYTES,
+            "actual_bytes": summary_bytes,
+        })
+    elif summary_bytes > _PAYLOAD_WARN_BYTES:
+        warnings.append({
+            "name": "payload_size_warning",
+            "level": "warn",
+            "message": f"Summary payload is {summary_bytes // 1024}KB — exceeds 1MB warning threshold.",
+            "threshold_bytes": _PAYLOAD_WARN_BYTES,
+            "actual_bytes": summary_bytes,
+        })
+    if provider_calls > _PROVIDER_CALL_WARN:
+        warnings.append({
+            "name": "provider_call_warning",
+            "level": "warn",
+            "message": f"Provider calls this run: {provider_calls} — exceeds warning threshold of {_PROVIDER_CALL_WARN}.",
+            "threshold": _PROVIDER_CALL_WARN,
+            "actual": provider_calls,
+        })
+    return warnings
 
 
 def compact_payload_log(profile: dict[str, Any]) -> str:
     sections = profile.get("sections_bytes", {}) or {}
     largest = sorted(sections.items(), key=lambda item: item[1], reverse=True)[:5]
     return "PayloadProfile: " + ", ".join(f"{key}={value}B" for key, value in largest)
+
+
+def _largest_snapshot_keys(snapshot: dict[str, Any], top_n: int = 10) -> list[dict[str, Any]]:
+    """Return top-N snapshot keys by approximate serialized byte size."""
+    if not isinstance(snapshot, dict):
+        return []
+    sized = []
+    for key, value in snapshot.items():
+        sized.append({"key": key, "bytes": json_bytes(value)})
+    return sorted(sized, key=lambda x: x["bytes"], reverse=True)[:top_n]

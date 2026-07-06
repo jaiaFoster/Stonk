@@ -11,6 +11,7 @@ _STALE_RUN_SECONDS = 82800  # 23 hours
 from app import config
 from app.services.commit_identity_service import build_commit_identity
 from app.services.developer_snapshot_service import build_developer_snapshot
+from app.services.payload_profile_service import build_payload_warnings
 from app.services.redaction_service import redact
 from app.services.run_manifest_repository import RunManifestRepository
 
@@ -76,6 +77,7 @@ def build_latest_profiles() -> dict[str, Any]:
         "provider_payload_budget": snapshot.get("provider_payload_budget"),
         "slowest_runtime_phase": _slowest_phase(runtime),
         "largest_payload_section": _largest_section(payload),
+        "payload_warnings": build_payload_warnings(payload or {}),
         "provider_calls_triggered": False,
     })
 
