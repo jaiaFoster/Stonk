@@ -1378,7 +1378,7 @@ def _public_row_card(row: dict[str, Any], strategy_id: str) -> str:
     if raw.get("can_enter_daily_opportunity") is False or row.get("can_enter_daily_opportunity") is False:
         extra_badges.append(_dashboard_badge("Not in Daily Opportunity", "muted"))
     if (row.get("date_confidence") or raw.get("date_confidence")) == "single_source":
-        extra_badges.append(_dashboard_badge("Single source — verify", "watch"))
+        extra_badges.append(_dashboard_badge("Single source — lower confidence", "watch"))
     if row.get("date_conflict") or raw.get("date_conflict"):
         extra_badges.append(_dashboard_badge("Date conflict", "fail"))
     if strategy_id in {"earnings_calendar", "forward_factor_calendar", "skew_momentum_vertical"}:
@@ -1422,7 +1422,7 @@ def _build_public_strategy_section(title: str, strategy_id: str, result: dict[st
     anchor = anchors.get(strategy_id, strategy_id.replace("_", "-"))
     dry_html = _dashboard_badge("DRY RUN", "info") if dry_run else ""
     candidate_html = "".join(_public_row_card(row, strategy_id) for row in top_rows) or '<p class="empty">No top candidates this run.</p>'
-    rejected_html = "".join(_public_row_card(row, strategy_id) for row in fail_rows) or '<p class="empty">No rejected examples this run.</p>'
+    rejected_html = "".join(_public_row_card(row, strategy_id) for row in fail_rows) or '<p class="empty">No additional rejected examples selected for this section.</p>'
     return (
         f'<section class="demo-section" id="{escape(anchor)}">'
         f'<div class="section-title"><div><h2>{escape(title)}</h2><p class="muted">{escape(explainer["short"])}</p></div><div class="demo-badges">{counts_html}{dry_html}<a class="mini anchor-link" href="#{escape(anchor)}" data-demo-copy-link="1" data-anchor="{escape(anchor)}">Copy link</a></div></div>'
@@ -1464,14 +1464,13 @@ def _build_public_screener_context() -> dict[str, Any] | None:
         "skew_universe_cap": int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 50) or 50),
         "warnings": [],
     }
-    if coverage["ff_skipped_dev_cap"] > 0:
-        coverage["warnings"].append("Forward Factor demo looks capped by dev limits.")
-    if coverage["ff_skipped_provider_budget"] > 0:
-        coverage["warnings"].append("Forward Factor demo looks capped by provider budget.")
-    if str(coverage["run_mode"]).lower() == "dev":
-        coverage["warnings"].append("Run mode is dev; demo may show fewer opportunities than production.")
-    if coverage["earnings_candidates_returned"] <= 6 and str(coverage["run_mode"]).lower() == "dev":
-        coverage["warnings"].append("Earnings discovery appears narrow in this dev run.")
+    if coverage["ff_skipped_dev_cap"] > 0 or coverage["ff_skipped_provider_budget"] > 0:
+        coverage["warnings"].append(
+            "Limited coverage scan active — this scan evaluated a subset of symbols. "
+            "A full scan may surface more opportunities."
+        )
+    if coverage["earnings_candidates_returned"] <= 6:
+        coverage["warnings"].append("Earnings discovery coverage was limited this scan.")
     earnings_trust = {
         "single_source_count": single_source_count,
         "conflict_count": conflict_count,

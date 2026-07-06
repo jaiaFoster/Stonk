@@ -128,11 +128,23 @@ def build_snapshot_detail(
 # surfaces unless explicitly excluded here. This prevents serialization drift
 # where a field exists internally but silently disappears before reaching an
 # endpoint. To suppress a field, add it below with a comment explaining why.
+#
+# Strategy rows should move toward: goal, inputs_used, metrics, gates, score,
+# verdict, reasons, data_quality, journal_refs (future: TKT-30A/30B/30C).
 _STRATEGY_SUMMARY_EXCLUDE = frozenset({
     "observation_history",  # FF journal history — large, has its own endpoint
     "ff_journal",  # same
     "raw_chain_data",  # raw provider chain responses — too large for summary
     "canonical_opportunities",  # full rows remain available in strategy detail
+    # TKT-038: payload bloat trim — these fields can spike snapshot size to 2MB+
+    "raw_json",              # raw provider row blob — dev detail endpoint only
+    "raw_provider_payload",  # full provider API response — dev detail endpoint only
+    "full_chain",            # complete option chain — dev detail endpoint only
+    "options_chain",         # same shape, different name
+    "chain_snapshot",        # same shape, different name
+    "provider_payload",      # raw upstream response — dev detail endpoint only
+    "debug_trace",           # execution trace — too large for summary
+    "lifecycle_log_full",    # full lifecycle log — dev detail endpoint only
 })
 
 
