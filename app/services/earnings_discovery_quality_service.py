@@ -163,6 +163,7 @@ def filter_earnings_discovery_for_calendar_scan(
         row = _quality_row(item, quote)
         row["expiry_near_miss"] = False
         row["expiry_exception"] = None
+        row["expiration_pair_diagnostics"] = {}
         try:
             expirations = provider.get_expirations(ticker)
             row["expiration_count"] = len(expirations)
@@ -176,12 +177,21 @@ def filter_earnings_discovery_for_calendar_scan(
                 row["expiration_pair"] = _canonical_expiration_pair(pair, item)
                 row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
                 row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "PASS"
+                row["expiration_pair_diagnostics"] = {
+                    "expiration_pair_status": "near_miss" if is_near_miss else "pass",
+                    "actual_front_expiration_found": pair[0],
+                    "actual_back_expiration_found": pair[1],
+                    "front_before_earnings": row["expiration_pair"].get("front_before_earnings"),
+                    "gap_days": row["expiration_pair"].get("gap_days"),
+                    "min_expiration_gap_days": int(getattr(config, "CALENDAR_MIN_EXPIRATION_GAP_DAYS", 14) or 14),
+                }
                 if is_near_miss:
                     earnings_dt = _parse_date(item.get("earnings_date") or item.get("date"))
                     front_dt = _parse_date(pair[0])
                     gap_days = (front_dt - earnings_dt).days if earnings_dt and front_dt else "?"
                     row["expiry_near_miss"] = True
                     row["expiry_gap_note"] = f"Nearest expiry {pair[0]} is {gap_days}d after earnings — holiday or weekly gap. Manual evaluation recommended."
+                    row["expiration_pair_diagnostics"]["expiration_pair_reject_reason"] = "front_leg_after_earnings_near_miss"
                     row["checks"].append(_check("Option expirations", "WARN", f"Near-miss: {pair[0]} / {pair[1]} — front leg expires after earnings ({gap_days}d gap)."))
                 else:
                     row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
@@ -189,15 +199,27 @@ def filter_earnings_discovery_for_calendar_scan(
                 row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
                 row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "FAIL"
                 near_miss_exp = _find_near_miss_expiry(expirations, item)
+                fail_reason = "no_valid_expiration_pair"
                 if near_miss_exp:
                     row["expiry_near_miss"] = True
                     row["expiry_gap_note"] = near_miss_exp["note"]
+                    fail_reason = "near_miss_expiry_gap"
                     row["checks"].append(_check("Option expirations", "WARN", near_miss_exp["check_detail"]))
                 else:
                     row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
+                row["expiration_pair_diagnostics"] = {
+                    "expiration_pair_status": "near_miss" if near_miss_exp else "fail",
+                    "expiration_pair_reject_reason": fail_reason,
+                    "actual_front_expiration_found": None,
+                    "actual_back_expiration_found": None,
+                    "tried_expirations": expirations[:10],
+                    "min_expiration_gap_days": int(getattr(config, "CALENDAR_MIN_EXPIRATION_GAP_DAYS", 14) or 14),
+                    "near_miss_expiry": near_miss_exp.get("note") if near_miss_exp else None,
+                }
         except Exception as e:
             safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
             row["expiry_exception"] = repr(safe_error)
+            row["expiration_pair_diagnostics"] = {"expiration_pair_status": "error", "error": str(safe_error)}
             row["checks"].append(_check("Option expirations", "FAIL", f"Expiration lookup failed: {safe_error}"))
             row["errors"].append(str(safe_error))
 

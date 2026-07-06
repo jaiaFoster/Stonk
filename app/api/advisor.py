@@ -156,6 +156,9 @@ def _empty_positions_payload(
         "options_count": 0,
         "has_open_verticals": False,
         "has_open_calendars": False,
+        "active_calendar_count": 0,
+        "calendar_structures": [],
+        "lifecycle_status": None,
     }
     payload.update(_positions_freshness_payload(snapshot=snapshot, user_run=user_run))
     if user_run is not None:
@@ -290,6 +293,85 @@ def _overlay_enriched_marks(options_positions: list[dict], report: dict | None) 
                                 and leg.get("position") == ev_leg.get("position")):
                             leg["current_price"] = ev_leg.get("current_price")
                 break
+
+
+def _lifecycle_summary_from_report(report: dict | None) -> dict[str, Any]:
+    """Extract calendar lifecycle summary from core run report. 29K: positions/lifecycle unification."""
+    tradier = (report.get("tradier_snapshot") or {}) if isinstance(report, dict) else {}
+    lc = (tradier.get("_calendar_lifecycle_checks") or {}) if isinstance(tradier, dict) else {}
+    if not isinstance(lc, dict) or not lc.get("has_data"):
+        return {"has_data": False, "checks": [], "active_calendar_count": 0, "calendar_structures": [], "status": None}
+    checks = [c for c in (lc.get("checks") or []) if isinstance(c, dict)]
+    active = [c for c in checks if str(c.get("action") or "").upper() not in ("INACTIVE", "CLOSED", "")]
+    structures = [_lifecycle_check_to_structure(c) for c in active]
+    return {
+        "has_data": bool(checks),
+        "checks": checks,
+        "active_calendar_count": len(active),
+        "calendar_structures": structures,
+        "status": lc.get("summary", {}).get("overall_action") if isinstance(lc.get("summary"), dict) else None,
+    }
+
+
+def _lifecycle_check_to_structure(check: dict[str, Any]) -> dict[str, Any]:
+    """Shape one lifecycle check into a normalized calendar_structure for the positions payload."""
+    return {
+        "ticker": check.get("ticker"),
+        "structure_type": check.get("structure_type") or "calendar",
+        "structure_status": check.get("action"),
+        "option_type": check.get("option_type"),
+        "strike": check.get("strike"),
+        "front_expiration": check.get("front_expiration"),
+        "back_expiration": check.get("back_expiration"),
+        "front_dte": check.get("front_dte"),
+        "back_dte": check.get("back_dte"),
+        "assignment_risk": check.get("assignment_risk_level"),
+        "assignment_risk_reason": (check.get("assignment_risk_reasons") or [None])[0],
+        "short_leg_moneyness_pct": check.get("short_leg_moneyness_pct"),
+        "short_leg_itm": check.get("short_leg_itm"),
+        "short_leg_extrinsic_value": check.get("short_leg_extrinsic_value"),
+        "short_leg_extrinsic_value_status": (
+            "available" if check.get("short_leg_extrinsic_value") is not None else "unavailable"
+        ),
+        "current_mid_debit": check.get("current_mid_debit"),
+        "entry_debit_estimate": check.get("entry_debit_estimate"),
+        "target_debit": check.get("target_debit"),
+        "stop_debit": check.get("stop_debit"),
+        "estimated_pnl_pct": check.get("estimated_pnl_pct"),
+        "lifecycle_status": check.get("action"),
+        "recheck_before_close": str(check.get("action") or "").upper() in ("RECHECK BEFORE CLOSE", "URGENT REVIEW / EXIT CHECK"),
+        "reasons": check.get("reasons") or [],
+        "risks": check.get("risks") or [],
+        "legs": [
+            {**check.get("short_front_leg", {}), "position": "short"},
+            {**check.get("long_back_leg", {}), "position": "long"},
+        ] if (check.get("short_front_leg") or check.get("long_back_leg")) else [],
+    }
+
+
+def _overlay_lifecycle(options_positions: list[dict], lifecycle_checks: list[dict]) -> None:
+    """Overlay lifecycle fields onto DB-sourced options_positions by ticker+strike match."""
+    for lc in lifecycle_checks:
+        lc_ticker = str(lc.get("ticker") or "").upper()
+        lc_strike = lc.get("strike")
+        for op in options_positions:
+            if str(op.get("ticker") or "").upper() != lc_ticker:
+                continue
+            op_strikes = [float(l.get("strike") or 0) for l in (op.get("legs") or [])]
+            if lc_strike is not None and op_strikes and float(lc_strike) not in op_strikes:
+                continue
+            op["lifecycle_status"] = lc.get("action")
+            op["assignment_risk"] = lc.get("assignment_risk_level")
+            op["recheck_before_close"] = str(lc.get("action") or "").upper() in (
+                "RECHECK BEFORE CLOSE", "URGENT REVIEW / EXIT CHECK"
+            )
+            op["short_leg_moneyness_pct"] = lc.get("short_leg_moneyness_pct")
+            op["short_leg_extrinsic_value"] = lc.get("short_leg_extrinsic_value")
+            op["short_leg_extrinsic_value_status"] = (
+                "available" if lc.get("short_leg_extrinsic_value") is not None else "unavailable"
+            )
+            op["estimated_pnl_pct"] = op.get("unrealized_pnl_pct") or lc.get("estimated_pnl_pct")
+            break
 
 
 def _log_event(endpoint: str, token: str | None, run_id: str | None) -> None:
@@ -505,6 +587,15 @@ def positions():
                 has_open_verticals = any(p.get("strategy_type") == "skew_vertical" for p in options_positions)
                 has_open_calendars = any(p.get("strategy_type") == "earnings_calendar" for p in options_positions)
 
+                # 29K: enrich with lifecycle data from snapshot.
+                lifecycle_summary = _lifecycle_summary_from_report(report)
+                if lifecycle_summary.get("has_data"):
+                    # If lifecycle detects active calendars, surface them even if DB options_positions is empty.
+                    if not has_open_calendars and lifecycle_summary.get("active_calendar_count", 0) > 0:
+                        has_open_calendars = True
+                    # Overlay lifecycle status onto matching DB options positions.
+                    _overlay_lifecycle(options_positions, lifecycle_summary.get("checks") or [])
+
                 # TKT-043: surface discovered broker accounts
                 broker_accounts = []
                 try:
@@ -527,6 +618,9 @@ def positions():
                     "options_count": len(options_positions),
                     "has_open_verticals": has_open_verticals,
                     "has_open_calendars": has_open_calendars,
+                    "active_calendar_count": lifecycle_summary.get("active_calendar_count", 0),
+                    "calendar_structures": lifecycle_summary.get("calendar_structures") or [],
+                    "lifecycle_status": lifecycle_summary.get("status"),
                 })
                 return jsonify(payload), 200
         except Exception as exc:

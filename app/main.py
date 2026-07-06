@@ -1423,6 +1423,12 @@ def _build_public_strategy_section(title: str, strategy_id: str, result: dict[st
     dry_html = _dashboard_badge("DRY RUN", "info") if dry_run else ""
     candidate_html = "".join(_public_row_card(row, strategy_id) for row in top_rows) or '<p class="empty">No top candidates this run.</p>'
     rejected_html = "".join(_public_row_card(row, strategy_id) for row in fail_rows) or '<p class="empty">No additional rejected examples selected for this section.</p>'
+    ff_dry_note = (
+        '<div class="note">Forward Factor is being observed in dry-run mode.'
+        " PASS means volatility relationship looked attractive,"
+        " not that ASA is ready to recommend live trade.</div>"
+        if strategy_id == "forward_factor_calendar" else ""
+    )
     return (
         f'<section class="demo-section" id="{escape(anchor)}">'
         f'<div class="section-title"><div><h2>{escape(title)}</h2><p class="muted">{escape(explainer["short"])}</p></div><div class="demo-badges">{counts_html}{dry_html}<a class="mini anchor-link" href="#{escape(anchor)}" data-demo-copy-link="1" data-anchor="{escape(anchor)}">Copy link</a></div></div>'
@@ -1430,7 +1436,7 @@ def _build_public_strategy_section(title: str, strategy_id: str, result: dict[st
         f'<div><strong>What blocks a trade</strong><p>{escape(explainer["blocks"])}</p></div>'
         f'<div><strong>Current status</strong><p>{escape(explainer["status"])}</p></div></div>'
         f'<div class="section-subcopy">{escape(explainer["matters"])}</div>'
-        f'{f"<div class=\"note\">Forward Factor is being observed in dry-run mode. PASS means volatility relationship looked attractive, not that ASA is ready to recommend live trade.</div>" if strategy_id == "forward_factor_calendar" else ""}'
+        f'{ff_dry_note}'
         f'<div class="demo-group"><h3>Top candidates</h3>{candidate_html}</div>'
         f'<div class="demo-group"><h3>Rejected by Risk Filters</h3><p class="muted">Rejected trades are part of edge. System shows what looked interesting, what failed, why trade stayed blocked.</p>{rejected_html}</div>'
         '</section>'
@@ -1453,23 +1459,28 @@ def _build_public_screener_context() -> dict[str, Any] | None:
     earnings_rows = list((tradier.get("_earnings_calendar_strategy") or {}).get("items") or [])
     single_source_count = sum(1 for row in earnings_rows if str(row.get("date_confidence") or row.get("earnings_date_confidence") or "").lower() == "single_source")
     conflict_count = sum(1 for row in earnings_rows if bool(row.get("date_conflict")))
+    ff_skipped_dev_cap = int(ff_stage.get("skipped_dev_cap", 0) or 0)
+    ff_skipped_provider_budget = int(ff_stage.get("skipped_provider_budget", 0) or 0)
+    earnings_candidates_returned = int(earnings_quality.get("passed_count", 0) or len(earnings_quality.get("items") or []) or 0)
+    coverage_limited = ff_skipped_dev_cap > 0 or ff_skipped_provider_budget > 0 or earnings_candidates_returned <= 6
     coverage = {
         "run_mode": snapshot.get("mode") or ((tradier.get("_pipeline_status") or {}).get("run_mode") if isinstance(tradier, dict) else None) or "unknown",
         "ff_universe": int(ff_stage.get("universe", 0) or len(ff.get("scanned_tickers") or []) or 0),
         "ff_evaluated": int(ff_stage.get("cheap_evaluated", 0) or 0),
-        "ff_skipped_dev_cap": int(ff_stage.get("skipped_dev_cap", 0) or 0),
-        "ff_skipped_provider_budget": int(ff_stage.get("skipped_provider_budget", 0) or 0),
+        "ff_skipped_dev_cap": ff_skipped_dev_cap,
+        "ff_skipped_provider_budget": ff_skipped_provider_budget,
         "ff_chain_sets": int(ff_stage.get("chain_sets", 0) or 0),
-        "earnings_candidates_returned": int(earnings_quality.get("passed_count", 0) or len(earnings_quality.get("items") or []) or 0),
+        "earnings_candidates_returned": earnings_candidates_returned,
         "skew_universe_cap": int(getattr(config, "SKEW_UNIVERSE_MAX_CANDIDATES", 50) or 50),
+        "coverage_mode_label": "Limited scan" if coverage_limited else "Full production scan",
         "warnings": [],
     }
-    if coverage["ff_skipped_dev_cap"] > 0 or coverage["ff_skipped_provider_budget"] > 0:
+    if ff_skipped_dev_cap > 0 or ff_skipped_provider_budget > 0:
         coverage["warnings"].append(
             "Limited coverage scan active — this scan evaluated a subset of symbols. "
             "A full scan may surface more opportunities."
         )
-    if coverage["earnings_candidates_returned"] <= 6:
+    if earnings_candidates_returned <= 6:
         coverage["warnings"].append("Earnings discovery coverage was limited this scan.")
     earnings_trust = {
         "single_source_count": single_source_count,
@@ -1606,16 +1617,17 @@ def _render_public_screener(context: dict[str, Any]) -> str:
   <a href="#cta" data-demo-nav="cta">Create Account</a>
 </nav>
 """
+    coverage_mode_label = escape(str(coverage.get('coverage_mode_label') or 'Limited scan'))
     coverage_html = f"""
 <section class="copy-band">
   <h2>Scan Coverage</h2>
+  <p class="muted">Coverage mode: {coverage_mode_label}</p>
   <div class="coverage-grid">
     <div><strong>Universe Discovery</strong><p>enabled</p></div>
     <div><strong>Core universe source</strong><p>S&amp;P 500 + Russell supplement</p></div>
-    <div><strong>FF universe</strong><p>{int(coverage.get('ff_universe', 0))}</p></div>
-    <div><strong>FF evaluated</strong><p>{int(coverage.get('ff_evaluated', 0))}</p></div>
-    <div><strong>FF skipped by dev cap</strong><p>{int(coverage.get('ff_skipped_dev_cap', 0))}</p></div>
-    <div><strong>FF skipped by provider budget</strong><p>{int(coverage.get('ff_skipped_provider_budget', 0))}</p></div>
+    <div><strong>FF symbols in universe</strong><p>{int(coverage.get('ff_universe', 0))}</p></div>
+    <div><strong>FF symbols evaluated</strong><p>{int(coverage.get('ff_evaluated', 0))}</p></div>
+    <div><strong>FF symbols skipped (budget)</strong><p>{int(coverage.get('ff_skipped_dev_cap', 0)) + int(coverage.get('ff_skipped_provider_budget', 0))}</p></div>
     <div><strong>Earnings candidates returned</strong><p>{int(coverage.get('earnings_candidates_returned', 0))}</p></div>
     <div><strong>Skew universe cap</strong><p>{int(coverage.get('skew_universe_cap', 0))}</p></div>
   </div>
