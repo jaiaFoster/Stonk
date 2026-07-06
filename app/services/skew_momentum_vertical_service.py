@@ -389,6 +389,9 @@ def construct_vertical_candidates(
 
 
 def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, long_leg, short_leg, metrics, earnings_event, account_context, *, raw_skew_score=0.0, adjusted_skew_score=0.0, lottery_calls_stripped_count=0, skew_filter_applied=False):
+    from app.services.earnings_trust_service import normalize_earnings_trust
+
+    earnings_trust = normalize_earnings_trust(earnings_event)
     width = abs(float(short_leg["strike"]) - float(long_leg["strike"]))
     conservative_debit = float(long_leg["ask"]) - float(short_leg["bid"])
     mid_debit = float(long_leg["mid"]) - float(short_leg["mid"])
@@ -422,6 +425,8 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         _req("Reward/risk", rr >= float(config.SKEW_VERTICAL_MIN_REWARD_RISK), f"Conservative reward/risk {rr:.2f}.", "reward_risk"),
         _req("Data quality", bool(long_leg.get("iv") is not None and short_leg.get("iv") is not None), "Tradier quotes and IV present for both legs.", "data_quality"),
     ]
+    if event_risk and earnings_trust["earnings_trust_label"] == "conflict_do_not_trade":
+        requirements.append(_req("Earnings date trust", False, earnings_trust["earnings_trust_reason"], "earnings_trust"))
     if account_risk_pct is not None:
         requirements.append(_req("Account risk", account_risk_pct <= float(config.SKEW_VERTICAL_MAX_ACCOUNT_RISK_PCT), f"Max risk is {account_risk_pct:.2f}% of estimated account value.", "account_risk"))
     breakeven = float(long_leg["strike"]) + conservative_debit if option_type == "call" else float(long_leg["strike"]) - conservative_debit
@@ -472,7 +477,8 @@ def _candidate_row(ticker, direction, underlying, expiration, dte, option_type, 
         "event_risk": event_risk,
         "event_risk_allowed": bool(config.SKEW_VERTICAL_ALLOW_EARNINGS_EVENT_RISK),
         "requirements": requirements,
-        "risk_notes": ([f"Earnings event may fall inside the {dte}-DTE position window."] if event_risk else []) + ["Defined risk equals conservative debit."],
+        "risk_notes": ([f"Earnings event may fall inside the {dte}-DTE position window."] if event_risk else []) + ([earnings_trust["earnings_trust_reason"]] if event_risk and earnings_trust["earnings_trust_label"] in {"single_source_verify", "unknown_research_only", "conflict_do_not_trade"} else []) + ["Defined risk equals conservative debit."],
+        **earnings_trust,
         "provider_notes": ["Tradier option-chain quotes; conservative debit uses long ask minus short bid."],
         "primary_reason": f"{direction.get('reason')} {f'Short-wing financing {financing:.1f}% with IV edge {iv_edge:.3f}.'}",
         "long_leg": long_leg,

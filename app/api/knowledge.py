@@ -561,6 +561,14 @@ def knowledge_agent_prompt():
         ],
         "interpretation_rules": [
             (
+                "Add a 'Data caveats today' section when earnings trust warnings exist. "
+                "For single-source dates say: 'Caution: earnings date is single-source and should be verified before trade review.'"
+            ),
+            (
+                "For conflicting dates say: 'Blocked: earnings date conflict detected. Do not use this row for calendar entry.' "
+                "For unavailable confidence say: 'Research only: earnings date confidence unavailable.' Never expose raw UNKNOWN text."
+            ),
+            (
                 "Debit-blocked calendars (DEBIT_TOO_LARGE) are NOT signal failures. "
                 "Structure may be valid, only sizing is constrained."
             ),

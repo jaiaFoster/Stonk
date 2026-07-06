@@ -122,6 +122,8 @@ def _skew_vertical_actions(strategy: dict[str, Any]) -> list[dict[str, Any]]:
             "source": "Skew Momentum Vertical Lifecycle",
         })
     for row in strategy.get("pass_items", []) or []:
+        if row.get("calendar_entry_allowed") is False:
+            continue
         if not str(row.get("verdict") or "").startswith("PASS"):
             continue
         out.append({
@@ -167,6 +169,8 @@ def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:
         )
 
     for row in engine.get("new_trade_rows") or []:
+        if row.get("calendar_entry_allowed") is False:
+            continue
         verdict = str(row.get("verdict") or "").upper()
         if verdict.startswith("PASS") or "URGENT" in verdict or "TAKE PROFIT" in verdict or "EXIT" in verdict:
             out.append(

@@ -16,6 +16,7 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 from app import config
+from app.services.earnings_trust_service import normalize_earnings_trust
 
 LogFn = Callable[[str], None]
 StrategyRows = list[dict[str, Any]]
@@ -77,6 +78,7 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
     score = min(100.0, max(0.0, base_score))
     reasons: list[str] = []
     risks: list[str] = []
+    earnings_trust = normalize_earnings_trust(event)
 
     front_exp = _parse_date(candidate.get("front_expiration"))
     back_exp = _parse_date(candidate.get("back_expiration"))
@@ -203,6 +205,22 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         score = min(score, _date_conflict_cap)
     score = round(max(0.0, min(100.0, score)), 1)
 
+    trust_label = earnings_trust["earnings_trust_label"]
+    if trust_label == "conflict_do_not_trade" and not config.EARNINGS_TRUST_CONFLICT_CAN_PASS:
+        action = "FAIL / EARNINGS DATE CONFLICT"
+        next_check = earnings_trust["earnings_trust_reason"]
+        is_preferred = False
+        score = min(score, 35.0)
+    elif trust_label == "unknown_research_only" and not config.EARNINGS_TRUST_UNKNOWN_CAN_PASS and action in {"EARNINGS CALENDAR CANDIDATE", "URGENT REVIEW / EARNINGS SOON", "URGENT REVIEW / TIMING-SENSITIVE"}:
+        action = "FAIL / EARNINGS DATE UNKNOWN"
+        next_check = earnings_trust["earnings_trust_reason"]
+        is_preferred = False
+        score = min(score, 35.0)
+    elif trust_label == "single_source_verify" and config.EARNINGS_TRUST_REQUIRE_MULTI_SOURCE_FOR_CALENDAR_PASS and action == "EARNINGS CALENDAR CANDIDATE":
+        action = "WATCH / VERIFY EARNINGS DATE"
+        next_check = earnings_trust["earnings_trust_reason"]
+        is_preferred = False
+
     compact_earnings = _compact_event(event)
     return {
         "ticker": ticker,
@@ -233,6 +251,7 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         "date_conflict": compact_earnings.get("date_conflict", False),
         "date_sources": compact_earnings.get("date_sources", []),
         "earnings_date_warning": compact_earnings.get("earnings_date_warning"),
+        **earnings_trust,
         "earnings_relation": relation,
         "event_captured_by_back_leg": event_captured,
         "short_leg_spans_earnings": short_spans_event,

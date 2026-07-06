@@ -7,6 +7,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.earnings_trust_service import public_earnings_trust_label
+
+
+def earnings_trust_public_label(row: dict[str, Any]) -> str:
+    return public_earnings_trust_label(row)
+
 # TKT-031C: Stock momentum action → public label
 _STOCK_MOMENTUM_LABEL: dict[str, str] = {
     "CONSIDER ADDING": "Momentum Pass",

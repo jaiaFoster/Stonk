@@ -19,6 +19,7 @@ def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str,
         "debit": ("FAIL / DEBIT TOO LARGE", "BLOCKED_DEBIT_TOO_LARGE", "A lower-debit structure must pass risk limits."),
         "account_risk": ("FAIL / ACCOUNT RISK TOO HIGH", "BLOCKED_ACCOUNT_RISK_TOO_HIGH", "Max risk exceeds configured percentage of estimated account value."),
         "reward_risk": ("FAIL / REWARD RISK TOO WEAK", "BLOCKED_REWARD_RISK_TOO_WEAK", "Reward/risk must improve after conservative pricing."),
+        "earnings_trust": ("FAIL / EARNINGS DATE CONFLICT", "BLOCKED_EARNINGS_DATE_CONFLICT", "Resolve the earnings-date conflict before live review."),
     }
     if code in verdicts:
         verdict, state, next_action = verdicts[code]

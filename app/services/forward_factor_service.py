@@ -13,6 +13,7 @@ from app.services.forward_factor_data_eligibility_service import validate_requir
 from app.services.forward_factor_ranking_service import rank_forward_factor
 from app.services.forward_factor_signal_gate_service import evaluate_forward_factor_signal_gate
 from app.services.forward_factor_verdict_service import apply_forward_factor_verdict
+from app.services.earnings_trust_service import normalize_earnings_trust
 
 
 def _is_earnings_contaminated(
@@ -370,6 +371,7 @@ def build_forward_factor_strategy(
             required=False, strategy_id="forward_factor_calendar",
         )
         _earn_payload = _payload(earnings_record)
+        earnings_trust = normalize_earnings_trust(_earn_payload)
         _earn_date_str = _earn_payload.get("earnings_date") or _earn_payload.get("event_date") or _earn_payload.get("date")
         _earn_date_str = str(_earn_date_str)[:10] if _earn_date_str else None
         ticker_rows = []
@@ -404,6 +406,7 @@ def build_forward_factor_strategy(
             log_print(f"[FF] {ticker}: front={front} back={back} → {'earnings_contaminated' if is_contaminated else 'source_qualified=True'}{' (' + contamination_reason + ')' if contamination_reason else ' (no earnings contamination)'} front_iv_method={iv.get('front_iv_derivation_method')} back_iv_method={iv.get('back_iv_derivation_method')}")
             base = {
                 **pair, "data_eligibility": eligibility, "earnings_context": _earnings_context(earnings_record, front, back),
+                **earnings_trust,
                 **iv,
                 "earnings_contaminated": is_contaminated,
                 "earnings_contamination_reason": contamination_reason,
@@ -517,6 +520,14 @@ def build_forward_factor_strategy(
             "not_selected_reason": audit.get("not_selected_reason"),
         }
         gated = {**enriched, **evaluate_forward_factor_signal_gate(enriched)}
+        trust = normalize_earnings_trust(gated)
+        gated.update(trust)
+        if trust["earnings_trust_label"] in {"conflict_do_not_trade", "unknown_research_only"}:
+            warnings = list(gated.get("warnings") or [])
+            warnings.append("Earnings contamination trust failed: " + trust["earnings_trust_reason"])
+            gated["warnings"] = list(dict.fromkeys(warnings))
+            gated["can_trade_live"] = False
+            gated["can_enter_daily_opportunity"] = False
         gated["what_would_make_positive"] = what_would_make_positive(gated)
         gated["ff_gates"] = _ff_gates(gated)
         gated_rows.append(gated)

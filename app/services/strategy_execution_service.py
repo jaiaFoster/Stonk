@@ -52,6 +52,9 @@ def collect_strategy_results(context: Any, raw_results: dict[str, dict[str, Any]
 _SURVIVAL_FIELDS = (
     "expiration_pair", "stale_structure", "date_confidence", "source_mode",
     "side", "position_type", "provider_fetch_count", "pipeline_trace",
+    "earnings_date_confidence", "earnings_source_count", "earnings_sources_seen",
+    "earnings_source_conflict", "earnings_conflict_details", "earnings_trust_label",
+    "earnings_trust_reason", "calendar_entry_allowed",
 )
 
 
@@ -71,6 +74,9 @@ def _attach_canonical_opportunities(results: dict[str, dict[str, Any]], context:
                 opportunity.can_trade_live = False
                 opportunity.can_enter_daily_opportunity = False
             serialized = opportunity.to_dict()
+            for field in _SURVIVAL_FIELDS:
+                if field in row:
+                    serialized[field] = row[field]
             canonical.append(serialized)
             if opportunity.reason_code == "NORMALIZATION_ERROR":
                 errors.append({"row_index": index, "error": opportunity.reason_label})

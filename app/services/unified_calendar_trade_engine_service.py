@@ -24,6 +24,7 @@ from typing import Any, Callable
 from app import config
 from app.services.calendar_opportunity_state_service import attach_calendar_display_fields
 from app.services.calendar_verdict_service import build_final_calendar_verdict, evaluate_account_risk
+from app.services.earnings_trust_service import normalize_earnings_trust
 
 LogFn = Callable[[str], None]
 
@@ -146,6 +147,7 @@ def _build_new_trade_row(
     ranking = (ranking_by_ticker or {}).get(ticker) or {}
 
     event = event_payload
+    trust = normalize_earnings_trust({**event, **quality_row})
     has_event = bool(event and (event.get("earnings_date") or event.get("date")))
     has_candidate = bool(candidate)
     has_strategy = bool(strategy)
@@ -171,6 +173,9 @@ def _build_new_trade_row(
         requirements.append(_req("Earnings timestamp", "WARN", "Earnings session is unknown or unconfirmed."))
     else:
         requirements.append(_req("Earnings timestamp", "FAIL", "Cannot evaluate earnings placement without a timestamp."))
+
+    trust_status = "PASS" if trust["earnings_trust_label"] == "multi_source_confirmed" else ("WARN" if trust["earnings_trust_label"] == "single_source_verify" and config.EARNINGS_TRUST_SINGLE_SOURCE_CAN_WATCH else "FAIL")
+    requirements.append(_req("Earnings date trust", trust_status, trust["earnings_trust_reason"]))
 
     if quality_row:
         for check in (quality_row.get("checks") or [])[:6]:
@@ -205,6 +210,16 @@ def _build_new_trade_row(
     no_structure_blocker = "" if has_candidate else _no_structure_blocker(quality_row, requirements)
     final = build_final_calendar_verdict(candidate, ranking, None, account_context) if has_candidate else {}
     verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy, quality_row))
+    trust_label = trust["earnings_trust_label"]
+    if trust_label == "conflict_do_not_trade" and not config.EARNINGS_TRUST_CONFLICT_CAN_PASS:
+        verdict = "FAIL / EARNINGS DATE CONFLICT"
+    elif trust_label == "unknown_research_only" and not config.EARNINGS_TRUST_UNKNOWN_CAN_PASS:
+        verdict = "FAIL / EARNINGS DATE UNKNOWN"
+    elif trust_label == "single_source_verify" and config.EARNINGS_TRUST_REQUIRE_MULTI_SOURCE_FOR_CALENDAR_PASS and str(verdict).upper().startswith("PASS"):
+        verdict = "WATCH / VERIFY EARNINGS DATE"
+    if not trust["calendar_entry_allowed"]:
+        final = dict(final)
+        final.update({"final_verdict": verdict, "main_blocker": trust["earnings_trust_reason"], "hard_fail_reason": trust["earnings_trust_reason"]})
     entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)
 
@@ -243,6 +258,8 @@ def _build_new_trade_row(
         "requirements": requirements,
         "reasons": _dedupe((final.get("reasons") or []) + (strategy.get("reasons", []) if strategy else []) + (candidate.get("reasons", []) if candidate else [])),
         "risks": _dedupe((final.get("blockers") or []) + (strategy.get("risks", []) if strategy else []) + (candidate.get("risks", []) if candidate else [])),
+        **trust,
+        "can_enter_daily_opportunity": bool(str(verdict).upper().startswith("PASS") and trust["calendar_entry_allowed"]),
     }
     # Promote quality_precheck fields to top level so API consumers reading
     # the row directly (not the nested quality_precheck dict) still see them.
