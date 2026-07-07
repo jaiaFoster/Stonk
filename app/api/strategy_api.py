@@ -179,6 +179,44 @@ def get_strategy_rows(
                 "schema_version": rows[0].get("schema_version") if rows else None,
             }
 
+        if strategy_id == "earnings_calendar":
+            ec = strategies.get("earnings_calendar") or {}
+            raw_rows = ec.get("rows") or ec.get("items") or ec.get("canonical_opportunities") or []
+            # Also collect lifecycle/open-position rows from the snapshot
+            lifecycle = tradier.get("_calendar_lifecycle_checks") or {}
+            lifecycle_checks = list(lifecycle.get("checks") or [])
+            cap = min(int(limit or 20), 50)
+            rows = []
+            run_id = snapshot.get("run_id")
+            for row in list(raw_rows)[:cap]:
+                if not isinstance(row, dict):
+                    continue
+                enriched = dict(row)
+                try:
+                    from app.strategies.earnings_calendar_universal import build_earnings_calendar_universal_row
+                    build_earnings_calendar_universal_row(enriched, run_id=run_id)
+                except Exception:
+                    pass
+                rows.append(enriched)
+            for check in lifecycle_checks[: max(0, cap - len(rows))]:
+                if not isinstance(check, dict):
+                    continue
+                enriched = dict(check)
+                try:
+                    from app.strategies.earnings_calendar_universal import build_earnings_lifecycle_universal_row
+                    build_earnings_lifecycle_universal_row(enriched, run_id=run_id)
+                except Exception:
+                    pass
+                rows.append(enriched)
+            return {
+                **_READ_ONLY_BASE,
+                "strategy_id": strategy_id,
+                "rows": rows,
+                "row_count": len(rows),
+                "source_run_id": run_id,
+                "schema_version": rows[0].get("schema_version") if rows else None,
+            }
+
         # Other strategies: return empty state — future lanes will implement them.
         return {
             **_READ_ONLY_BASE,

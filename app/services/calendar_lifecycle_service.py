@@ -297,6 +297,11 @@ def _evaluate_one_calendar(
     }
     output.update(build_hold_through_score(output))
     output.update(classify_trade_type(output))
+    try:
+        from app.strategies.earnings_calendar_universal import build_earnings_lifecycle_universal_row
+        build_earnings_lifecycle_universal_row(output)
+    except Exception:
+        pass  # universal enrichment is additive; never block legacy output
     return output
 
 
