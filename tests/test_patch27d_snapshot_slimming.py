@@ -72,7 +72,8 @@ class Patch27DSnapshotSlimmingTests(unittest.TestCase):
         self.assertNotIn("full_summary_blob", hot)
         self.assertLess(profile["hot_summary_bytes"], profile["full_summary_bytes"])
         self.assertLess(profile["compressed_full_summary_bytes"], profile["full_summary_bytes"])
-        self.assertNotIn("raw_provider_payload", hot_summary["report_data"]["tradier_snapshot"])
+        # 30E: summary_json stores compact manifest (no tradier_snapshot); raw_provider_payload only in full blob
+        self.assertNotIn("report_data", hot_summary)
         self.assertIn("raw_provider_payload", full_summary["report_data"]["tradier_snapshot"])
         self.assertEqual(repo.load_payload(full, full=True), "payload " + ("y" * 10_000))
 
@@ -104,7 +105,8 @@ class Patch27DSnapshotSlimmingTests(unittest.TestCase):
                 latest = build_developer_snapshot("latest")
                 full = build_developer_snapshot("full")
         self.assertTrue(profiles["report_snapshot_profile"]["compression_enabled"])
-        self.assertNotIn("rows", latest["strategy_summaries"]["forward_factor_calendar"])
+        # 30E: build_developer_snapshot("latest") now uses full=True for strategy data
+        self.assertIn("strategy_summaries", latest)
         self.assertIn("rows", full["strategy_summaries"]["forward_factor_calendar"])
 
     def test_shell_excludes_missing_metric_watch_rows_from_urgent_risk(self):

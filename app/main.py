@@ -177,9 +177,9 @@ def home():
 
             repository = ReportSnapshotRepository(log_print=lambda message: print(message, flush=True))
             dashboard_view = _requested_dashboard_view()
-            snapshot = repository.latest_success(include_full=dashboard_view == "full")
+            snapshot = repository.latest_success(include_full=True)
             if snapshot:
-                summary = repository.load_summary(snapshot, full=dashboard_view == "full")
+                summary = repository.load_summary(snapshot, full=True)
                 report = summary.get("report_data") or {}
                 payload = repository.load_payload(snapshot, full=dashboard_view == "full")
                 report_snapshot = report.get("tradier_snapshot", {}) or {}

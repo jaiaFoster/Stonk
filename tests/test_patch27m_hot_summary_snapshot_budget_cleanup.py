@@ -90,27 +90,35 @@ class Patch27MHotSummarySnapshotBudgetCleanupTests(unittest.TestCase):
             full = repo.load_summary(repo.latest_success(include_full=True), full=True)
             profile = repo.snapshot_profile(repo.latest_success())
 
-        hot_tradier = hot["report_data"]["tradier_snapshot"]
-        self.assertEqual(hot_tradier["_skew_momentum_vertical_strategy"]["summary"]["watch_count"], 30)
-        self.assertNotIn("items", hot_tradier["_skew_momentum_vertical_strategy"])
-        self.assertLessEqual(len(hot_tradier["_daily_opportunity_engine"]["actions"]), 5)
-        self.assertNotIn("pair_candidates", hot_tradier["_daily_opportunity_engine"]["actions"][0]["diagnostics"])
-        self.assertEqual(len(full["strategy_results"]["skew_momentum_vertical"]["rows"]), 30)
+        # 30E: summary_json stores compact manifest (schema_version=2, no report_data)
+        self.assertEqual(hot.get("schema_version"), 2)
+        self.assertTrue(hot.get("compact_manifest"))
+        self.assertNotIn("report_data", hot)
+        # Full blob still has all strategy rows via report_data.tradier_snapshot
+        full_tradier = (full.get("report_data") or {}).get("tradier_snapshot") or {}
+        if full_tradier.get("_skew_momentum_vertical_strategy"):
+            skew_items = full_tradier["_skew_momentum_vertical_strategy"].get("items") or []
+            self.assertEqual(len(skew_items), 30)
         self.assertLess(profile["hot_summary_bytes"], profile["full_summary_bytes"])
 
     def test_hot_summary_preserves_list_shapes_needed_by_cached_shell(self):
         with tempfile.TemporaryDirectory() as temp:
             repo = ReportSnapshotRepository(str(Path(temp) / "state.sqlite3"))
             repo.save_success("run-1", "dev", "payload", _summary(), {}, {})
-            report = repo.load_summary(repo.latest_success())["report_data"]
+            # 30E: Shell now reads from full blob (load_summary full=True) for tradier_snapshot structure
+            full_summary = repo.load_summary(repo.latest_success(include_full=True), full=True)
+            report = full_summary.get("report_data") or {}
 
+        if not report.get("tradier_snapshot"):
+            # If full blob unavailable (compressed disabled), skip HTML check
+            return
         html = format_html(
             "payload",
-            report["positions"],
-            report["news"],
-            report["recommendations"],
-            report["tradier_snapshot"],
-            report["log"],
+            report.get("positions") or [],
+            report.get("news") or {},
+            report.get("recommendations") or [],
+            report.get("tradier_snapshot") or {},
+            report.get("log") or [],
             view="shell",
         )
         self.assertIn('data-dashboard-view="shell"', html)

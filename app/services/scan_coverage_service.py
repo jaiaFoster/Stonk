@@ -19,7 +19,7 @@ def build_scan_coverage() -> dict[str, Any]:
     """Return scan-coverage summary; reads snapshot only, no provider calls."""
     checked_at = datetime.now(timezone.utc).isoformat()
     repo = ReportSnapshotRepository(log_print=lambda _: None)
-    snapshot = repo.latest_success(include_full=False)
+    snapshot = repo.latest_success(include_full=True)
     if not snapshot:
         return {
             "status": "no_data",
@@ -45,7 +45,7 @@ def build_scan_coverage() -> dict[str, Any]:
             "provider_calls_triggered": False,
         }
 
-    summary = repo.load_summary(snapshot, full=False)
+    summary = repo.load_summary(snapshot, full=True)
     report = (summary.get("report_data") or {}) if isinstance(summary, dict) else {}
     tradier = (report.get("tradier_snapshot") or {}) if isinstance(report, dict) else {}
     pipeline = (tradier.get("_pipeline_status") or {}) if isinstance(tradier, dict) else {}

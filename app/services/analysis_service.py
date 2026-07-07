@@ -362,8 +362,8 @@ def _robinhood_unavailable_lifecycle(provider_status: dict[str, Any]) -> dict[st
 def _latest_complete_broker_state(log_print: Callable[[str], None]) -> dict[str, Any]:
     try:
         repository = ReportSnapshotRepository(log_print=log_print)
-        snapshot = repository.latest_success()
-        summary = repository.load_summary(snapshot)
+        snapshot = repository.latest_success(include_full=True)
+        summary = repository.load_summary(snapshot, full=True)
         tradier = ((summary.get("report_data") or {}).get("tradier_snapshot") or {})
         return {
             "open_options": tradier.get("_open_options_positions"),

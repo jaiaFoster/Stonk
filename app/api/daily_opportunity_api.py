@@ -35,7 +35,7 @@ def build_daily_opportunity_response(limit: int = 12) -> dict[str, Any]:
     try:
         from app.services.report_snapshot_service import ReportSnapshotRepository
         repo = ReportSnapshotRepository()
-        snapshot = repo.latest_success(include_full=False)
+        snapshot = repo.latest_success(include_full=True)
         if not snapshot:
             return {
                 **_READ_ONLY_BASE,
@@ -45,7 +45,7 @@ def build_daily_opportunity_response(limit: int = 12) -> dict[str, Any]:
                 "action_count": 0,
                 "actions": [],
             }
-        summary = repo.load_summary(snapshot, full=False)
+        summary = repo.load_summary(snapshot, full=True)
         report = summary.get("report_data", {}) or {}
         tradier = report.get("tradier_snapshot", {}) or {}
         do_engine = tradier.get("_daily_opportunity_engine") or {}

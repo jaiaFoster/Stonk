@@ -86,14 +86,14 @@ def get_test_rows(
     try:
         from app.services.report_snapshot_service import ReportSnapshotRepository
         repo = ReportSnapshotRepository()
-        snapshot = repo.latest_success(include_full=False)
+        snapshot = repo.latest_success(include_full=True)
         if not snapshot:
             return {
                 **_READ_ONLY_BASE,
                 "rows": [], "count": 0,
                 "note": "No snapshot available.",
             }
-        summary = repo.load_summary(snapshot, full=False)
+        summary = repo.load_summary(snapshot, full=True)
         report = summary.get("report_data", {}) or {}
         tradier = report.get("tradier_snapshot", {}) or {}
         strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
@@ -137,7 +137,7 @@ def get_strategy_rows(
     try:
         from app.services.report_snapshot_service import ReportSnapshotRepository
         repo = ReportSnapshotRepository()
-        snapshot = repo.latest_success(include_full=False)
+        snapshot = repo.latest_success(include_full=True)
         if not snapshot:
             return {
                 **_READ_ONLY_BASE,
@@ -147,7 +147,7 @@ def get_strategy_rows(
                 "empty_state": "no_snapshot",
                 "note": "No successful snapshot available.",
             }
-        summary = repo.load_summary(snapshot, full=False)
+        summary = repo.load_summary(snapshot, full=True)
         report = summary.get("report_data", {}) or {}
         tradier = report.get("tradier_snapshot", {}) or {}
         strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
@@ -240,6 +240,32 @@ def get_strategy_rows(
                 "row_count": len(rows),
                 "source_run_id": run_id,
                 "schema_version": rows[0].get("schema_version") if rows else None,
+            }
+
+        if strategy_id == "forward_factor_calendar":
+            ff_data = strategies.get("forward_factor_calendar") or tradier.get("_forward_factor_strategy") or {}
+            raw_rows = ff_data.get("items") or ff_data.get("rows") or []
+            cap = min(int(limit or 20), 50)
+            rows = []
+            run_id = snapshot.get("run_id")
+            for row in list(raw_rows)[:cap]:
+                if not isinstance(row, dict):
+                    continue
+                enriched = dict(row)
+                try:
+                    from app.strategies.forward_factor_universal import build_forward_factor_universal_row
+                    build_forward_factor_universal_row(enriched, run_id=run_id)
+                except Exception:
+                    pass
+                rows.append(enriched)
+            return {
+                **_READ_ONLY_BASE,
+                "strategy_id": strategy_id,
+                "rows": rows,
+                "row_count": len(rows),
+                "source_run_id": run_id,
+                "schema_version": rows[0].get("schema_version") if rows else None,
+                "dry_run": True,
             }
 
         # Other strategies: return empty state — future lanes will implement them.

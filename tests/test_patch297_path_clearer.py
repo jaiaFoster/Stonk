@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import py_compile
 import importlib
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from typing import Any
@@ -178,7 +179,7 @@ class TestPatch29HScanCoverage:
         with patch("app.services.scan_coverage_service.ReportSnapshotRepository") as repo:
             repo.return_value.latest_success.return_value = {
                 "run_id": "run-29h", "mode": "prod",
-                "completed_at": "2026-07-06T10:00:00+00:00",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
             }
             repo.return_value.load_summary.return_value = {
                 "report_data": {"tradier_snapshot": tradier}
