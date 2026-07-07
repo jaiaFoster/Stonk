@@ -126,6 +126,13 @@ DASHBOARD_DEFAULT_VIEW = os.environ.get("DASHBOARD_DEFAULT_VIEW", "shell").strip
 REPORT_DEFAULT_MAX_ROWS_PER_SECTION = _int_env("REPORT_DEFAULT_MAX_ROWS_PER_SECTION", 3)
 REPORT_SHOW_DETAIL_LOAD_BUTTONS = _bool_env("REPORT_SHOW_DETAIL_LOAD_BUTTONS", True)
 REPORT_SHOW_FULL_DEBUG_BY_DEFAULT = _bool_env("REPORT_SHOW_FULL_DEBUG_BY_DEFAULT", False)
+# 30D.1: Payload-to-API boundary flags
+# Gate that controls whether the full debug payload is included in the normal report.
+# Default False keeps the hot summary compact (<500KB target).
+REPORT_FULL_DEBUG_PAYLOAD_ENABLED = _bool_env("REPORT_FULL_DEBUG_PAYLOAD_ENABLED", False)
+# Gate that controls whether raw broker debug logs are attached to snapshots.
+# Default False prevents large raw API responses from inflating the payload.
+BROKER_DEBUG_RAW_LOGS_ENABLED = _bool_env("BROKER_DEBUG_RAW_LOGS_ENABLED", False)
 
 # --- Tradier market/options data ---
 # Required for Tradier Provider v1. Use your production token for live data,
