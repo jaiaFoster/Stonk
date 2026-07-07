@@ -403,3 +403,161 @@ def cleanup_old_observations(retention_days: int, db_path: str | None = None) ->
             return result.rowcount or 0
     except Exception:
         return 0
+
+
+# ─── 30C review query helpers ──────────────────────────────────────────────────
+
+
+def query_for_review(
+    *,
+    days: int | None = None,
+    strategy_id: str | None = None,
+    run_id: str | None = None,
+    blocking_only: bool = False,
+    limit: int = 200,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return recent observations including gates_json for review analysis."""
+    path = db_path or config.STRATEGY_OBSERVATION_DB_PATH
+    if not config.STRATEGY_OBSERVATION_JOURNAL_ENABLED:
+        return []
+    try:
+        if not Path(path).exists():
+            return []
+        limit = min(int(limit or 200), 500)
+        clauses: list[str] = []
+        params: list[Any] = []
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if strategy_id:
+            clauses.append("strategy_id = ?")
+            params.append(strategy_id)
+        if days:
+            clauses.append("run_date >= date('now', ?)")
+            params.append(f"-{days} days")
+        if blocking_only:
+            clauses.append("blocking_gate_count > 0")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        with _connect(path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT id, run_id, run_date, strategy_id, strategy_name,
+                       ticker, verdict, friendly_verdict, primary_reason,
+                       status_bucket, daily_opportunity_eligible, can_trade_live, dry_run,
+                       data_quality_status, gate_pass_count, gate_fail_count,
+                       gate_watch_count, gate_unknown_count, gate_skipped_count,
+                       blocking_gate_count, score, observation_key, row_hash,
+                       gates_json, created_at
+                FROM strategy_observations {where}
+                ORDER BY created_at DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def query_ticker_stats(
+    days: int = 7,
+    limit: int = 50,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """SQL GROUP BY ticker across last N days for recurrence analysis."""
+    path = db_path or config.STRATEGY_OBSERVATION_DB_PATH
+    if not config.STRATEGY_OBSERVATION_JOURNAL_ENABLED:
+        return []
+    try:
+        if not Path(path).exists():
+            return []
+        limit = min(int(limit or 50), 250)
+        with _connect(path) as conn:
+            rows = conn.execute(
+                """
+                SELECT ticker,
+                       COUNT(*) AS obs_count,
+                       COUNT(DISTINCT run_id) AS run_count,
+                       COUNT(DISTINCT strategy_id) AS strategy_count,
+                       SUM(CASE WHEN status_bucket='pass' THEN 1 ELSE 0 END) AS pass_count,
+                       SUM(CASE WHEN status_bucket='watch' THEN 1 ELSE 0 END) AS watch_count,
+                       SUM(CASE WHEN status_bucket='fail' THEN 1 ELSE 0 END) AS fail_count,
+                       SUM(CASE WHEN status_bucket='skipped' THEN 1 ELSE 0 END) AS skipped_count,
+                       SUM(CASE WHEN status_bucket='dry_run' THEN 1 ELSE 0 END) AS dry_run_count,
+                       GROUP_CONCAT(DISTINCT strategy_id) AS strategy_ids_csv,
+                       GROUP_CONCAT(DISTINCT status_bucket) AS buckets_csv,
+                       MIN(run_date) AS first_seen,
+                       MAX(run_date) AS latest_seen,
+                       MAX(primary_reason) AS sample_primary_reason
+                FROM strategy_observations
+                WHERE run_date >= date('now', ?)
+                GROUP BY ticker
+                ORDER BY obs_count DESC, pass_count DESC
+                LIMIT ?
+                """,
+                (f"-{days} days", limit),
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []
+
+
+def query_two_latest_runs(db_path: str | None = None) -> list[str]:
+    """Return up to 2 most recent distinct run_ids ordered newest-first."""
+    path = db_path or config.STRATEGY_OBSERVATION_DB_PATH
+    if not config.STRATEGY_OBSERVATION_JOURNAL_ENABLED:
+        return []
+    try:
+        if not Path(path).exists():
+            return []
+        with _connect(path) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT run_id FROM strategy_observations"
+                " ORDER BY created_at DESC LIMIT 2"
+            ).fetchall()
+        return [row["run_id"] for row in rows]
+    except Exception:
+        return []
+
+
+def query_primary_reason_stats(
+    days: int = 7,
+    strategy_id: str | None = None,
+    limit: int = 100,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return (strategy_id, primary_reason, cnt, pass_cnt, issue_cnt) rows."""
+    path = db_path or config.STRATEGY_OBSERVATION_DB_PATH
+    if not config.STRATEGY_OBSERVATION_JOURNAL_ENABLED:
+        return []
+    try:
+        if not Path(path).exists():
+            return []
+        clauses = [
+            "run_date >= date('now', ?)",
+            "primary_reason IS NOT NULL",
+            "primary_reason != ''",
+        ]
+        params: list[Any] = [f"-{days} days"]
+        if strategy_id:
+            clauses.append("strategy_id = ?")
+            params.append(strategy_id)
+        where = "WHERE " + " AND ".join(clauses)
+        params.append(min(int(limit or 100), 200))
+        with _connect(path) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT strategy_id, primary_reason,
+                       COUNT(*) AS cnt,
+                       SUM(CASE WHEN status_bucket='pass' THEN 1 ELSE 0 END) AS pass_cnt,
+                       SUM(CASE WHEN status_bucket IN ('fail','watch') THEN 1 ELSE 0 END) AS issue_cnt
+                FROM strategy_observations {where}
+                GROUP BY strategy_id, primary_reason
+                ORDER BY cnt DESC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(r) for r in rows]
+    except Exception:
+        return []

@@ -2283,6 +2283,62 @@ def dev_strategy_observations():
     return jsonify(result), 200
 
 
+# ─── 30C: Strategy Observation Review endpoints ───────────────────────────────
+
+@app.route("/api/dev/strategy-review/summary")
+def dev_strategy_review_summary():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_review_service import build_strategy_review_summary
+    days = min(int(request.args.get("days") or 7), 90)
+    strategy_id = request.args.get("strategy_id") or None
+    if strategy_id:
+        from app.services.strategy_observation_review_service import (
+            build_strategy_review_summary_for_strategy,
+        )
+        return jsonify(build_strategy_review_summary_for_strategy(strategy_id, days=days)), 200
+    return jsonify(build_strategy_review_summary(days=days)), 200
+
+
+@app.route("/api/dev/strategy-review/blockers")
+def dev_strategy_review_blockers():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_review_service import build_repeat_blockers
+    days = min(int(request.args.get("days") or 7), 90)
+    strategy_id = request.args.get("strategy_id") or None
+    limit = min(int(request.args.get("limit") or 50), 250)
+    return jsonify(build_repeat_blockers(days=days, strategy_id=strategy_id, limit=limit)), 200
+
+
+@app.route("/api/dev/strategy-review/tickers")
+def dev_strategy_review_tickers():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_review_service import build_ticker_recurrence
+    days = min(int(request.args.get("days") or 7), 90)
+    ticker = (request.args.get("ticker") or "").upper() or None
+    limit = min(int(request.args.get("limit") or 50), 250)
+    return jsonify(build_ticker_recurrence(days=days, ticker=ticker, limit=limit)), 200
+
+
+@app.route("/api/dev/strategy-review/movement")
+def dev_strategy_review_movement():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_review_service import build_run_movement
+    run_id = request.args.get("run_id") or None
+    prev_run_id = request.args.get("prev_run_id") or None
+    limit = min(int(request.args.get("limit") or 50), 250)
+    return jsonify(build_run_movement(run_id=run_id, prev_run_id=prev_run_id, limit=limit)), 200
+
+
+@app.route("/api/dev/strategy-review/queue")
+def dev_strategy_review_queue():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_review_service import build_review_queue
+    days = min(int(request.args.get("days") or 7), 90)
+    strategy_id = request.args.get("strategy_id") or None
+    limit = min(int(request.args.get("limit") or 50), 250)
+    return jsonify(build_review_queue(days=days, strategy_id=strategy_id, limit=limit)), 200
+
+
 @app.route("/api/dev/skew-threshold-analysis")
 @require_admin
 def dev_skew_threshold_analysis():

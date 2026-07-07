@@ -149,6 +149,40 @@ def build_snapshot_detail(
         except Exception:
             pass
 
+        # 30C: compact review layer fields.
+        try:
+            from app.services.strategy_observation_review_service import (
+                build_strategy_review_summary,
+                build_repeat_blockers,
+                build_ticker_recurrence,
+                build_review_queue,
+                build_run_movement,
+            )
+            review_summary = build_strategy_review_summary(days=7)
+            base["strategy_review_summary"] = {
+                "total_observations": review_summary.get("total_observations", 0),
+                "run_count": review_summary.get("run_count", 0),
+                "ticker_count": review_summary.get("ticker_count", 0),
+                "by_status_bucket": review_summary.get("by_status_bucket", {}),
+                "daily_opportunity_eligible_count": review_summary.get("daily_opportunity_eligible_count", 0),
+                "dry_run_count": review_summary.get("dry_run_count", 0),
+            }
+            base["top_strategy_blockers"] = build_repeat_blockers(days=7, limit=10).get("blockers", [])
+            base["top_recurring_tickers"] = build_ticker_recurrence(days=7, limit=10).get("tickers", [])
+            base["strategy_review_queue_preview"] = build_review_queue(days=7, limit=5).get("queue", [])
+            mv = build_run_movement()
+            base["movement_summary"] = {
+                "improved_count": mv.get("improved_count", 0),
+                "degraded_count": mv.get("degraded_count", 0),
+                "new_count": mv.get("new_count", 0),
+                "disappeared_count": mv.get("disappeared_count", 0),
+                "unchanged_count": mv.get("unchanged_count", 0),
+                "run_id": mv.get("run_id"),
+                "prev_run_id": mv.get("prev_run_id"),
+            }
+        except Exception:
+            pass
+
     status = "ok" if detail is not None else "not_found"
     return redact(_read_only({**base, "status": status, "detail": detail}))
 
