@@ -232,6 +232,11 @@ def _score_ticker(
         "risk_status": "elevated" if (risks or entry.get("add_blockers")) else "normal",
     }
     normalize_strategy_row(row, "stock_momentum")
+    try:
+        from app.strategies.stock_momentum_universal import build_stock_momentum_universal_row
+        build_stock_momentum_universal_row(row)
+    except Exception:
+        pass  # universal enrichment is additive; never block legacy output
     return row
 
 
