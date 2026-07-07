@@ -299,6 +299,11 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         "structure_status": relation,
     }
     normalize_strategy_row(row, "earnings_calendar")
+    try:
+        from app.strategies.earnings_calendar_universal import build_earnings_calendar_universal_row
+        build_earnings_calendar_universal_row(row)
+    except Exception:
+        pass  # universal enrichment is additive; never block legacy output
     return row
 
 
