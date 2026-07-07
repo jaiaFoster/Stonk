@@ -1,21 +1,34 @@
-"""Universal strategy row field normalization for pre-30A readiness (TKT-29.8).
+"""Universal strategy row normalization — ASA 30A.
 
-Adds a thin set of normalized fields to every strategy row so all four strategies
-expose the same minimal surface before Strategy Unification in 30A.
+Adds a stable set of normalized fields to every strategy row so all four
+strategies expose the same minimal surface. The normalization layer is a thin
+wrapper: it reads from existing strategy-specific fields and maps them into
+canonical field names. It does not change scoring, thresholds, or strategy
+logic.
 
-Pattern: call normalize_strategy_row(row, strategy_id) at the end of each
-strategy's row builder. The function mutates `row` in-place and returns it.
+Pattern: strategy engines call normalize_strategy_row(row, strategy_id) at
+the end of their row-building logic. The function mutates `row` in-place and
+returns it. All existing fields are preserved.
+
+normalize_strategy_rows(rows, strategy_id) normalizes a list of rows, working
+on shallow copies so original strategy state is not mutated.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from app.services.strategy_row_schema import (
+    STRATEGY_ROW_SCHEMA_VERSION,
+    NORMALIZED_ROW_EXCLUDE,
+)
+from app.services.strategy_gate_service import make_gate, normalize_gate_status
 
-_DAILY_OPPORTUNITY_REASON: dict[str, str] = {
-    "stock_momentum": "Stock-only signal — options execution not applicable.",
-    "forward_factor_calendar": "Forward Factor is in signal-only mode — execution gated for all tickers.",
-}
+
+# ─── Legacy skip-stage constants (kept for FF friendly_verdict mapping) ────────
+
+_FF_SKIP_STAGES = frozenset({"cap_skip", "budget_skipped", "recent_fail_skip"})
+_FF_SKIP_STATES = frozenset({"SKIPPED_DEV_CAP", "SKIPPED_STRATEGY_CAP", "SKIPPED_PROVIDER_BUDGET"})
 
 _STOCK_ACTION_LABEL: dict[str, str] = {
     "CONSIDER ADDING": "Momentum Pass",
@@ -29,13 +42,42 @@ _STOCK_ACTION_LABEL: dict[str, str] = {
     "WATCH / DATA INCOMPLETE": "Watch",
 }
 
-_FF_SKIP_STAGES = frozenset({"cap_skip", "budget_skipped", "recent_fail_skip"})
-_FF_SKIP_STATES = frozenset({"SKIPPED_DEV_CAP", "SKIPPED_STRATEGY_CAP", "SKIPPED_PROVIDER_BUDGET"})
+_DAILY_OPPORTUNITY_REASON: dict[str, str] = {
+    "stock_momentum": "Stock-only signal — options execution not applicable.",
+    "forward_factor_calendar": "Forward Factor is in signal-only mode — execution gated for all tickers.",
+}
+
+# Stock actions that qualify for Daily Opportunity (add candidates).
+_STOCK_DO_ACTIONS = frozenset({"CONSIDER ADDING", "ADD ON PULLBACK"})
 
 
-def normalize_strategy_row(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
-    """Add universal normalized fields to a strategy row in-place. Returns row."""
+# ─── Public API ───────────────────────────────────────────────────────────────
+
+
+def normalize_strategy_row(
+    row: dict[str, Any],
+    strategy_id: str,
+    spec: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Add universal normalized fields to a strategy row in-place. Returns row.
+
+    The spec parameter is optional. If not provided, it is looked up from the
+    strategy spec registry. Passing spec=None is the normal call pattern.
+    """
+    if spec is None:
+        try:
+            from app.services.strategy_spec_registry import get_spec
+            spec = get_spec(strategy_id) or {}
+        except Exception:
+            spec = {}
+
     row.setdefault("strategy_id", strategy_id)
+    row.setdefault("strategy_row_schema_version", STRATEGY_ROW_SCHEMA_VERSION)
+
+    # Spec metadata — sourced from registry, not invented.
+    row.setdefault("strategy_name", spec.get("strategy_name") or strategy_id)
+    row.setdefault("strategy_family", spec.get("strategy_family") or "unknown")
+    row.setdefault("strategy_goal", spec.get("strategy_goal") or "")
 
     if "friendly_verdict" not in row:
         row["friendly_verdict"] = _friendly_verdict(row, strategy_id)
@@ -43,22 +85,70 @@ def normalize_strategy_row(row: dict[str, Any], strategy_id: str) -> dict[str, A
     if "primary_reason" not in row:
         row["primary_reason"] = _primary_reason(row, strategy_id)
 
+    # Metrics dict — key numerics/statuses for this strategy.
+    if "metrics" not in row:
+        row["metrics"] = _metrics(row, strategy_id)
+
+    # Data quality — reflects provider/candle data state.
+    if "data_quality" not in row:
+        row["data_quality"] = _data_quality(row, strategy_id)
+
+    # Daily Opportunity eligibility.
+    if "daily_opportunity_eligible" not in row:
+        row["daily_opportunity_eligible"] = _daily_opportunity_eligible(row, strategy_id, spec)
+
     if strategy_id in _DAILY_OPPORTUNITY_REASON:
         row.setdefault("daily_opportunity_reason", _DAILY_OPPORTUNITY_REASON[strategy_id])
+    elif "daily_opportunity_reason" not in row:
+        if row["daily_opportunity_eligible"]:
+            row["daily_opportunity_reason"] = "Eligible for Daily Opportunity based on strategy result."
+        else:
+            row["daily_opportunity_reason"] = "Not eligible for Daily Opportunity."
+
+    # Trade policy fields — conservative defaults; FF enforced explicitly.
+    dry_run = bool(spec.get("dry_run")) if spec else False
+    row.setdefault("dry_run", dry_run)
+    row.setdefault("can_trade_live", False)
 
     if strategy_id == "forward_factor_calendar":
         row.setdefault("can_enter_daily_opportunity", False)
-        row.setdefault("can_trade_live", False)
+        # Enforce FF policy regardless of spec lookups.
+        row["can_trade_live"] = False
+        row["dry_run"] = True
 
+    # Gates — canonical gate list using make_gate() shape.
     if "gates" not in row:
         g = _gates(row, strategy_id)
         if g is not None:
             row["gates"] = g
 
+    # Journal / observation readiness fields — for 30B.
+    row.setdefault("journal_eligible", _journal_eligible(row, strategy_id))
+    row.setdefault("observation_key", _observation_key(row, strategy_id))
+    row.setdefault("observation_refs", [])
+
     return row
 
 
-# ─── friendly_verdict ──────────────────────────────────────────────────────────
+def normalize_strategy_rows(
+    rows: list[dict[str, Any]],
+    strategy_id: str,
+    spec: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize a list of rows, working on shallow copies to avoid mutating originals."""
+    result = []
+    for row in (rows or []):
+        if not isinstance(row, dict):
+            continue
+        normalized = normalize_strategy_row({**row}, strategy_id, spec=spec)
+        # Strip large raw fields from compact normalized output.
+        for key in NORMALIZED_ROW_EXCLUDE:
+            normalized.pop(key, None)
+        result.append(normalized)
+    return result
+
+
+# ─── friendly_verdict ─────────────────────────────────────────────────────────
 
 
 def _friendly_verdict(row: dict[str, Any], strategy_id: str) -> str:
@@ -125,7 +215,7 @@ def _friendly_verdict(row: dict[str, Any], strategy_id: str) -> str:
     return str(row.get("verdict") or row.get("action") or "Unknown")
 
 
-# ─── primary_reason ────────────────────────────────────────────────────────────
+# ─── primary_reason ───────────────────────────────────────────────────────────
 
 
 def _primary_reason(row: dict[str, Any], strategy_id: str) -> str:
@@ -167,6 +257,131 @@ def _primary_reason(row: dict[str, Any], strategy_id: str) -> str:
     return str(row.get("verdict") or row.get("action") or "No reason available")
 
 
+# ─── metrics ──────────────────────────────────────────────────────────────────
+
+
+def _metrics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
+    """Extract key metrics from existing strategy-specific fields."""
+    if strategy_id == "earnings_calendar":
+        return {
+            "iv_relationship_status": row.get("iv_relationship_status"),
+            "iv_edge": row.get("iv_edge"),
+            "debit_status": row.get("debit_status"),
+            "debit_pct_underlying": row.get("debit_pct_underlying"),
+            "liquidity_status": row.get("liquidity_status"),
+            "spread_status": row.get("spread_status"),
+            "front_dte": row.get("front_dte"),
+            "back_dte": row.get("back_dte"),
+            "earnings_trust_label": row.get("earnings_trust_label"),
+            "expiration_pair_diagnostics": row.get("expiration_pair_diagnostics"),
+        }
+
+    if strategy_id == "skew_momentum_vertical":
+        return {
+            "momentum_status": row.get("momentum_status"),
+            "skew_status": row.get("skew_status"),
+            "atm_iv": row.get("atm_iv"),
+            "spread_width": row.get("spread_width"),
+            "estimated_debit": row.get("estimated_debit"),
+            "structure_status": row.get("structure_status"),
+        }
+
+    if strategy_id == "forward_factor_calendar":
+        return {
+            "source_forward_factor": row.get("source_forward_factor"),
+            "diagnostic_forward_factor": row.get("diagnostic_raw_iv_forward_factor"),
+            "front_iv": row.get("front_iv"),
+            "back_iv": row.get("back_iv"),
+            "ex_earnings_iv": row.get("ex_earnings_iv"),
+            "source_qualification": row.get("source_qualification"),
+            "source_qualified": row.get("source_qualified"),
+            "chain_approved": row.get("chain_approved"),
+            "structure_built": row.get("structure_built"),
+            "earnings_contaminated": row.get("earnings_contaminated"),
+        }
+
+    if strategy_id == "stock_momentum":
+        return {
+            "momentum_score": row.get("momentum_score") or row.get("score"),
+            "relative_strength": row.get("relative_strength"),
+            "trend_status": row.get("trend_status"),
+            "volume_status": row.get("volume_status"),
+            "price_action_status": row.get("price_action_status"),
+            "risk_status": row.get("risk_status"),
+        }
+
+    return {}
+
+
+# ─── data_quality ─────────────────────────────────────────────────────────────
+
+
+def _data_quality(row: dict[str, Any], strategy_id: str) -> str:
+    """Infer data quality tier from existing row fields."""
+    existing = row.get("data_quality")
+    if existing:
+        return str(existing)
+    # FF-specific data state
+    data_state = str(row.get("data_state") or "")
+    if data_state in _FF_SKIP_STATES:
+        return "limited"
+    stage = str(row.get("ff_candidate_stage") or "")
+    if stage in _FF_SKIP_STAGES:
+        return "limited"
+    # Skew requirements failures signal data quality issue
+    if strategy_id == "skew_momentum_vertical":
+        reqs = row.get("requirements") or []
+        dq_fails = [
+            r for r in reqs if isinstance(r, dict)
+            and str(r.get("code") or "") == "data_quality"
+            and str(r.get("status") or "").upper() == "FAIL"
+        ]
+        if dq_fails:
+            return "degraded"
+    # Calendar trust label
+    if strategy_id == "earnings_calendar":
+        trust = str(row.get("earnings_trust_label") or "")
+        if trust == "conflict_do_not_trade":
+            return "conflict"
+        if trust == "single_source_verify":
+            return "limited"
+        if trust in ("confirmed", "multi_source", "multi_source_confirmed"):
+            return "good"
+    return "unknown"
+
+
+# ─── daily_opportunity_eligible ───────────────────────────────────────────────
+
+
+def _daily_opportunity_eligible(
+    row: dict[str, Any], strategy_id: str, spec: dict[str, Any]
+) -> bool:
+    """Determine if this row is eligible for Daily Opportunity.
+
+    Reflects existing row logic — does not change eligibility rules.
+    """
+    # FF: always excluded by policy.
+    if strategy_id == "forward_factor_calendar":
+        return False
+
+    # Use spec to block strategies not allowed in DO.
+    if not spec.get("daily_opportunity_allowed", True):
+        return False
+
+    if strategy_id == "earnings_calendar":
+        return bool(row.get("calendar_entry_allowed"))
+
+    if strategy_id == "skew_momentum_vertical":
+        verdict = str(row.get("verdict") or "")
+        return verdict.startswith("PASS")
+
+    if strategy_id == "stock_momentum":
+        action = str(row.get("action") or "")
+        return action in _STOCK_DO_ACTIONS
+
+    return False
+
+
 # ─── gates ────────────────────────────────────────────────────────────────────
 
 
@@ -174,13 +389,13 @@ def _gates(row: dict[str, Any], strategy_id: str) -> list[dict[str, Any]] | None
     if strategy_id == "skew_momentum_vertical":
         reqs = row.get("requirements")
         if isinstance(reqs, list):
-            return list(reqs)
-        return None
+            return [_normalize_requirement(r) for r in reqs]
+        return []
 
     if strategy_id == "forward_factor_calendar":
         fg = row.get("ff_gates")
         if not isinstance(fg, dict):
-            return None
+            return []
         cheap = bool(fg.get("cheap_eligible"))
         chain = bool(fg.get("chain_approved"))
         sq = bool(fg.get("source_qualified"))
@@ -190,41 +405,47 @@ def _gates(row: dict[str, Any], strategy_id: str) -> list[dict[str, Any]] | None
         stage = str(row.get("ff_candidate_stage") or "")
         if stage in _FF_SKIP_STAGES:
             return [
-                _gate("Coverage eligibility", "skipped", "Outside limited scan window"),
-                _gate("Chain approved", "not_applicable"),
-                _gate("Source qualified", "not_applicable"),
-                _gate("Diagnostic model", "not_applicable"),
-                _gate("Structure built", "not_applicable"),
-                _gate("Execution", "dry_run", "Signal-only mode"),
+                make_gate("Coverage eligibility", "skipped", reason="Outside limited scan window", sort_order=10),
+                make_gate("Chain approved", "not_applicable", blocking=False),
+                make_gate("Source qualified", "not_applicable", blocking=False),
+                make_gate("Diagnostic model", "not_applicable", blocking=False),
+                make_gate("Structure built", "not_applicable", blocking=False),
+                make_gate("Execution", "dry_run", reason="Signal-only mode", blocking=False, sort_order=90),
             ]
         return [
-            _gate("Coverage eligibility", "pass" if cheap else "fail"),
-            _gate("Chain approved", "pass" if chain else ("not_applicable" if not cheap else "fail")),
-            _gate("Source qualified",
-                  "fail" if contaminated else ("pass" if sq else ("not_applicable" if not chain else "fail")),
-                  "Earnings contamination" if contaminated else ""),
-            _gate("Diagnostic model",
-                  "pass" if dm else ("not_applicable" if not (chain or sq) else "fail")),
-            _gate("Structure built",
-                  "pass" if sb else ("not_applicable" if not (dm or sq) else "fail")),
-            _gate("Execution", "dry_run", "Signal-only mode — trade gated"),
+            make_gate("Coverage eligibility", "pass" if cheap else "fail", sort_order=10),
+            make_gate("Chain approved",
+                      "pass" if chain else ("not_applicable" if not cheap else "fail"),
+                      blocking=not chain and cheap),
+            make_gate("Source qualified",
+                      "fail" if contaminated else ("pass" if sq else ("not_applicable" if not chain else "fail")),
+                      reason="Earnings contamination" if contaminated else "",
+                      blocking=contaminated or (not sq and chain)),
+            make_gate("Diagnostic model",
+                      "pass" if dm else ("not_applicable" if not (chain or sq) else "fail"),
+                      blocking=not dm and (chain or sq)),
+            make_gate("Structure built",
+                      "pass" if sb else ("not_applicable" if not (dm or sq) else "fail"),
+                      blocking=not sb and (dm or sq)),
+            make_gate("Execution", "dry_run", reason="Signal-only mode — trade gated for all tickers",
+                      blocking=False, sort_order=90),
         ]
 
     if strategy_id == "stock_momentum":
         mm = row.get("market_metrics") or {}
-        above50 = mm.get("above_sma_50")
-        above200 = mm.get("above_sma_200")
+        above50 = mm.get("above_sma_50") if mm else row.get("above_sma_50")
+        above200 = mm.get("above_sma_200") if mm else row.get("above_sma_200")
         add_allowed = bool(row.get("add_allowed_boolean"))
         action = str(row.get("action") or "").upper()
         overall = "pass" if add_allowed else ("watch" if "WATCH" in action else "fail")
         blockers = row.get("add_blockers") or []
         gates: list[dict[str, Any]] = [
-            _gate("Above 50-day MA", _bool_status(above50)),
-            _gate("Above 200-day MA", _bool_status(above200)),
-            _gate("Momentum verdict", overall, str(row.get("action") or "")),
+            make_gate("Above 50-day MA", _bool_status(above50), sort_order=60, blocking=False),
+            make_gate("Above 200-day MA", _bool_status(above200), sort_order=60, blocking=False),
+            make_gate("Momentum verdict", overall, reason=str(row.get("action") or ""), sort_order=65),
         ]
         if blockers:
-            gates.append(_gate("Entry blockers", "fail", str(blockers[0])))
+            gates.append(make_gate("Entry blockers", "fail", reason=str(blockers[0]), sort_order=75))
         return gates
 
     if strategy_id == "earnings_calendar":
@@ -235,37 +456,96 @@ def _gates(row: dict[str, Any], strategy_id: str) -> list[dict[str, Any]] | None
         gates = []
         # Expiration relationship gate
         if relation == "long_leg_captures_earnings":
-            gates.append(_gate("Expiration pair", "pass", "Preferred structure"))
+            gates.append(make_gate("Expiration pair", "pass", reason="Preferred structure", sort_order=30))
         elif relation in ("missing_expiration", "already_reported", "earnings_after_back_leg",
                           "short_leg_spans_earnings"):
-            gates.append(_gate("Expiration pair", "fail", relation.replace("_", " ")))
+            gates.append(make_gate("Expiration pair", "fail", reason=relation.replace("_", " "), sort_order=30))
         elif relation in ("near_miss_expiry_gap", "earnings_on_front_expiration"):
-            gates.append(_gate("Expiration pair", "watch", relation.replace("_", " ")))
+            gates.append(make_gate("Expiration pair", "watch", reason=relation.replace("_", " "),
+                                   blocking=False, sort_order=30))
         else:
-            gates.append(_gate("Expiration pair", "unknown", relation))
+            gates.append(make_gate("Expiration pair", "unknown", reason=relation,
+                                   blocking=False, sort_order=30))
         # Earnings trust gate
         if trust_label == "conflict_do_not_trade":
-            gates.append(_gate("Earnings date trust", "fail", "Conflict — do not trade"))
+            gates.append(make_gate("Earnings date trust", "fail",
+                                   reason="Conflict — do not trade", sort_order=20))
         elif trust_label == "single_source_verify":
-            gates.append(_gate("Earnings date trust", "watch", "Single-source lower confidence"))
+            gates.append(make_gate("Earnings date trust", "watch",
+                                   reason="Single-source lower confidence", blocking=False, sort_order=20))
         elif trust_label in ("confirmed", "multi_source", "multi_source_confirmed"):
-            gates.append(_gate("Earnings date trust", "pass", "Confirmed earnings date"))
+            gates.append(make_gate("Earnings date trust", "pass",
+                                   reason="Confirmed earnings date", sort_order=20))
         else:
-            gates.append(_gate("Earnings date trust", "unknown", trust_label))
+            gates.append(make_gate("Earnings date trust", "unknown",
+                                   reason=trust_label, blocking=False, sort_order=20))
         # Calendar entry gate
         if calendar_entry_allowed:
-            gates.append(_gate("Calendar entry", "pass"))
+            gates.append(make_gate("Calendar entry", "pass", sort_order=80))
         elif "URGENT" in action or "NEAR_MISS" in action or "WATCH" in action:
-            gates.append(_gate("Calendar entry", "watch"))
+            gates.append(make_gate("Calendar entry", "watch", blocking=False, sort_order=80))
         else:
-            gates.append(_gate("Calendar entry", "fail"))
+            gates.append(make_gate("Calendar entry", "fail", sort_order=80))
         return gates
 
     return None
 
 
-def _gate(name: str, status: str, detail: str = "") -> dict[str, Any]:
-    return {"name": name, "status": status, "detail": detail}
+def _normalize_requirement(req: dict[str, Any]) -> dict[str, Any]:
+    """Map a raw skew requirement dict into the canonical gate shape."""
+    name = str(req.get("name") or req.get("code") or "Check")
+    raw_status = str(req.get("status") or "").upper()
+    status = "pass" if raw_status == "PASS" else ("fail" if raw_status == "FAIL" else "unknown")
+    detail = str(req.get("detail") or "")
+    code = str(req.get("code") or "")
+    return make_gate(name, status, id=code or None, reason=detail, sort_order=50)
+
+
+# ─── journal / observation readiness ─────────────────────────────────────────
+
+
+def _journal_eligible(row: dict[str, Any], strategy_id: str) -> bool:
+    """True if this row has enough identity to become a 30B journal entry."""
+    ticker = str(row.get("ticker") or "").strip()
+    has_verdict = bool(row.get("verdict") or row.get("action"))
+    return bool(ticker and has_verdict)
+
+
+def _observation_key(row: dict[str, Any], strategy_id: str) -> str:
+    """Stable observation key for 30B journal entries.
+
+    Format: strategy_id:ticker:candidate_type:structure_type:expiration_or_timeframe
+    """
+    ticker = str(row.get("ticker") or "unknown").upper()
+
+    if strategy_id == "earnings_calendar":
+        candidate_type = "calendar_candidate"
+        structure_type = str(row.get("structure_type") or "calendar_spread")
+        expiration = str(row.get("front_expiration") or row.get("front_expiry") or "")
+    elif strategy_id == "skew_momentum_vertical":
+        candidate_type = "vertical_spread"
+        structure_type = str(row.get("structure_type") or "vertical")
+        expiration = str(row.get("selected_expiration") or row.get("expiration") or "")
+    elif strategy_id == "forward_factor_calendar":
+        candidate_type = "forward_factor_signal"
+        structure_type = str(row.get("structure_type") or "calendar")
+        expiration = str(row.get("structure_front_expiry") or row.get("front_expiration") or "")
+    elif strategy_id == "stock_momentum":
+        candidate_type = "stock_momentum"
+        structure_type = "equity"
+        expiration = ""
+    else:
+        candidate_type = "unknown"
+        structure_type = "unknown"
+        expiration = ""
+
+    parts = [strategy_id, ticker, candidate_type, structure_type]
+    if expiration:
+        parts.append(expiration)
+    return ":".join(parts)
+
+
+# ─── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _bool_status(val: Any) -> str:

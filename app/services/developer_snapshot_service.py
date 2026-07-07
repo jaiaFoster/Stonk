@@ -119,6 +119,19 @@ def build_snapshot_detail(
         base["raw_provider_payload"] = True
     else:
         detail = details.get(section)
+
+    # 30A: add normalized_strategy_rows to strategies section.
+    if section == "strategies":
+        try:
+            from app.services.strategy_row_normalization_service import normalize_strategy_rows
+            nsr: dict[str, Any] = {}
+            for sid, val in (strategies or {}).items():
+                rows = list(val.get("canonical_opportunities") or val.get("rows") or [])[:20]
+                nsr[sid] = normalize_strategy_rows(rows, sid)
+            base["normalized_strategy_rows"] = nsr
+        except Exception:
+            pass
+
     status = "ok" if detail is not None else "not_found"
     return redact(_read_only({**base, "status": status, "detail": detail}))
 
