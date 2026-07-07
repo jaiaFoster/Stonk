@@ -2372,6 +2372,17 @@ def api_strategies_validate_draft():
     return jsonify(validate_draft(body)), 200
 
 
+@app.route("/api/strategies/<strategy_id>/rows")
+def api_strategies_rows(strategy_id: str):
+    """Return universalized rows for a strategy from the latest stored snapshot."""
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import get_strategy_rows
+    limit = min(int(request.args.get("limit") or 20), 50)
+    result = get_strategy_rows(strategy_id=strategy_id, limit=limit)
+    status = 404 if result.get("error") == "Unknown strategy_id." else 200
+    return jsonify(result), status
+
+
 @app.route("/api/strategies/<strategy_id>")
 def api_strategies_get(strategy_id: str):
     _require_dev_diagnostics_token()
