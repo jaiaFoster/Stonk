@@ -2394,6 +2394,120 @@ def api_strategies_get(strategy_id: str):
     return jsonify({**spec, "provider_calls_triggered": False, "read_only": True}), 200
 
 
+# ─── 30D.1: Refresh + Run Status + Manifest endpoints ────────────────────────
+
+@app.route("/api/run/refresh", methods=["POST"])
+def api_run_refresh():
+    """Trigger an async pipeline run via JSON API. Requires RUN_TOKEN.
+
+    Returns {job_id, status, poll} immediately. Provider calls are triggered
+    (read_only=False). Gate: RUN_TOKEN — this is a write-path entry point.
+    """
+    token = request.args.get("token") or (
+        request.headers.get("Authorization", "")[7:].strip()
+        if request.headers.get("Authorization", "").startswith("Bearer ")
+        else None
+    )
+    if not _valid_run_token(token):
+        return jsonify({"status": "error", "error": "Unauthorized. RUN_TOKEN required.", "provider_calls_triggered": False}), 403
+
+    mode = str(request.args.get("mode") or "prod").strip().lower()
+    if mode not in {"dev", "prod"}:
+        return jsonify({"error": "mode must be 'dev' or 'prod'", "provider_calls_triggered": False}), 400
+
+    global ACTIVE_JOB_ID
+    _recover_stale_run_if_needed()
+    _cleanup_old_jobs()
+    with RUN_STATE_LOCK:
+        if not RUN_LOCK.acquire(blocking=False):
+            return jsonify({
+                "status": "already_running",
+                "job_id": ACTIVE_JOB_ID,
+                "mode": mode,
+                "poll": f"/api/run/status/{ACTIVE_JOB_ID}",
+                "note": "A run is already in progress.",
+                "provider_calls_triggered": False,
+                "read_only": True,
+            }), 202
+
+        job_id = uuid.uuid4().hex
+        now = time.time()
+        ACTIVE_JOB_ID = job_id
+        RUN_JOBS[job_id] = {
+            "status": "running",
+            "message": _initial_job_message(mode),
+            "mode": mode,
+            "created_at": now,
+            "started_at": now,
+            "heartbeat_at": now,
+            "updated_at": now,
+            "timeout_reason": None,
+            "failed_stage": None,
+            "retry_safe": False,
+            "result": None,
+        }
+
+    worker = threading.Thread(target=_run_job, args=(job_id, mode, RUN_LOCK), daemon=True)
+    worker.start()
+    print(f"=== /api/run/refresh: async job {job_id} started; mode={mode} ===", flush=True)
+    return jsonify({
+        "status": "triggered",
+        "job_id": job_id,
+        "mode": mode,
+        "poll": f"/api/run/status/{job_id}",
+        "note": f"Poll /api/run/status/{job_id} until status=complete.",
+        "provider_calls_triggered": True,
+        "read_only": False,
+    }), 202
+
+
+@app.route("/api/run/status/<job_id>")
+def api_run_status(job_id: str):
+    """Return status of an async run job by ID. Dev-token gated, read-only."""
+    _require_dev_diagnostics_token()
+    from app.api.run_api import get_run_status
+    return jsonify(get_run_status(job_id, RUN_JOBS)), 200
+
+
+@app.route("/api/runs/latest")
+def api_runs_latest():
+    """Return latest compact RunManifest. Dev-token gated, read-only."""
+    _require_dev_diagnostics_token()
+    from app.api.run_api import get_latest_run
+    return jsonify(get_latest_run()), 200
+
+
+# ─── 30D.1: Dashboard summary endpoint ───────────────────────────────────────
+
+@app.route("/api/dashboard/summary")
+def api_dashboard_summary():
+    """Compact overview of the latest run. Dev-token gated, read-only."""
+    _require_dev_diagnostics_token()
+    from app.api.dashboard_api import build_dashboard_summary
+    return jsonify(build_dashboard_summary()), 200
+
+
+# ─── 30D.1: Daily Opportunity read-only API ───────────────────────────────────
+
+@app.route("/api/daily-opportunity")
+def api_daily_opportunity():
+    """Compact daily opportunity list from latest snapshot. Dev-token gated."""
+    _require_dev_diagnostics_token()
+    from app.api.daily_opportunity_api import build_daily_opportunity_response
+    limit = min(int(request.args.get("limit") or 12), 50)
+    return jsonify(build_daily_opportunity_response(limit=limit)), 200
+
+
+# ─── 30D.1: Open Positions read-only API ──────────────────────────────────────
+
+@app.route("/api/open-positions")
+def api_open_positions():
+    """Open options positions and lifecycle summary. Dev-token gated."""
+    _require_dev_diagnostics_token()
+    from app.api.open_positions_api import build_open_positions_response
+    return jsonify(build_open_positions_response()), 200
+
+
 @app.route("/api/dev/skew-threshold-analysis")
 @require_admin
 def dev_skew_threshold_analysis():
