@@ -2339,6 +2339,50 @@ def dev_strategy_review_queue():
     return jsonify(build_review_queue(days=days, strategy_id=strategy_id, limit=limit)), 200
 
 
+# ─── 30A: Strategy Framework API endpoints ────────────────────────────────────
+
+@app.route("/api/strategies")
+def api_strategies_list():
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import list_strategies
+    return jsonify(list_strategies()), 200
+
+
+@app.route("/api/strategies/schema")
+def api_strategies_schema():
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import get_strategy_schema
+    return jsonify(get_strategy_schema()), 200
+
+
+@app.route("/api/strategies/test-rows")
+def api_strategies_test_rows():
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import get_test_rows
+    strategy_id = request.args.get("strategy_id") or None
+    limit = min(int(request.args.get("limit") or 20), 50)
+    return jsonify(get_test_rows(strategy_id=strategy_id, limit=limit)), 200
+
+
+@app.route("/api/strategies/drafts", methods=["POST"])
+def api_strategies_validate_draft():
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import validate_draft
+    body = request.get_json(silent=True) or {}
+    return jsonify(validate_draft(body)), 200
+
+
+@app.route("/api/strategies/<strategy_id>")
+def api_strategies_get(strategy_id: str):
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import get_strategy
+    spec = get_strategy(strategy_id)
+    if spec is None:
+        from app.services.strategy_spec_registry import all_strategy_ids
+        return jsonify({"error": "Unknown strategy_id.", "valid_ids": all_strategy_ids() + ["stock_momentum_unified_test"], "provider_calls_triggered": False, "read_only": True}), 404
+    return jsonify({**spec, "provider_calls_triggered": False, "read_only": True}), 200
+
+
 @app.route("/api/dev/skew-threshold-analysis")
 @require_admin
 def dev_skew_threshold_analysis():

@@ -8,6 +8,41 @@ from app.strategies.adapters import EarningsCalendarStrategy, ForwardFactorCalen
 
 STRATEGY_REGISTRY = [EarningsCalendarStrategy(), SkewMomentumVerticalStrategy(), ForwardFactorCalendarStrategy(), StockMomentumStrategy()]
 
+# ─── Unified spec registry (read-only metadata dict) ──────────────────────────
+# STRATEGY_SPEC_REGISTRY is a dict-based complement to the list-based STRATEGY_REGISTRY.
+# It includes the four production strategies plus the test clone, keyed by strategy_id.
+# Use this for developer tools, API endpoints, and universal row consumers.
+# CAVEMAN: Adding an entry here does not enable a strategy or grant Daily Opportunity access.
+
+
+def _build_spec_registry() -> dict[str, dict[str, Any]]:
+    from app.services.strategy_spec_registry import STRATEGY_SPECS
+    from app.strategies.schema import SCHEMA_VERSION
+    registry: dict[str, dict[str, Any]] = {**STRATEGY_SPECS}
+    registry["stock_momentum_unified_test"] = {
+        "strategy_id": "stock_momentum_unified_test",
+        "strategy_name": "Stock Momentum Unified (Test Clone)",
+        "strategy_family": "equity_momentum",
+        "strategy_goal": (
+            "Test clone of stock_momentum that normalizes rows into the universal "
+            "strategy row schema. Never runs in production; is_enabled() is False."
+        ),
+        "status": "test",
+        "dry_run": True,
+        "daily_opportunity_allowed": False,
+        "requires_broker_positions": False,
+        "requires_options_chain": False,
+        "requires_earnings_date": False,
+        "primary_outputs": ["test_candidate"],
+        "gate_ids": ["trend", "momentum", "relative_strength", "volume", "risk"],
+        "inputs_required": ["price_data", "sma_data", "return_metrics", "volume_metrics"],
+        "schema_version": SCHEMA_VERSION,
+    }
+    return registry
+
+
+STRATEGY_SPEC_REGISTRY: dict[str, dict[str, Any]] = _build_spec_registry()
+
 
 def enabled_strategies() -> list[Any]:
     return [strategy for strategy in STRATEGY_REGISTRY if strategy.is_enabled()]
