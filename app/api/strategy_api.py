@@ -217,6 +217,31 @@ def get_strategy_rows(
                 "schema_version": rows[0].get("schema_version") if rows else None,
             }
 
+        if strategy_id == "skew_momentum_vertical":
+            skew_data = strategies.get("skew_momentum_vertical") or tradier.get("_skew_momentum_vertical_strategy") or {}
+            raw_rows = skew_data.get("items") or skew_data.get("rows") or skew_data.get("canonical_opportunities") or []
+            cap = min(int(limit or 20), 50)
+            rows = []
+            run_id = snapshot.get("run_id")
+            for row in list(raw_rows)[:cap]:
+                if not isinstance(row, dict):
+                    continue
+                enriched = dict(row)
+                try:
+                    from app.strategies.skew_momentum_vertical_universal import build_skew_momentum_vertical_universal_row
+                    build_skew_momentum_vertical_universal_row(enriched, run_id=run_id)
+                except Exception:
+                    pass
+                rows.append(enriched)
+            return {
+                **_READ_ONLY_BASE,
+                "strategy_id": strategy_id,
+                "rows": rows,
+                "row_count": len(rows),
+                "source_run_id": run_id,
+                "schema_version": rows[0].get("schema_version") if rows else None,
+            }
+
         # Other strategies: return empty state — future lanes will implement them.
         return {
             **_READ_ONLY_BASE,

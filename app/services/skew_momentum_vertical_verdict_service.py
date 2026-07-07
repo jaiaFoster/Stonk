@@ -59,4 +59,9 @@ def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str,
         "atm_iv": candidate.get("atm_iv"),
     }
     normalize_strategy_row(row, "skew_momentum_vertical")
+    try:
+        from app.strategies.skew_momentum_vertical_universal import build_skew_momentum_vertical_universal_row
+        build_skew_momentum_vertical_universal_row(row)
+    except Exception:
+        pass  # universal enrichment is additive; never block legacy output
     return row
