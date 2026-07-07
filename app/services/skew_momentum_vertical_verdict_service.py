@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.services.strategy_row_normalization_service import normalize_strategy_row
+
 
 def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str, Any]:
     failures = [item for item in candidate.get("requirements", []) or [] if item.get("status") == "FAIL"]
@@ -38,7 +40,8 @@ def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str,
         verdict, state, next_action = "PASS / POSSIBLE ENTRY SETUP", "PASSED_ENTRY_REVIEW", "Recheck live bid/ask quotes and account risk before entry."
         blocker = ""
     tone = "good" if verdict.startswith("PASS") else "warn" if verdict.startswith("WATCH") else "bad"
-    return {
+    spread_data = candidate.get("possible_spread") or {}
+    row = {
         **candidate,
         "verdict": verdict,
         "display_state": state,
@@ -47,4 +50,13 @@ def apply_skew_momentum_vertical_verdict(candidate: dict[str, Any]) -> dict[str,
         "primary_blocker": blocker,
         "next_action": next_action,
         "recoverability_hint": next_action,
+        # 29.8: normalized fields for pre-30A readiness
+        "momentum_status": "confirmed" if candidate.get("momentum_confirmed") else ("unavailable" if candidate.get("direction") is None else "not_confirmed"),
+        "skew_status": "pass" if candidate.get("skew_pass") else "fail",
+        "spread_width": spread_data.get("width"),
+        "estimated_debit": candidate.get("conservative_debit"),
+        "structure_status": "complete" if verdict.startswith("PASS") else ("watch" if verdict.startswith("WATCH") else "fail"),
+        "atm_iv": candidate.get("atm_iv"),
     }
+    normalize_strategy_row(row, "skew_momentum_vertical")
+    return row

@@ -589,10 +589,20 @@ def positions():
 
                 # 29K: enrich with lifecycle data from snapshot.
                 lifecycle_summary = _lifecycle_summary_from_report(report)
+                lifecycle_overlay_status = "unavailable"
+                lifecycle_reconciliation_notes: list[str] = []
                 if lifecycle_summary.get("has_data"):
                     # If lifecycle detects active calendars, surface them even if DB options_positions is empty.
                     if not has_open_calendars and lifecycle_summary.get("active_calendar_count", 0) > 0:
                         has_open_calendars = True
+                        # 29.8: DB and lifecycle disagree — flag as reconciled.
+                        lifecycle_overlay_status = "reconciled"
+                        lifecycle_reconciliation_notes.append(
+                            f"DB options_positions reported no open calendars; lifecycle snapshot detected "
+                            f"{lifecycle_summary.get('active_calendar_count', 0)} active calendar(s)."
+                        )
+                    else:
+                        lifecycle_overlay_status = "applied"
                     # Overlay lifecycle status onto matching DB options positions.
                     _overlay_lifecycle(options_positions, lifecycle_summary.get("checks") or [])
 
@@ -621,7 +631,10 @@ def positions():
                     "active_calendar_count": lifecycle_summary.get("active_calendar_count", 0),
                     "calendar_structures": lifecycle_summary.get("calendar_structures") or [],
                     "lifecycle_status": lifecycle_summary.get("status"),
+                    "lifecycle_overlay_status": lifecycle_overlay_status,
                 })
+                if lifecycle_reconciliation_notes:
+                    payload["positions_lifecycle_reconciliation_notes"] = lifecycle_reconciliation_notes
                 return jsonify(payload), 200
         except Exception as exc:
             import traceback

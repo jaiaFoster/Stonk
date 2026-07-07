@@ -1303,7 +1303,8 @@ def _public_detail_pairs(row: dict[str, Any]) -> list[tuple[str, str]]:
         details.append(("IV", f"{front_iv if front_iv is not None else '—'} / {back_iv if back_iv is not None else '—'}"))
     source_iv_status = grab("source_iv_status")
     if source_iv_status:
-        details.append(("FF source mode", str(source_iv_status)))
+        from app.services.public_screener_gate_service import public_ff_source_label as _pff_label
+        details.append(("FF source mode", _pff_label({**raw, **row})))
     contamination = grab("earnings_contamination_reason")
     if row.get("earnings_contaminated") or raw.get("earnings_contaminated"):
         details.append(("Earnings risk", str(contamination or "Contaminated")))

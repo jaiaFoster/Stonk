@@ -13,6 +13,7 @@ from app.services.forward_factor_data_eligibility_service import validate_requir
 from app.services.forward_factor_ranking_service import rank_forward_factor
 from app.services.forward_factor_signal_gate_service import evaluate_forward_factor_signal_gate
 from app.services.forward_factor_verdict_service import apply_forward_factor_verdict
+from app.services.strategy_row_normalization_service import normalize_strategy_row
 from app.services.earnings_trust_service import normalize_earnings_trust
 
 
@@ -530,6 +531,22 @@ def build_forward_factor_strategy(
             gated["can_enter_daily_opportunity"] = False
         gated["what_would_make_positive"] = what_would_make_positive(gated)
         gated["ff_gates"] = _ff_gates(gated)
+        # 29.8: normalized compact fields for pre-30A readiness
+        _fg = gated["ff_gates"]
+        gated.setdefault("source_qualified", bool(_fg.get("source_qualified")))
+        gated.setdefault("chain_approved", bool(_fg.get("chain_approved")))
+        gated.setdefault("structure_built", bool(_fg.get("structure_built")))
+        gated.setdefault("diagnostic_model", bool(_fg.get("diagnostic_model")))
+        gated.setdefault("cheap_eligible", bool(_fg.get("cheap_eligible")))
+        gated.setdefault("earnings_contaminated", bool(_fg.get("earnings_contaminated")))
+        gated.setdefault("source_qualification", _fg.get("source_qualification") or "not_evaluated")
+        gated.setdefault("front_iv", gated.get("front_ex_earnings_iv") or gated.get("front_raw_iv"))
+        gated.setdefault("back_iv", gated.get("back_ex_earnings_iv") or gated.get("back_raw_iv"))
+        gated.setdefault("ex_earnings_iv", gated.get("front_ex_earnings_iv"))
+        gated.setdefault("dry_run", bool(config.FORWARD_FACTOR_DRY_RUN))
+        gated.setdefault("can_enter_daily_opportunity", False)
+        gated.setdefault("can_trade_live", False)
+        normalize_strategy_row(gated, "forward_factor_calendar")
         gated_rows.append(gated)
     if config.FF_JOURNAL_ENABLED:
         try:
