@@ -359,7 +359,7 @@ def _core_run_info() -> dict:
     try:
         from app.services.report_snapshot_service import ReportSnapshotRepository
         repo = ReportSnapshotRepository(log_print=lambda m: None)
-        snapshot = repo.latest_success(include_full=False)
+        snapshot = repo.latest_success(include_full=True)
         if not snapshot:
             return {"quality": None, "freshness_hours": None, "stale": None}
         completed_at = snapshot.get("completed_at")
@@ -369,10 +369,9 @@ def _core_run_info() -> dict:
         age_hours = round((datetime.now(timezone.utc) - completed_dt).total_seconds() / 3600, 2)
         from app import config as _cfg
         stale_threshold = float(getattr(_cfg, "CORE_RUN_STALE_THRESHOLD_HOURS", 4.0))
-        # Quality lives in summary_json → _pipeline_status
         quality = None
         try:
-            summary = repo.load_summary(snapshot, full=False)
+            summary = repo.load_summary(snapshot, full=True)
             report = summary.get("report_data", {}) or {}
             tradier = report.get("tradier_snapshot", {}) or {}
             pipeline = tradier.get("_pipeline_status", {}) or {}

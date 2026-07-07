@@ -15,7 +15,7 @@ from app.services.provider_payload_compaction_service import compact_tradier_sna
 
 
 class ReportSnapshotRepository:
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: str | None = None, log_print=None):
         self.db_path = str(db_path or config.REPORT_SNAPSHOT_DB_PATH)
@@ -63,7 +63,10 @@ class ReportSnapshotRepository:
             default=str,
             separators=(",", ":"),
         )
-        hot_summary = build_hot_report_summary(summary)
+        if getattr(config, "REPORT_FULL_DEBUG_PAYLOAD_ENABLED", False):
+            hot_summary = build_hot_report_summary(summary)
+        else:
+            hot_summary = build_compact_manifest_summary(summary)
         hot_summary_json = json.dumps(hot_summary, default=str, separators=(",", ":"))
         compressed = bool(getattr(config, "REPORT_SNAPSHOT_STORE_COMPRESSED_FULL", True))
         full_summary_blob = zlib.compress(full_summary_json.encode("utf-8")) if compressed else None
@@ -135,7 +138,9 @@ class ReportSnapshotRepository:
         )
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT {columns} FROM report_snapshots WHERE status='complete' AND schema_version=? ORDER BY completed_at DESC LIMIT 1",
+                f"SELECT {columns} FROM report_snapshots"
+                " WHERE status='complete' AND (schema_version IS NULL OR schema_version <= ?)"
+                " ORDER BY completed_at DESC LIMIT 1",
                 (self.SCHEMA_VERSION,),
             ).fetchone()
         result = dict(row) if row else None
@@ -150,7 +155,9 @@ class ReportSnapshotRepository:
         )
         with self._connect() as conn:
             row = conn.execute(
-                f"SELECT {columns} FROM report_snapshots WHERE status='degraded' AND schema_version=? ORDER BY completed_at DESC LIMIT 1",
+                f"SELECT {columns} FROM report_snapshots"
+                " WHERE status='degraded' AND (schema_version IS NULL OR schema_version <= ?)"
+                " ORDER BY completed_at DESC LIMIT 1",
                 (self.SCHEMA_VERSION,),
             ).fetchone()
         return dict(row) if row else None
@@ -199,6 +206,107 @@ class ReportSnapshotRepository:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(report_snapshots)")}
         if name not in columns:
             conn.execute(f"ALTER TABLE report_snapshots ADD COLUMN {name} {sql_type}")
+
+
+def build_compact_manifest_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    """Compact manifest for summary_json — schema_version=2, sub-50KB, no row arrays.
+
+    Contains only strategy counts, DO summary (top 3 actions), broker status,
+    position summary, provider status, and payload profile. Full pipeline data
+    is preserved in full_summary_blob / raw_provider_blob for API reads.
+    """
+    report = (summary or {}).get("report_data", {}) or {}
+    tradier = report.get("tradier_snapshot", {}) or {}
+    run_manifest = tradier.get("_run_manifest") or {}
+    pipeline = tradier.get("_pipeline_status") or (summary or {}).get("pipeline_status") or {}
+    provider_status_raw = tradier.get("_provider_status") or {}
+    payload_profile = tradier.get("_payload_size_profile") or (summary or {}).get("payload_size_profile") or {}
+    strategy_results = tradier.get("_strategy_results") or summary.get("strategy_results") or {}
+    do_engine = tradier.get("_daily_opportunity_engine") or {}
+    open_opts = tradier.get("_open_options_positions") or {}
+
+    strategy_counts = {
+        str(sid): {
+            "pass": int((data.get("pass_count") or 0)),
+            "watch": int((data.get("watch_count") or 0)),
+            "fail": int((data.get("fail_count") or 0)),
+            "skipped": int((data.get("skipped_count") or 0)),
+        }
+        for sid, data in (strategy_results or {}).items()
+        if isinstance(data, dict)
+    }
+
+    raw_actions = (do_engine.get("actions") or []) if isinstance(do_engine, dict) else []
+    if isinstance(raw_actions, dict):
+        raw_actions = raw_actions.get("sample") or []
+    raw_actions = list(raw_actions)
+    scores = [
+        float(a.get("priority_score") or a.get("signal_score") or a.get("actionability_score") or 0)
+        for a in raw_actions if isinstance(a, dict)
+    ]
+    do_summary = {
+        "enabled": bool(do_engine.get("enabled", True) if isinstance(do_engine, dict) else True),
+        "action_count": len(raw_actions),
+        "top_actions": [
+            {k: a.get(k) for k in ("ticker", "action", "type", "source")}
+            for a in raw_actions[:3] if isinstance(a, dict)
+        ],
+        "signal_score_min": round(min(scores), 1) if scores else None,
+        "signal_score_max": round(max(scores), 1) if scores else None,
+    }
+
+    positions = []
+    if isinstance(open_opts, dict):
+        positions = open_opts.get("options_positions") or open_opts.get("positions") or []
+    open_position_summary = {
+        "options_count": len(positions),
+        "has_open_verticals": bool(open_opts.get("has_open_verticals") if isinstance(open_opts, dict) else False),
+        "has_open_calendars": bool(open_opts.get("has_open_calendars") if isinstance(open_opts, dict) else False),
+    }
+
+    broker_summary_block = {
+        "mode": str(pipeline.get("broker_mode") or "").strip() or None if isinstance(pipeline, dict) else None,
+        "has_data": bool(
+            (pipeline.get("broker_summary") if isinstance(pipeline, dict) else False)
+            or run_manifest.get("has_broker_data")
+        ),
+        "auth_status": str(run_manifest.get("broker_auth_status") or "UNKNOWN"),
+    }
+
+    provider_summary = {}
+    for pname, pdata in (provider_status_raw or {}).items():
+        if isinstance(pdata, dict):
+            provider_summary[str(pname)] = {
+                "success": bool(pdata.get("success") or (not pdata.get("error") and pdata.get("configured"))),
+            }
+
+    sections_bytes = (payload_profile or {}).get("sections_bytes") or {}
+    payload_compact = {
+        "sections_bytes": {k: int(v) for k, v in sections_bytes.items() if isinstance(v, (int, float))},
+    }
+
+    pipeline_errors = list((pipeline.get("errors") or []))[:10] if isinstance(pipeline, dict) else []
+
+    return {
+        "schema_version": 2,
+        "compact_manifest": True,
+        "report_quality": str((summary or {}).get("report_quality") or ""),
+        "strategy_counts": strategy_counts,
+        "daily_opportunity_summary": do_summary,
+        "open_position_summary": open_position_summary,
+        "broker_snapshot_summary": broker_summary_block,
+        "provider_status_summary": provider_summary,
+        "payload_profile": payload_compact,
+        "errors": pipeline_errors,
+        "api_links": {
+            "daily_opportunity": "/api/daily-opportunity",
+            "open_positions": "/api/open-positions",
+            "strategy_rows_template": "/api/strategies/{strategy_id}/rows",
+            "forward_factor_calendar_rows": "/api/strategies/forward_factor_calendar/rows",
+            "run_latest": "/api/runs/latest",
+            "run_refresh": "/api/run/refresh",
+        },
+    }
 
 
 def build_hot_report_summary(summary: dict[str, Any]) -> dict[str, Any]:

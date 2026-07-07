@@ -31,7 +31,7 @@ def build_open_positions_response() -> dict[str, Any]:
     try:
         from app.services.report_snapshot_service import ReportSnapshotRepository
         repo = ReportSnapshotRepository()
-        snapshot = repo.latest_success(include_full=False)
+        snapshot = repo.latest_success(include_full=True)
         if not snapshot:
             return {
                 **_READ_ONLY_BASE,
@@ -42,7 +42,7 @@ def build_open_positions_response() -> dict[str, Any]:
                 "has_open_calendars": False,
                 "active_calendar_count": 0,
             }
-        summary = repo.load_summary(snapshot, full=False)
+        summary = repo.load_summary(snapshot, full=True)
         report = summary.get("report_data", {}) or {}
         tradier = report.get("tradier_snapshot", {}) or {}
         open_opts = tradier.get("_open_options_positions") or {}

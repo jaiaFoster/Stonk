@@ -118,7 +118,7 @@ def earnings_trust_caveats(rows: list[dict[str, Any]]) -> list[str]:
 def build_earnings_trust_summary() -> dict[str, Any]:
     checked_at = datetime.now(timezone.utc).isoformat()
     repo = ReportSnapshotRepository(log_print=lambda _m: None)
-    snapshot = repo.latest_success(include_full=False)
+    snapshot = repo.latest_success(include_full=True)
     if not snapshot:
         return {
             "status": "no_data",
@@ -148,7 +148,7 @@ def build_earnings_trust_summary() -> dict[str, Any]:
             "provider_errors": [],
             "provider_calls_triggered": False,
         }
-    summary = repo.load_summary(snapshot, full=False)
+    summary = repo.load_summary(snapshot, full=True)
     report = (summary.get("report_data") or {}) if isinstance(summary, dict) else {}
     tradier = (report.get("tradier_snapshot") or {}) if isinstance(report, dict) else {}
     provider_status = _provider_status(snapshot, tradier)

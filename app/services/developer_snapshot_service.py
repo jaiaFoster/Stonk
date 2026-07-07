@@ -22,10 +22,10 @@ def build_developer_snapshot(mode: str = "latest", report_repository: ReportSnap
     manifest_commit_identity = build_commit_identity(manifest)
     if mode == "manifest_only":
         return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "run_manifest": manifest, "commit_identity": manifest_commit_identity, "git_commit": manifest_commit_identity["source_of_truth"]}))
-    snapshot = report_repository.latest_success(include_full=mode == "full")
+    snapshot = report_repository.latest_success(include_full=True)
     if not snapshot:
         return redact(_read_only({"snapshot_version": 1, "snapshot_mode": mode, "created_at": _now(), "source_status": "unavailable", "run_manifest": manifest, "commit_identity": manifest_commit_identity, "git_commit": manifest_commit_identity["source_of_truth"]}))
-    summary = report_repository.load_summary(snapshot, full=mode == "full")
+    summary = report_repository.load_summary(snapshot, full=True)
     report = summary.get("report_data", {}) or {}
     tradier = report.get("tradier_snapshot", {}) or {}
     strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}

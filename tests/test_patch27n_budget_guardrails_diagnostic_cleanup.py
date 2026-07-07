@@ -90,7 +90,8 @@ class Patch27NBudgetGuardrailsDiagnosticCleanupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             repo = ReportSnapshotRepository(str(Path(temp) / "state.sqlite3"))
             repo.save_success("run-1", "dev", "payload", _summary(), {}, {})
-            report = repo.load_summary(repo.latest_success())["report_data"]
+            snapshot = repo.latest_success(include_full=True)
+            report = repo.load_summary(snapshot, full=True)["report_data"]
 
         html = format_html(
             "payload",

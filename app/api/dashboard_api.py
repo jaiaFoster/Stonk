@@ -56,6 +56,7 @@ def _api_links() -> dict[str, str]:
         "daily_opportunity": "/api/daily-opportunity",
         "open_positions": "/api/open-positions",
         "strategy_rows_template": "/api/strategies/{strategy_id}/rows",
+        "forward_factor_calendar_rows": "/api/strategies/forward_factor_calendar/rows",
         "run_latest": "/api/runs/latest",
         "run_refresh": "/api/run/refresh",
     }

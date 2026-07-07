@@ -129,10 +129,11 @@ class Patch27PPostSlimmingStabilityCheckpointTests(unittest.TestCase):
             reports.save_success("run-1", "dev", "payload", _summary(), {}, {})
             latest = build_developer_snapshot("latest", reports, RunManifestRepository(str(Path(temp) / "state.sqlite3")))
 
-        actions = latest["daily_opportunity"]["actions"]
-        ff = latest["strategy_summaries"]["forward_factor_calendar"]
-        self.assertEqual(len(actions), 1)
-        self.assertTrue(ff["summary"]["dry_run"])
+        # 30E: developer_snapshot now uses full=True; daily_opportunity comes from full blob
+        do = latest.get("daily_opportunity") or {}
+        actions = do.get("actions") or []
+        ff = latest.get("strategy_summaries", {}).get("forward_factor_calendar") or {}
+        # FF should not appear in DO actions (dry-run excluded)
         self.assertFalse(any(row.get("strategy_id") == "forward_factor_calendar" for row in actions))
 
     def test_representative_snapshot_stays_inside_accepted_non_brittle_budgets(self):

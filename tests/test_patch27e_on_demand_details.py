@@ -57,7 +57,7 @@ class Patch27EOnDemandDetailsTests(unittest.TestCase):
 
         self.assertNotIn("pipeline_status", hot)
         self.assertNotIn("strategy_results", hot)
-        self.assertNotIn("rows", hot["report_data"]["tradier_snapshot"]["_strategy_results"]["forward_factor_calendar"])
+        self.assertNotIn("report_data", hot)  # 30E: compact manifest has no report_data
         self.assertIn("rows", full["strategy_results"]["forward_factor_calendar"])
         self.assertGreater(profile["hot_summary_bytes"], 0)
         self.assertGreater(profile["full_summary_bytes"], 0)
