@@ -17,6 +17,7 @@ from typing import Any, Callable
 
 from app import config
 from app.services.earnings_trust_service import normalize_earnings_trust
+from app.services.strategy_row_normalization_service import normalize_strategy_row
 
 LogFn = Callable[[str], None]
 StrategyRows = list[dict[str, Any]]
@@ -222,12 +223,40 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         is_preferred = False
 
     compact_earnings = _compact_event(event)
-    return {
+    max_spread = _float_or_none(candidate.get("max_leg_spread_pct"))
+    min_oi = _int_or_zero(candidate.get("min_leg_open_interest"))
+    min_vol = _int_or_zero(candidate.get("min_leg_volume"))
+    debit_pct = _float_or_none(candidate.get("debit_pct_underlying"))
+    iv_edge = _float_or_none(candidate.get("iv_edge"))
+    _max_spread_thresh = float(getattr(config, "CALENDAR_MAX_LEG_SPREAD_PCT", 10.0))
+    _min_oi_thresh = int(getattr(config, "CALENDAR_MIN_OPEN_INTEREST", 10))
+    _min_vol_thresh = int(getattr(config, "CALENDAR_MIN_VOLUME", 5))
+    _max_debit_pct = float(getattr(config, "CALENDAR_MAX_DEBIT_PCT_UNDERLYING", 4.0))
+    calendar_entry_allowed = action in ("EARNINGS CALENDAR CANDIDATE", "URGENT REVIEW / EARNINGS SOON", "URGENT REVIEW / TIMING-SENSITIVE")
+    liquidity_status = "pass" if (
+        (max_spread is None or max_spread <= _max_spread_thresh) and
+        min_oi >= _min_oi_thresh and min_vol >= _min_vol_thresh
+    ) else "fail"
+    spread_status = "pass" if (max_spread is None or max_spread <= _max_spread_thresh) else "fail"
+    debit_status = "pass" if (debit_pct is None or debit_pct <= _max_debit_pct) else "fail"
+    iv_relationship_status = (
+        "favorable" if (iv_edge is not None and iv_edge > 0.02) else
+        ("neutral" if (iv_edge is not None and iv_edge >= -0.02) else
+         ("unfavorable" if iv_edge is not None else "unavailable"))
+    )
+    row = {
+        "strategy_id": "earnings_calendar",
         "ticker": ticker,
         "strategy": "Earnings Long Call Calendar",
         "score": score,
         "action": action,
         "underlying_price": candidate.get("underlying_price"),
+        "earnings_date": compact_earnings.get("earnings_date"),
+        "earnings_time": compact_earnings.get("time_of_day") or compact_earnings.get("earnings_time"),
+        "earnings_source": compact_earnings.get("source"),
+        "earnings_sources_seen": compact_earnings.get("date_sources") or [],
+        "earnings_trust_label": earnings_trust.get("earnings_trust_label"),
+        "date_confidence": compact_earnings.get("date_confidence"),
         "strike": candidate.get("strike"),
         "option_type": candidate.get("option_type"),
         "front_expiration": candidate.get("front_expiration"),
@@ -247,7 +276,6 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         "long_back_leg": candidate.get("long_back_leg") or {},
         "earnings": compact_earnings,
         "earnings_date_confidence": compact_earnings.get("earnings_date_confidence"),
-        "date_confidence": compact_earnings.get("date_confidence"),
         "date_conflict": compact_earnings.get("date_conflict", False),
         "date_sources": compact_earnings.get("date_sources", []),
         "earnings_date_warning": compact_earnings.get("earnings_date_warning"),
@@ -261,7 +289,17 @@ def _evaluate_candidate(candidate: dict[str, Any], event: dict[str, Any] | None)
         "risks": risks,
         "next_check": next_check,
         "base_calendar_candidate": candidate,
+        "expiration_pair_diagnostics": candidate.get("expiration_pair_diagnostics") or {},
+        # 29.8: normalized compact fields for pre-30A readiness
+        "calendar_entry_allowed": calendar_entry_allowed,
+        "liquidity_status": liquidity_status,
+        "spread_status": spread_status,
+        "debit_status": debit_status,
+        "iv_relationship_status": iv_relationship_status,
+        "structure_status": relation,
     }
+    normalize_strategy_row(row, "earnings_calendar")
+    return row
 
 
 def _apply_candidate_risk_caps(score: float, candidate: dict[str, Any], risks: list[str]) -> float:

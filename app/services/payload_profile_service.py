@@ -7,11 +7,17 @@ from typing import Any
 
 from app.services.provider_payload_compaction_service import build_provider_payload_budget
 
-# TKT-038: Payload warning thresholds
-_PAYLOAD_WARN_BYTES = 1_000_000      # 1 MB
-_PAYLOAD_CRITICAL_BYTES = 3_000_000  # 3 MB
-_PROVIDER_CALL_WARN = 200
-_STRATEGY_ROW_WARN_BYTES = 50_000    # any single strategy row this large is suspicious
+# TKT-038 / 29.8: Tiered payload budget thresholds
+_PAYLOAD_HEALTHY_BYTES  = 750_000    # ≤750KB = healthy
+_PAYLOAD_WATCH_BYTES    = 750_000    # 750KB–1MB = watch
+_PAYLOAD_WARNING_BYTES  = 1_000_000  # 1MB–2MB = warning
+_PAYLOAD_CRITICAL_BYTES = 2_000_000  # >2MB = critical (lowered from 3MB)
+_PROVIDER_CALL_WARN     = 200
+_STRATEGY_ROW_WARN_BYTES = 50_000   # any single strategy row this large is suspicious
+_LARGEST_STRATEGY_ROWS_N = 5        # number of largest rows to surface in diagnostics
+
+# Legacy alias kept for compatibility
+_PAYLOAD_WARN_BYTES = _PAYLOAD_WARNING_BYTES
 
 
 def json_bytes(value: Any) -> int:
@@ -58,36 +64,79 @@ def build_payload_size_profile(
         calendar=calendar_data, skew=skew_data, ff=ff_data, stock=stock_data,
     )
 
+    # 29.8: payload budget status tier.
+    summary_payload_status = _payload_status(summary_json_bytes)
+
+    # 29.8: largest individual rows across all strategies.
+    largest_strategy_rows = _largest_strategy_rows(
+        calendar=calendar_data, skew=skew_data, ff=ff_data, stock=stock_data,
+    )
+
     return {
         "total_profiled_bytes": sum(sections.values()),
         "summary_json_bytes": summary_json_bytes,
+        "summary_payload_status": summary_payload_status,
+        "summary_payload_limit_bytes": _PAYLOAD_HEALTHY_BYTES,
+        "summary_payload_watch_bytes": _PAYLOAD_WATCH_BYTES,
+        "summary_payload_warning_bytes": _PAYLOAD_WARNING_BYTES,
+        "summary_payload_critical_bytes": _PAYLOAD_CRITICAL_BYTES,
         "sections_bytes": sections,
         "strategy_row_profile": strategy_row_profile,
+        "largest_strategy_rows": largest_strategy_rows,
         "provider_payload_budget": provider_budget,
         "largest_top_level_keys": largest_top_level_keys,
     }
 
 
+def _payload_status(size_bytes: int) -> str:
+    if size_bytes <= _PAYLOAD_HEALTHY_BYTES:
+        return "healthy"
+    if size_bytes <= _PAYLOAD_WARNING_BYTES:
+        return "watch"
+    if size_bytes <= _PAYLOAD_CRITICAL_BYTES:
+        return "warning"
+    return "critical"
+
+
 def build_payload_warnings(profile: dict[str, Any], provider_calls: int = 0) -> list[dict[str, Any]]:
-    """TKT-038: Emit named warnings when payload or provider call thresholds are exceeded."""
+    """TKT-038 / 29.8: Emit tiered payload warnings when thresholds are exceeded."""
     warnings: list[dict[str, Any]] = []
     summary_bytes = profile.get("summary_json_bytes") or profile.get("total_profiled_bytes") or 0
-    if summary_bytes > _PAYLOAD_CRITICAL_BYTES:
+    status = profile.get("summary_payload_status") or _payload_status(summary_bytes)
+
+    if status == "critical":
+        largest = profile.get("largest_top_level_keys") or []
+        top_keys = ", ".join(f"{k['key']}={k['bytes'] // 1024}KB" for k in largest[:3]) if largest else ""
         warnings.append({
             "name": "payload_size_warning",
             "level": "critical",
-            "message": f"Summary payload is {summary_bytes // 1024}KB — exceeds 3MB critical threshold.",
+            "message": (
+                f"Summary payload is {summary_bytes // 1024}KB — exceeds 2MB critical threshold. "
+                + (f"Largest contributors: {top_keys}." if top_keys else "")
+            ),
             "threshold_bytes": _PAYLOAD_CRITICAL_BYTES,
             "actual_bytes": summary_bytes,
+            "summary_payload_status": "critical",
         })
-    elif summary_bytes > _PAYLOAD_WARN_BYTES:
+    elif status == "warning":
         warnings.append({
             "name": "payload_size_warning",
-            "level": "warn",
+            "level": "warning",
             "message": f"Summary payload is {summary_bytes // 1024}KB — exceeds 1MB warning threshold.",
-            "threshold_bytes": _PAYLOAD_WARN_BYTES,
+            "threshold_bytes": _PAYLOAD_WARNING_BYTES,
             "actual_bytes": summary_bytes,
+            "summary_payload_status": "warning",
         })
+    elif status == "watch":
+        warnings.append({
+            "name": "payload_size_warning",
+            "level": "watch",
+            "message": f"Summary payload is {summary_bytes // 1024}KB — in watch zone (750KB–1MB).",
+            "threshold_bytes": _PAYLOAD_WATCH_BYTES,
+            "actual_bytes": summary_bytes,
+            "summary_payload_status": "watch",
+        })
+
     if provider_calls > _PROVIDER_CALL_WARN:
         warnings.append({
             "name": "provider_call_warning",
@@ -102,7 +151,8 @@ def build_payload_warnings(profile: dict[str, Any], provider_calls: int = 0) -> 
 def compact_payload_log(profile: dict[str, Any]) -> str:
     sections = profile.get("sections_bytes", {}) or {}
     largest = sorted(sections.items(), key=lambda item: item[1], reverse=True)[:5]
-    return "PayloadProfile: " + ", ".join(f"{key}={value}B" for key, value in largest)
+    status = profile.get("summary_payload_status", "unknown")
+    return f"PayloadProfile[{status}]: " + ", ".join(f"{key}={value}B" for key, value in largest)
 
 
 def _strategy_row_profile(
@@ -141,6 +191,42 @@ def _strategy_row_profile(
         "stock_rows_bytes": stock_bytes,
         "stock_row_count": stock_rows,
     }
+
+
+def _largest_strategy_rows(
+    *,
+    calendar: Any = None,
+    skew: Any = None,
+    ff: Any = None,
+    stock: Any = None,
+    top_n: int = _LARGEST_STRATEGY_ROWS_N,
+) -> list[dict[str, Any]]:
+    """Return the top-N largest individual strategy rows by serialized size."""
+    candidates: list[dict[str, Any]] = []
+    sources = [
+        ("earnings_calendar", calendar),
+        ("skew_momentum_vertical", skew),
+        ("forward_factor_calendar", ff),
+        ("stock_momentum", stock),
+    ]
+    for strategy_id, data in sources:
+        if not isinstance(data, dict):
+            continue
+        rows = data.get("canonical_opportunities") or data.get("rows") or data.get("items") or []
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            size = json_bytes(row)
+            candidates.append({
+                "strategy_id": strategy_id,
+                "ticker": str(row.get("ticker") or ""),
+                "bytes": size,
+                "large": size >= _STRATEGY_ROW_WARN_BYTES,
+                "verdict": str(row.get("verdict") or row.get("action") or ""),
+            })
+    return sorted(candidates, key=lambda x: x["bytes"], reverse=True)[:top_n]
 
 
 def _largest_snapshot_keys(snapshot: dict[str, Any], top_n: int = 10) -> list[dict[str, Any]]:

@@ -119,7 +119,8 @@ class TestTKT038PayloadBloatFollowthrough:
         from app.services.payload_profile_service import build_payload_warnings
         large_profile = {"summary_json_bytes": 1_100_000}
         warnings = build_payload_warnings(large_profile)
-        assert any(w["name"] == "payload_size_warning" and w["level"] == "warn" for w in warnings)
+        # 29.8: level was renamed from "warn" to "warning" for tiered thresholds
+        assert any(w["name"] == "payload_size_warning" and w["level"] in ("warn", "warning") for w in warnings)
 
     def test_payload_critical_warning_above_3mb(self):
         from app.services.payload_profile_service import build_payload_warnings

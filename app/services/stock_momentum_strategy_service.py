@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from app import config
 from app.services.data_state_message_service import data_state_message, required_market_metrics_complete
+from app.services.strategy_row_normalization_service import normalize_strategy_row
 
 LogFn = Callable[[str], None]
 
@@ -203,9 +204,16 @@ def _score_ticker(
     if not entry["add_allowed_boolean"]:
         next_check = entry["suggested_entry_type"]
 
-    return {
+    above50 = (metrics or {}).get("above_sma_50")
+    above200 = (metrics or {}).get("above_sma_200")
+    r3 = _num((metrics or {}).get("return_3m_pct"))
+    r6 = _num((metrics or {}).get("return_6m_pct"))
+    avg_vol = _num((metrics or {}).get("average_volume_30d"))
+    row = {
+        "strategy_id": "stock_momentum",
         "ticker": ticker,
         "score": score,
+        "momentum_score": score,
         "action": action,
         "portfolio_status": "Already held" if holding else "Not currently held",
         "allocation_pct": allocation,
@@ -217,7 +225,14 @@ def _score_ticker(
         "reasons": _dedupe(reasons)[:6],
         "risks": _dedupe(risks + entry["add_blockers"])[:8],
         "next_check": next_check,
+        "relative_strength": _num((metrics or {}).get("relative_strength_6m_pct") or (metrics or {}).get("relative_strength_vs_qqq")),
+        "trend_status": "clean" if (above50 and above200) else ("partial" if (above50 or above200) else "broken"),
+        "volume_status": "adequate" if (avg_vol is not None and avg_vol >= 100_000) else ("low" if avg_vol is not None else "unavailable"),
+        "price_action_status": "positive" if ((r3 or 0) > 0 and (r6 or 0) > 0) else ("mixed" if ((r3 or 0) > 0 or (r6 or 0) > 0) else "negative"),
+        "risk_status": "elevated" if (risks or entry.get("add_blockers")) else "normal",
     }
+    normalize_strategy_row(row, "stock_momentum")
+    return row
 
 
 def _entry_quality_gate(

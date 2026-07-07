@@ -145,6 +145,10 @@ _STRATEGY_SUMMARY_EXCLUDE = frozenset({
     "provider_payload",      # raw upstream response — dev detail endpoint only
     "debug_trace",           # execution trace — too large for summary
     "lifecycle_log_full",    # full lifecycle log — dev detail endpoint only
+    # 29.8: serialization contract audit — these fields can double-count payload size
+    "payload",               # skew rows: {long_leg, short_leg, market_metrics} duplicates top-level fields
+    "scenario_grid",         # FF: full scenario matrix — dev detail endpoint only
+    "candidate_selection_audit",  # FF: per-candidate audit trail — dev detail endpoint only
 })
 
 
