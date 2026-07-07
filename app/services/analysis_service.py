@@ -1334,6 +1334,37 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             )
             RunManifestRepository().save(manifest)
             tradier_snapshot["_run_manifest"] = manifest
+            # 30B: Universal strategy observation journal write — non-blocking.
+            try:
+                from app.db.strategy_observations import write_run as _write_obs_run
+                from app.services.strategy_observation_journal_service import (
+                    build_observations_from_strategy_results as _build_obs,
+                )
+                _run_date = str(run_context.created_at or "")[:10]
+                _obs = _build_obs(normalized_strategy_results, run_context.run_id, _run_date)
+                _written = _write_obs_run(run_context.run_id, _run_date, _obs)
+                log_print(
+                    f"StrategyObservationJournal: wrote {_written} observation(s) for run {run_context.run_id}"
+                )
+                tradier_snapshot["_journal_write_status"] = {
+                    "status": "ok",
+                    "observations_written": _written,
+                    "total_built": len(_obs),
+                }
+                # Opportunistic retention cleanup — non-blocking.
+                try:
+                    from app.db.strategy_observations import cleanup_old_observations as _obs_cleanup
+                    _obs_cleanup(config.STRATEGY_OBSERVATION_RETENTION_DAYS)
+                except Exception:
+                    pass
+            except Exception as _obs_exc:
+                log_print(
+                    f"StrategyObservationJournal: write failed (non-fatal): {_obs_exc}"
+                )
+                tradier_snapshot["_journal_write_status"] = {
+                    "status": "error",
+                    "error": str(_obs_exc)[:200],
+                }
         except Exception as exc:
             log_print(f"Report snapshot persistence warning: {exc}")
     except Exception as exc:
