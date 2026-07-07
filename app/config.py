@@ -363,6 +363,15 @@ FF_JOURNAL_DB_PATH = os.environ.get(
     "FF_JOURNAL_DB_PATH",
     "/app/data/ff_observations.db" if os.path.isdir("/app/data") else "data/ff_observations.db",
 )
+# 30B — Universal Strategy Observation Journal
+STRATEGY_OBSERVATION_JOURNAL_ENABLED = _bool_env("STRATEGY_OBSERVATION_JOURNAL_ENABLED", True)
+STRATEGY_OBSERVATION_DB_PATH = os.environ.get(
+    "STRATEGY_OBSERVATION_DB_PATH",
+    "/app/data/strategy_observations.db" if os.path.isdir("/app/data") else "data/strategy_observations.db",
+)
+STRATEGY_OBSERVATION_RETENTION_DAYS = _int_env("STRATEGY_OBSERVATION_RETENTION_DAYS", 90)
+STRATEGY_OBSERVATION_MAX_ROWS_PER_RUN = _int_env("STRATEGY_OBSERVATION_MAX_ROWS_PER_RUN", 1000)
+STRATEGY_OBSERVATION_MAX_JSON_BYTES_PER_ROW = _int_env("STRATEGY_OBSERVATION_MAX_JSON_BYTES_PER_ROW", 25000)
 TELEMETRY_ENABLED = _bool_env("TELEMETRY_ENABLED", True)
 PUBLIC_SCREENER_ENABLED = _bool_env("PUBLIC_SCREENER_ENABLED", True)
 PUBLIC_DEMO_TELEMETRY_ENABLED = _bool_env("PUBLIC_DEMO_TELEMETRY_ENABLED", True)

@@ -73,6 +73,10 @@ def normalize_strategy_row(
 
     row.setdefault("strategy_id", strategy_id)
     row.setdefault("strategy_row_schema_version", STRATEGY_ROW_SCHEMA_VERSION)
+    # Strategies that use "action" as their result field (earnings_calendar, stock_momentum)
+    # must still expose "verdict" so every normalized row satisfies the universal contract.
+    if not row.get("verdict"):
+        row["verdict"] = str(row.get("action") or "")
 
     # Spec metadata — sourced from registry, not invented.
     row.setdefault("strategy_name", spec.get("strategy_name") or strategy_id)
@@ -118,9 +122,7 @@ def normalize_strategy_row(
 
     # Gates — canonical gate list using make_gate() shape.
     if "gates" not in row:
-        g = _gates(row, strategy_id)
-        if g is not None:
-            row["gates"] = g
+        row["gates"] = _gates(row, strategy_id)
 
     # Journal / observation readiness fields — for 30B.
     row.setdefault("journal_eligible", _journal_eligible(row, strategy_id))
@@ -448,6 +450,10 @@ def _gates(row: dict[str, Any], strategy_id: str) -> list[dict[str, Any]] | None
             gates.append(make_gate("Entry blockers", "fail", reason=str(blockers[0]), sort_order=75))
         return gates
 
+    if strategy_id not in ("skew_momentum_vertical", "forward_factor_calendar",
+                           "stock_momentum", "earnings_calendar"):
+        return []
+
     if strategy_id == "earnings_calendar":
         relation = str(row.get("earnings_relation") or "unknown")
         trust_label = str(row.get("earnings_trust_label") or "unknown")
@@ -487,8 +493,6 @@ def _gates(row: dict[str, Any], strategy_id: str) -> list[dict[str, Any]] | None
         else:
             gates.append(make_gate("Calendar entry", "fail", sort_order=80))
         return gates
-
-    return None
 
 
 def _normalize_requirement(req: dict[str, Any]) -> dict[str, Any]:

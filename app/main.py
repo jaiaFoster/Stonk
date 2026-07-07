@@ -2248,6 +2248,41 @@ def dev_usage_telemetry():
     return jsonify(build_usage_telemetry_diagnostics()), 200
 
 
+# ─── 30B: Strategy Observation Journal endpoints ──────────────────────────────
+
+@app.route("/api/dev/strategy-observations/summary")
+def dev_strategy_observations_summary():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_summary_service import build_strategy_observation_summary
+    days = min(int(request.args.get("days") or 7), 90)
+    return jsonify(build_strategy_observation_summary(days=days)), 200
+
+
+@app.route("/api/dev/strategy-observations/run/<run_id>")
+def dev_strategy_observations_run(run_id: str):
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_summary_service import build_run_observation_summary
+    return jsonify(build_run_observation_summary(run_id)), 200
+
+
+@app.route("/api/dev/strategy-observations")
+def dev_strategy_observations():
+    _require_dev_diagnostics_token()
+    from app.services.strategy_observation_summary_service import build_observation_list
+    raw_limit = request.args.get("limit")
+    limit = min(int(raw_limit or 100), 500)
+    result = build_observation_list(
+        run_id=request.args.get("run_id") or None,
+        strategy_id=request.args.get("strategy_id") or None,
+        ticker=(request.args.get("ticker") or "").upper() or None,
+        status_bucket=request.args.get("status_bucket") or None,
+        verdict=request.args.get("verdict") or None,
+        days=int(request.args.get("days") or 0) or None,
+        limit=limit,
+    )
+    return jsonify(result), 200
+
+
 @app.route("/api/dev/skew-threshold-analysis")
 @require_admin
 def dev_skew_threshold_analysis():

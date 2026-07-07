@@ -132,6 +132,23 @@ def build_snapshot_detail(
         except Exception:
             pass
 
+        # 30B: add journal write status and compact observation summary.
+        try:
+            base["strategy_observation_write_status"] = (
+                tradier.get("_journal_write_status") or {"status": "unavailable"}
+            )
+        except Exception:
+            base["strategy_observation_write_status"] = {"status": "unavailable"}
+        try:
+            from app.services.strategy_observation_summary_service import build_run_observation_summary
+            source_run_id = (snapshot or {}).get("run_id")
+            if source_run_id:
+                obs_summary = build_run_observation_summary(source_run_id)
+                base["strategy_observation_summary"] = obs_summary
+                base["strategy_observation_counts_by_strategy"] = obs_summary.get("by_strategy", {})
+        except Exception:
+            pass
+
     status = "ok" if detail is not None else "not_found"
     return redact(_read_only({**base, "status": status, "detail": detail}))
 

@@ -448,6 +448,31 @@ class TestRowNormalizationShared:
         assert row.get("strategy_id") == "unknown_strategy_xyz"
         assert "strategy_row_schema_version" in row
 
+    def test_verdict_backfilled_from_action_for_earnings_calendar(self):
+        """earnings_calendar rows use action; verdict must be set so contract is satisfied."""
+        row: dict[str, Any] = {"action": "EARNINGS CALENDAR CANDIDATE"}
+        self._normalize(row, "earnings_calendar")
+        assert row.get("verdict") == "EARNINGS CALENDAR CANDIDATE"
+
+    def test_verdict_backfilled_from_action_for_stock_momentum(self):
+        """stock_momentum rows use action; verdict must be set so contract is satisfied."""
+        row: dict[str, Any] = {"action": "CONSIDER ADDING"}
+        self._normalize(row, "stock_momentum")
+        assert row.get("verdict") == "CONSIDER ADDING"
+
+    def test_verdict_not_overwritten_when_already_present(self):
+        """If a row already has verdict, it must not be replaced by action."""
+        row: dict[str, Any] = {"verdict": "PASS / OK", "action": "something else"}
+        self._normalize(row, "skew_momentum_vertical")
+        assert row.get("verdict") == "PASS / OK"
+
+    def test_gates_always_set_for_unknown_strategy(self):
+        """Unknown strategies must produce an empty gates list, not a missing field."""
+        row: dict[str, Any] = {"ticker": "AAPL"}
+        self._normalize(row, "totally_unknown_strategy")
+        assert "gates" in row
+        assert isinstance(row["gates"], list)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lane 5A: Earnings calendar per-strategy mapping
