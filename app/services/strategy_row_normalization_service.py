@@ -199,6 +199,23 @@ def _friendly_verdict(row: dict[str, Any], strategy_id: str) -> str:
 
     if strategy_id == "earnings_calendar":
         action = str(row.get("action") or "")
+        entry_status = str(row.get("entry_window_status") or "")
+        if entry_status == "ENTRY_WINDOW_CLOSED":
+            return "ENTRY WINDOW CLOSED / DO NOT ENTER"
+        if entry_status == "SHORT_LEG_SPANS_EARNINGS":
+            return "SHORT LEG SPANS EARNINGS / DO NOT ENTER"
+        if entry_status == "SHORT_DTE_TOO_LOW":
+            return "SHORT DTE TOO LOW / DO NOT ENTER"
+        if entry_status == "FRONT_LEG_TOO_DECAYED":
+            return "FRONT LEG TOO DECAYED / DO NOT ENTER"
+        if entry_status == "NO_PRE_EARNINGS_SHORT_EXPIRY":
+            return "NO PRE-EARNINGS SHORT EXPIRY"
+        if entry_status == "MONITOR_PRE_WINDOW":
+            return "MONITOR / PRE-WINDOW"
+        if entry_status == "DATA_NEEDED":
+            return "MONITOR / DATA NEEDED"
+        if entry_status == "DATE_CONFLICT_REVIEW":
+            return "DATE CONFLICT REVIEW"
         upper = action.upper()
         if "EARNINGS CALENDAR CANDIDATE" in upper:
             return "Eligible"
@@ -279,6 +296,14 @@ def _metrics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
             "entry_window_status": row.get("entry_window_status"),
             "entry_window_open": row.get("entry_window_open"),
             "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
+            "entry_window_front_expiration": row.get("entry_window_front_expiration"),
+            "entry_window_front_dte": row.get("entry_window_front_dte"),
+            "short_leg_expires_before_earnings": row.get("short_leg_expires_before_earnings"),
+            "short_leg_does_not_span_event": row.get("short_leg_does_not_span_event"),
+            "available_pre_earnings_expirations": row.get("available_pre_earnings_expirations"),
+            "rejected_expirations": row.get("rejected_expirations"),
+            "proposed_short_expiration": row.get("proposed_short_expiration"),
+            "proposed_long_expiration": row.get("proposed_long_expiration"),
         }
 
     if strategy_id == "skew_momentum_vertical":

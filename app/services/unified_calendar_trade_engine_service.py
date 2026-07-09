@@ -220,6 +220,14 @@ def _build_new_trade_row(
     if not trust["calendar_entry_allowed"]:
         final = dict(final)
         final.update({"final_verdict": verdict, "main_blocker": trust["earnings_trust_reason"], "hard_fail_reason": trust["earnings_trust_reason"]})
+    if quality_row and str(quality_row.get("entry_window_status") or "") in {
+        "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
+        "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+        "DATE_CONFLICT_REVIEW",
+    }:
+        timing_reason = str(quality_row.get("entry_window_reason") or no_structure_blocker or "Calendar entry timing gate failed.")
+        final = dict(final)
+        final.update({"final_verdict": verdict, "main_blocker": timing_reason, "hard_fail_reason": timing_reason})
     entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)
 
@@ -270,6 +278,16 @@ def _build_new_trade_row(
     row.setdefault("expiry_gap_note", quality_row.get("expiry_gap_note") or "")
     row.setdefault("expiration_pair", quality_row.get("expiration_pair"))
     row.setdefault("expiration_pair_diagnostics", quality_row.get("expiration_pair_diagnostics") or {})
+    for key in (
+        "entry_window_status", "entry_window_open", "entry_window_reason",
+        "short_leg_expires_before_earnings", "short_leg_dte_minimum",
+        "short_leg_time_value_minimum", "short_leg_does_not_span_event",
+        "entry_window_front_expiration", "entry_window_front_dte", "expiry_gap_valid",
+        "available_pre_earnings_expirations", "rejected_expirations",
+        "proposed_short_expiration", "proposed_long_expiration",
+    ):
+        if key in quality_row:
+            row.setdefault(key, quality_row.get(key))
     row.setdefault("pipeline_trace", quality_row.get("pipeline_trace"))
     row.setdefault("high_move_warning", bool(quality_row.get("high_move_warning")))
     row.setdefault("high_move_note", quality_row.get("high_move_note") or "")
@@ -400,6 +418,17 @@ def _build_open_trade_rows(open_options: dict[str, Any], lifecycle_checks: dict[
 
 def _new_trade_verdict(has_candidate: bool, strategy: dict[str, Any], quality_row: dict[str, Any] | None = None) -> str:
     if not has_candidate:
+        entry_status = str((quality_row or {}).get("entry_window_status") or "")
+        if entry_status:
+            if entry_status == "MONITOR_PRE_WINDOW":
+                return "MONITOR / PRE-WINDOW"
+            if entry_status == "DATA_NEEDED":
+                return "MONITOR / DATA_NEEDED"
+            if entry_status == "ENTRY_WINDOW_OPEN":
+                return "WATCH / ENTRY WINDOW OPEN"
+            if entry_status == "ENTRY_WINDOW_CLOSING":
+                return "WATCH / ENTRY WINDOW CLOSING"
+            return f"FAIL / {entry_status}"
         if quality_row and quality_row.get("expiry_near_miss"):
             return "NEAR_MISS / EXPIRY_GAP"
         return "FAIL / NO VALID CALENDAR STRUCTURE"

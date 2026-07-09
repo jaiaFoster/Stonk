@@ -658,6 +658,7 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
     ]
     spanning = [item for item in parsed if item[2] >= event_date and not (same_day_ok and item[2] == event_date)]
     valid_before = [item for item in before if item[0] >= min_short_dte]
+    expiration_context = _entry_window_expiration_context(before, spanning, min_short_dte)
     if valid_before:
         selected = valid_before[0]
         if days_to_event > preferred_max:
@@ -686,6 +687,7 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "entry_window_front_expiration": selected[1],
             "entry_window_front_dte": selected[0],
             "expiry_gap_valid": True,
+            **expiration_context,
         }
     if before:
         selected = before[-1]
@@ -701,6 +703,7 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "entry_window_front_expiration": selected[1],
             "entry_window_front_dte": selected[0],
             "expiry_gap_valid": False,
+            **expiration_context,
         }
     if spanning:
         selected = spanning[0]
@@ -715,6 +718,7 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "entry_window_front_expiration": selected[1],
             "entry_window_front_dte": selected[0],
             "expiry_gap_valid": False,
+            **expiration_context,
         }
     return {
         "entry_window_status": "NO_PRE_EARNINGS_SHORT_EXPIRY",
@@ -725,6 +729,38 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
         "short_leg_time_value_minimum": min_short_dte,
         "short_leg_does_not_span_event": False,
         "expiry_gap_valid": False,
+        **expiration_context,
+    }
+
+
+def _entry_window_expiration_context(
+    before: list[tuple[int, str, date]],
+    spanning: list[tuple[int, str, date]],
+    min_short_dte: int,
+) -> dict[str, Any]:
+    available_pre = [
+        {"expiration": exp, "dte": dte}
+        for dte, exp, _ in before
+    ]
+    rejected = []
+    for dte, exp, _ in before:
+        if dte < min_short_dte:
+            rejected.append({
+                "expiration": exp,
+                "dte": dte,
+                "reason": f"below minimum short-leg DTE {min_short_dte}",
+            })
+    for dte, exp, _ in spanning:
+        rejected.append({
+            "expiration": exp,
+            "dte": dte,
+            "reason": "short leg spans or follows earnings",
+        })
+    return {
+        "available_pre_earnings_expirations": available_pre,
+        "rejected_expirations": rejected,
+        "proposed_short_expiration": (before[-1][1] if before else (spanning[0][1] if spanning else None)),
+        "proposed_long_expiration": (spanning[0][1] if spanning else None),
     }
 
 
@@ -734,6 +770,8 @@ def _entry_window_diagnostics(gate: dict[str, Any]) -> dict[str, Any]:
         "short_leg_expires_before_earnings", "short_leg_dte_minimum",
         "short_leg_time_value_minimum", "short_leg_does_not_span_event",
         "entry_window_front_expiration", "entry_window_front_dte", "expiry_gap_valid",
+        "available_pre_earnings_expirations", "rejected_expirations",
+        "proposed_short_expiration", "proposed_long_expiration",
     ) if key in gate}
 
 

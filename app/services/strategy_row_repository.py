@@ -172,6 +172,7 @@ class StrategyRowRepository:
         ]
         normalization_status = "error" if error else ("missing_required_fields" if missing else "ok")
         normalization_errors = [error] if error else []
+        details = compact.get("details") or _derived_details(strategy_id, compact)
         return {
             "run_id": run_id,
             "strategy_id": strategy_id,
@@ -181,14 +182,14 @@ class StrategyRowRepository:
             "symbol": compact.get("symbol") or ticker,
             "ticker": ticker,
             "asset_type": compact.get("asset_type") or ("equity" if strategy_id == "stock_momentum" else "option_strategy"),
-            "row_type": compact.get("row_type") or compact.get("candidate_type") or "observation",
+            "row_type": compact.get("row_type") or compact.get("candidate_type") or _row_type(strategy_id, compact),
             "verdict": compact.get("verdict") or compact.get("action") or "UNKNOWN",
-            "friendly_verdict": compact.get("friendly_verdict") or compact.get("verdict") or compact.get("action") or "UNKNOWN",
+            "friendly_verdict": compact.get("friendly_verdict") or _friendly_verdict(strategy_id, compact),
             "score": _float_or_none(compact.get("score") or compact.get("signal_score") or compact.get("priority_score")),
             "confidence": compact.get("confidence") or compact.get("data_quality_status") or "",
-            "primary_reason": compact.get("primary_reason") or compact.get("primary_blocker") or compact.get("reason") or "",
+            "primary_reason": compact.get("primary_reason") or compact.get("primary_blocker") or compact.get("reason_label") or compact.get("reason") or "",
             "daily_opportunity_eligible": 1 if compact.get("daily_opportunity_eligible") else 0,
-            "details_json": _json(compact.get("details") or {}),
+            "details_json": _json(details),
             "gates_json": _json(compact.get("gates") or []),
             "gate_groups_json": _json(compact.get("gate_groups") or {}),
             "metrics_json": _json(compact.get("metrics") or {}),
@@ -262,6 +263,56 @@ def _structure_summary(row: dict[str, Any]) -> dict[str, Any]:
         )
         if row.get(key) is not None
     }
+
+
+def _row_type(strategy_id: str, row: dict[str, Any]) -> str:
+    if strategy_id == "earnings_calendar":
+        status = str(row.get("entry_window_status") or "")
+        verdict = str(row.get("verdict") or "")
+        if status in {"MONITOR_PRE_WINDOW", "DATA_NEEDED", "DATE_CONFLICT_REVIEW"}:
+            return "diagnostic"
+        if verdict.upper().startswith("FAIL") or status:
+            return "rejected_candidate"
+    return "observation"
+
+
+def _friendly_verdict(strategy_id: str, row: dict[str, Any]) -> str:
+    if strategy_id == "earnings_calendar":
+        status = str(row.get("entry_window_status") or "")
+        labels = {
+            "ENTRY_WINDOW_CLOSED": "ENTRY WINDOW CLOSED / DO NOT ENTER",
+            "SHORT_LEG_SPANS_EARNINGS": "SHORT LEG SPANS EARNINGS / DO NOT ENTER",
+            "SHORT_DTE_TOO_LOW": "SHORT DTE TOO LOW / DO NOT ENTER",
+            "FRONT_LEG_TOO_DECAYED": "FRONT LEG TOO DECAYED / DO NOT ENTER",
+            "NO_PRE_EARNINGS_SHORT_EXPIRY": "NO PRE-EARNINGS SHORT EXPIRY",
+            "MONITOR_PRE_WINDOW": "MONITOR / PRE-WINDOW",
+            "DATA_NEEDED": "MONITOR / DATA NEEDED",
+            "DATE_CONFLICT_REVIEW": "DATE CONFLICT REVIEW",
+        }
+        if status in labels:
+            return labels[status]
+    return row.get("verdict") or row.get("action") or "UNKNOWN"
+
+
+def _derived_details(strategy_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    if strategy_id == "earnings_calendar":
+        return {
+            "earnings_calendar": {
+                "entry_window_status": row.get("entry_window_status"),
+                "entry_window_open": row.get("entry_window_open"),
+                "entry_window_reason": row.get("entry_window_reason") or row.get("reason_label"),
+                "short_leg_status": row.get("entry_window_status"),
+                "short_leg_expires_before_earnings": row.get("short_leg_expires_before_earnings"),
+                "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
+                "short_leg_time_value_minimum": row.get("short_leg_time_value_minimum"),
+                "short_leg_does_not_span_event": row.get("short_leg_does_not_span_event"),
+                "available_pre_earnings_expirations": row.get("available_pre_earnings_expirations") or [],
+                "rejected_expirations": row.get("rejected_expirations") or [],
+                "proposed_short_expiration": row.get("proposed_short_expiration"),
+                "proposed_long_expiration": row.get("proposed_long_expiration"),
+            }
+        }
+    return {}
 
 
 def _hash_row(strategy_id: str, row: dict[str, Any]) -> str:

@@ -38,9 +38,14 @@ def build_payload_size_profile(
     ff_data = strategy.get("forward_factor_calendar") or snapshot.get("_forward_factor_strategy")
     stock_data = strategy.get("stock_momentum") or snapshot.get("_stock_momentum_strategy")
 
+    legacy_report_summary_bytes = json_bytes(report_summary or {})
     sections = {
         "payload_text": len((payload or "").encode("utf-8")),
-        "report_summary_json": json_bytes(report_summary or {}),
+        # Active hot-path summary bytes are filled later after compact manifest
+        # construction. Legacy report summary remains measured separately so it
+        # cannot masquerade as the dashboard/API summary size.
+        "report_summary_json": 0,
+        "legacy_report_summary_json": legacy_report_summary_bytes,
         "tradier_snapshot": json_bytes(snapshot),
         "positions": json_bytes(positions),
         "news": json_bytes(news),
@@ -77,8 +82,13 @@ def build_payload_size_profile(
 
     return {
         "total_profiled_bytes": sum(sections.values()),
-        "summary_json_bytes": summary_json_bytes,
-        "legacy_report_summary_json_bytes": summary_json_bytes,
+        # Backward-compatible alias: historical tests/diagnostics expect this
+        # to reflect the supplied report_summary object. Do not use it as the
+        # active hot-path warning source; `summary_payload_status` below is
+        # computed from `sections_bytes.report_summary_json`.
+        "summary_json_bytes": legacy_report_summary_bytes,
+        "active_summary_json_bytes": summary_json_bytes,
+        "legacy_report_summary_json_bytes": legacy_report_summary_bytes,
         "compact_summary_json_bytes": 0,
         "full_archive_blob_bytes": 0,
         "raw_provider_archive_blob_bytes": 0,
@@ -111,8 +121,17 @@ def _payload_status(size_bytes: int) -> str:
 def build_payload_warnings(profile: dict[str, Any], provider_calls: int = 0) -> list[dict[str, Any]]:
     """TKT-038 / 29.8: Emit tiered payload warnings when thresholds are exceeded."""
     warnings: list[dict[str, Any]] = []
-    summary_bytes = profile.get("summary_json_bytes") or profile.get("total_profiled_bytes") or 0
-    status = profile.get("summary_payload_status") or _payload_status(summary_bytes)
+    summary_bytes = (
+        profile.get("api_hot_path_bytes")
+        or profile.get("compact_summary_json_bytes")
+        or profile.get("summary_json_bytes")
+        or profile.get("total_profiled_bytes")
+        or 0
+    )
+    if profile.get("api_hot_path_bytes") or profile.get("compact_summary_json_bytes"):
+        status = _payload_status(summary_bytes)
+    else:
+        status = profile.get("summary_payload_status") or _payload_status(summary_bytes)
 
     if status == "critical":
         largest = profile.get("largest_top_level_keys") or []
@@ -162,7 +181,14 @@ def compact_payload_log(profile: dict[str, Any]) -> str:
     sections = profile.get("sections_bytes", {}) or {}
     largest = sorted(sections.items(), key=lambda item: item[1], reverse=True)[:5]
     status = profile.get("summary_payload_status", "unknown")
-    return f"PayloadProfile[{status}]: " + ", ".join(f"{key}={value}B" for key, value in largest)
+    hot = int(profile.get("api_hot_path_bytes") or profile.get("compact_summary_json_bytes") or profile.get("active_summary_json_bytes") or 0)
+    legacy = int(profile.get("legacy_report_summary_json_bytes") or sections.get("legacy_report_summary_json") or 0)
+    archive = int(profile.get("full_archive_blob_bytes") or 0)
+    return (
+        f"PayloadProfile[{status}]: hot_path={hot}B, legacy_archive={legacy}B, "
+        f"full_archive={archive}B, largest="
+        + ", ".join(f"{key}={value}B" for key, value in largest)
+    )
 
 
 def _strategy_row_profile(

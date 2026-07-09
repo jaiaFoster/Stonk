@@ -1299,6 +1299,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 raw_provider_json = json.dumps(tradier_snapshot, default=str, separators=(",", ":")).encode("utf-8")
                 compressed_raw_provider = zlib.compress(raw_provider_json)
                 payload_profile["sections_bytes"].update({
+                    "report_summary_json": len(hot_summary_json),
                     "report_hot_summary_json": len(hot_summary_json),
                     "report_compact_manifest_json": len(hot_summary_json),
                     "report_compressed_full_summary": len(compressed_summary),
@@ -1312,11 +1313,14 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                     ),
                 })
                 payload_profile.update({
+                    "summary_json_bytes": len(hot_summary_json),
                     "compact_summary_json_bytes": len(hot_summary_json),
                     "full_archive_blob_bytes": len(compressed_summary),
                     "raw_provider_archive_blob_bytes": len(compressed_raw_provider),
                     "api_hot_path_bytes": len(hot_summary_json),
                 })
+                from app.services.payload_profile_service import _payload_status
+                payload_profile["summary_payload_status"] = _payload_status(len(hot_summary_json))
             snapshot_started = perf_counter()
             snapshot_method(
                 run_context.run_id,
