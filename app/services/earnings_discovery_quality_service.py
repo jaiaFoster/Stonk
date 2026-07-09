@@ -166,6 +166,8 @@ def filter_earnings_discovery_for_calendar_scan(
         row["expiration_pair_diagnostics"] = {}
         try:
             expirations = provider.get_expirations(ticker)
+            entry_gate = _entry_window_gate(expirations, item)
+            row.update(entry_gate)
             row["expiration_count"] = len(expirations)
             pair = _select_calendar_expiration_pair(expirations, event=item)
             if pair:
@@ -184,7 +186,9 @@ def filter_earnings_discovery_for_calendar_scan(
                     "front_before_earnings": row["expiration_pair"].get("front_before_earnings"),
                     "gap_days": row["expiration_pair"].get("gap_days"),
                     "min_expiration_gap_days": int(getattr(config, "CALENDAR_MIN_EXPIRATION_GAP_DAYS", 14) or 14),
+                    **_entry_window_diagnostics(entry_gate),
                 }
+                _append_entry_window_check(row, entry_gate)
                 if is_near_miss:
                     earnings_dt = _parse_date(item.get("earnings_date") or item.get("date"))
                     front_dt = _parse_date(pair[0])
@@ -198,7 +202,7 @@ def filter_earnings_discovery_for_calendar_scan(
             else:
                 row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
                 row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "FAIL"
-                near_miss_exp = _find_near_miss_expiry(expirations, item)
+                near_miss_exp = None if _entry_window_blocks_near_miss(entry_gate) else _find_near_miss_expiry(expirations, item)
                 fail_reason = "no_valid_expiration_pair"
                 if near_miss_exp:
                     row["expiry_near_miss"] = True
@@ -206,16 +210,18 @@ def filter_earnings_discovery_for_calendar_scan(
                     fail_reason = "near_miss_expiry_gap"
                     row["checks"].append(_check("Option expirations", "WARN", near_miss_exp["check_detail"]))
                 else:
-                    row["checks"].append(_check("Option expirations", "FAIL", "No front/back expiration pair matched scanner settings."))
+                    row["checks"].append(_check("Option expirations", "FAIL", entry_gate.get("entry_window_reason") or "No front/back expiration pair matched scanner settings."))
                 row["expiration_pair_diagnostics"] = {
                     "expiration_pair_status": "near_miss" if near_miss_exp else "fail",
-                    "expiration_pair_reject_reason": fail_reason,
+                    "expiration_pair_reject_reason": entry_gate.get("entry_window_status") or fail_reason,
                     "actual_front_expiration_found": None,
                     "actual_back_expiration_found": None,
                     "tried_expirations": expirations[:10],
                     "min_expiration_gap_days": int(getattr(config, "CALENDAR_MIN_EXPIRATION_GAP_DAYS", 14) or 14),
                     "near_miss_expiry": near_miss_exp.get("note") if near_miss_exp else None,
+                    **_entry_window_diagnostics(entry_gate),
                 }
+                _append_entry_window_check(row, entry_gate)
         except Exception as e:
             safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
             row["expiry_exception"] = repr(safe_error)
@@ -393,6 +399,14 @@ def _finalize_quality_row(row: dict[str, Any]) -> None:
     if row.get("expiry_near_miss") and not row.get("passes_precheck"):
         row["verdict"] = "NEAR_MISS / EXPIRY_GAP"
         row["near_miss"] = True
+    if str(row.get("entry_window_status") or "") in {
+        "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
+        "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+    }:
+        row["passes_precheck"] = False
+        row["near_miss"] = False
+        row["verdict"] = f"FAIL / {row.get('entry_window_status')}"
+        row["primary_rejection_reason"] = row.get("entry_window_reason") or row.get("primary_rejection_reason")
 
 
 def _select_calendar_expiration_pair(expirations: list[str], event: dict[str, Any] | None = None) -> tuple[str, str] | None:
@@ -573,6 +587,119 @@ def _find_near_miss_expiry(expirations: list[str], event: dict[str, Any]) -> dic
             f"no valid pair, but front leg is close. Manual evaluation recommended."
         ),
     }
+
+
+def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[str, Any]:
+    today = date.today()
+    event_date = _parse_date(event.get("earnings_date") or event.get("date"))
+    if not event_date:
+        return {
+            "entry_window_status": "NO_PRE_EARNINGS_SHORT_EXPIRY",
+            "entry_window_open": False,
+            "entry_window_reason": "Earnings date unavailable; cannot verify short-leg entry window.",
+            "calendar_entry_allowed": False,
+        }
+    session = str(event.get("session_label") or event.get("time_of_day") or event.get("hour") or "").lower()
+    same_day_ok = "after" in session or "amc" in session
+    min_short_dte = max(
+        int(getattr(config, "EARNINGS_CALENDAR_ENTRY_MIN_SHORT_DTE", 4) or 4),
+        int(getattr(config, "CALENDAR_MIN_FRONT_LEG_DTE", 7) or 7),
+    )
+    preferred_min = int(getattr(config, "EARNINGS_CALENDAR_ENTRY_PREFERRED_MIN_DTE", 5) or 5)
+    preferred_max = int(getattr(config, "EARNINGS_CALENDAR_ENTRY_PREFERRED_MAX_DTE", 10) or 10)
+    parsed: list[tuple[int, str, date]] = []
+    for raw in expirations or []:
+        exp_date = _parse_date(raw)
+        dte = _dte(raw, today=today)
+        if exp_date and dte is not None and dte >= 0:
+            parsed.append((dte, str(raw), exp_date))
+    parsed.sort(key=lambda item: item[0])
+    before = [
+        item for item in parsed
+        if item[2] < event_date or (same_day_ok and item[2] == event_date)
+    ]
+    spanning = [item for item in parsed if item[2] >= event_date and not (same_day_ok and item[2] == event_date)]
+    valid_before = [item for item in before if item[0] >= min_short_dte]
+    if valid_before:
+        selected = valid_before[0]
+        status = "VALID_ENTRY_WINDOW" if preferred_min <= selected[0] <= preferred_max else "ENTRY_WINDOW_CLOSING"
+        return {
+            "entry_window_status": status,
+            "entry_window_open": True,
+            "entry_window_reason": f"Short leg {selected[1]} expires before earnings with {selected[0]} DTE.",
+            "short_leg_expires_before_earnings": True,
+            "short_leg_dte_minimum": min_short_dte,
+            "short_leg_time_value_minimum": min_short_dte,
+            "short_leg_does_not_span_event": True,
+            "entry_window_front_expiration": selected[1],
+            "entry_window_front_dte": selected[0],
+            "expiry_gap_valid": True,
+        }
+    if before:
+        selected = before[-1]
+        status = "SHORT_DTE_TOO_LOW" if selected[0] > 0 else "FRONT_LEG_TOO_DECAYED"
+        return {
+            "entry_window_status": status,
+            "entry_window_open": False,
+            "entry_window_reason": f"Only pre-earnings short leg {selected[1]} has {selected[0]} DTE; minimum is {min_short_dte}.",
+            "short_leg_expires_before_earnings": True,
+            "short_leg_dte_minimum": min_short_dte,
+            "short_leg_time_value_minimum": min_short_dte,
+            "short_leg_does_not_span_event": True,
+            "entry_window_front_expiration": selected[1],
+            "entry_window_front_dte": selected[0],
+            "expiry_gap_valid": False,
+        }
+    if spanning:
+        selected = spanning[0]
+        return {
+            "entry_window_status": "SHORT_LEG_SPANS_EARNINGS",
+            "entry_window_open": False,
+            "entry_window_reason": f"Nearest short leg {selected[1]} spans or follows earnings; no safe pre-earnings short expiry remains.",
+            "short_leg_expires_before_earnings": False,
+            "short_leg_dte_minimum": min_short_dte,
+            "short_leg_time_value_minimum": min_short_dte,
+            "short_leg_does_not_span_event": False,
+            "entry_window_front_expiration": selected[1],
+            "entry_window_front_dte": selected[0],
+            "expiry_gap_valid": False,
+        }
+    return {
+        "entry_window_status": "NO_PRE_EARNINGS_SHORT_EXPIRY",
+        "entry_window_open": False,
+        "entry_window_reason": "No listed short expiration exists before earnings.",
+        "short_leg_expires_before_earnings": False,
+        "short_leg_dte_minimum": min_short_dte,
+        "short_leg_time_value_minimum": min_short_dte,
+        "short_leg_does_not_span_event": False,
+        "expiry_gap_valid": False,
+    }
+
+
+def _entry_window_diagnostics(gate: dict[str, Any]) -> dict[str, Any]:
+    return {key: gate.get(key) for key in (
+        "entry_window_status", "entry_window_open", "entry_window_reason",
+        "short_leg_expires_before_earnings", "short_leg_dte_minimum",
+        "short_leg_time_value_minimum", "short_leg_does_not_span_event",
+        "entry_window_front_expiration", "entry_window_front_dte", "expiry_gap_valid",
+    ) if key in gate}
+
+
+def _entry_window_blocks_near_miss(gate: dict[str, Any]) -> bool:
+    return str(gate.get("entry_window_status") or "") in {
+        "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
+        "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+    }
+
+
+def _append_entry_window_check(row: dict[str, Any], gate: dict[str, Any]) -> None:
+    status = str(gate.get("entry_window_status") or "")
+    if status == "VALID_ENTRY_WINDOW":
+        row["checks"].append(_check("Calendar entry window", "PASS", gate.get("entry_window_reason") or status))
+    elif status == "ENTRY_WINDOW_CLOSING":
+        row["checks"].append(_check("Calendar entry window", "WARN", gate.get("entry_window_reason") or status))
+    else:
+        row["checks"].append(_check("Calendar entry window", "FAIL", gate.get("entry_window_reason") or status))
 
 
 def _cheap_prefilter(events: list[dict[str, Any]], logger: LogFn) -> list[dict[str, Any]]:

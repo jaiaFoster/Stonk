@@ -101,7 +101,19 @@ def build_run_manifest(
         "deploy_label": commit_identity["deploy_label"],
         "commit_identity": commit_identity,
         "payload_chars": (payload_profile.get("sections_bytes") or {}).get("payload_text", 0),
-        "summary_json_bytes": (payload_profile.get("sections_bytes") or {}).get("report_summary_json", 0),
+        "summary_json_bytes": (
+            payload_profile.get("compact_summary_json_bytes")
+            or (payload_profile.get("sections_bytes") or {}).get("report_compact_manifest_json")
+            or (payload_profile.get("sections_bytes") or {}).get("report_hot_summary_json")
+            or (payload_profile.get("sections_bytes") or {}).get("report_summary_json", 0)
+        ),
+        "compact_summary_json_bytes": payload_profile.get("compact_summary_json_bytes", 0),
+        "legacy_report_summary_json_bytes": payload_profile.get(
+            "legacy_report_summary_json_bytes",
+            (payload_profile.get("sections_bytes") or {}).get("report_summary_json", 0),
+        ),
+        "full_archive_blob_bytes": payload_profile.get("full_archive_blob_bytes", 0),
+        "raw_provider_archive_blob_bytes": payload_profile.get("raw_provider_archive_blob_bytes", 0),
         "runtime_total_ms": runtime_profile.get("total_ms", 0), "provider_fetch_count": provider_fetch_count,
         "strategy_counts": counts, "daily_opportunity_count": len((daily_opportunity or {}).get("actions", []) or []),
         "broker_mode": broker_mode,

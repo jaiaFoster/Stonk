@@ -1027,7 +1027,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         EMPTY_CALENDAR_RANKING,
         lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
     )
-    tradier_snapshot["_calendar_ranking"] = calendar_ranking
     unified_calendar_engine = run_optional_step(
         "unified_calendar_engine",
         "Running Unified Calendar Trade Engine v1...",
@@ -1288,19 +1287,20 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             }
             if config.ENABLE_PAYLOAD_SIZE_PROFILE:
                 import zlib
-                from app.services.report_snapshot_service import build_compact_full_report_summary, build_hot_report_summary
+                from app.services.report_snapshot_service import build_compact_full_report_summary, build_compact_manifest_summary
                 full_summary_json = json.dumps(
                     build_compact_full_report_summary(snapshot_summary),
                     default=str,
                     separators=(",", ":"),
                 ).encode("utf-8")
-                hot_summary_json = json.dumps(build_hot_report_summary(snapshot_summary), default=str, separators=(",", ":")).encode("utf-8")
+                hot_summary_json = json.dumps(build_compact_manifest_summary(snapshot_summary), default=str, separators=(",", ":")).encode("utf-8")
                 compressed_summary = zlib.compress(full_summary_json)
                 compressed_payload = zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
                 raw_provider_json = json.dumps(tradier_snapshot, default=str, separators=(",", ":")).encode("utf-8")
                 compressed_raw_provider = zlib.compress(raw_provider_json)
                 payload_profile["sections_bytes"].update({
                     "report_hot_summary_json": len(hot_summary_json),
+                    "report_compact_manifest_json": len(hot_summary_json),
                     "report_compressed_full_summary": len(compressed_summary),
                     "report_compressed_full_payload": len(compressed_payload),
                     "report_compressed_raw_provider": len(compressed_raw_provider),
@@ -1310,6 +1310,12 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                         + len(compressed_payload)
                         + len(compressed_raw_provider)
                     ),
+                })
+                payload_profile.update({
+                    "compact_summary_json_bytes": len(hot_summary_json),
+                    "full_archive_blob_bytes": len(compressed_summary),
+                    "raw_provider_archive_blob_bytes": len(compressed_raw_provider),
+                    "api_hot_path_bytes": len(hot_summary_json),
                 })
             snapshot_started = perf_counter()
             snapshot_method(
@@ -1334,6 +1340,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             )
             RunManifestRepository().save(manifest)
             tradier_snapshot["_run_manifest"] = manifest
+            # 30F: persist compact universal strategy rows for API/UI hot paths.
+            try:
+                from app.services.strategy_row_repository import StrategyRowRepository
+                strategy_row_write = StrategyRowRepository().write_run(run_context.run_id, normalized_strategy_results)
+                tradier_snapshot["_strategy_row_store"] = strategy_row_write
+                log_print(
+                    "StrategyRowRepository: wrote "
+                    f"{strategy_row_write.get('write_count', 0)} row(s) "
+                    f"{strategy_row_write.get('by_strategy', {})}"
+                )
+            except Exception as exc:
+                log_print(f"StrategyRowRepository warning: {exc}")
             # 30B: Universal strategy observation journal write — non-blocking.
             try:
                 from app.db.strategy_observations import write_run as _write_obs_run

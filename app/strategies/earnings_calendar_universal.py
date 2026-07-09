@@ -169,6 +169,13 @@ def _build_details(row: dict[str, Any]) -> dict[str, Any]:
         "front_dte": row.get("front_dte"),
         "back_dte": row.get("back_dte"),
         "expiration_pair_status": _expiration_pair_status(row),
+        "entry_window_status": row.get("entry_window_status"),
+        "entry_window_open": row.get("entry_window_open"),
+        "entry_window_reason": row.get("entry_window_reason"),
+        "short_leg_expires_before_earnings": row.get("short_leg_expires_before_earnings"),
+        "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
+        "short_leg_time_value_minimum": row.get("short_leg_time_value_minimum"),
+        "short_leg_does_not_span_event": row.get("short_leg_does_not_span_event"),
         # Strike
         "strike": row.get("strike"),
         "strike_selection_status": "not_evaluated",
@@ -269,6 +276,7 @@ def _build_candidate_gate_groups(row: dict[str, Any]) -> dict[str, Any]:
     trust_status, trust_reason = _trust_gate_status(trust, date_conf)
     pair_status, pair_reason = _pair_gate_status(relation)
     ev_status = _event_window_gate_status(relation)
+    entry_status = str(row.get("entry_window_status") or "")
     iv_rel = str(row.get("iv_relationship_status") or "unavailable")
     iv_status = _iv_gate_status(iv_rel)
     front_iv = _num(row.get("front_iv"))
@@ -332,6 +340,21 @@ def _build_candidate_gate_groups(row: dict[str, Any]) -> dict[str, Any]:
             status=ev_status,
             reason=_event_window_reason(relation),
             custom={"earnings_relation": relation},
+        ),
+        "calendar_entry_window": _gate(
+            label="Calendar entry window",
+            status=_calendar_entry_window_gate_status(entry_status),
+            reason=str(row.get("entry_window_reason") or entry_status or "Entry window not evaluated."),
+            blocking=entry_status in {
+                "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
+                "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+            },
+            custom={
+                "entry_window_status": row.get("entry_window_status"),
+                "entry_window_open": row.get("entry_window_open"),
+                "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
+                "entry_window_front_dte": row.get("entry_window_front_dte"),
+            },
         ),
     }
 
@@ -615,6 +638,19 @@ def _event_window_gate_status(relation: str) -> str:
     if relation in ("near_miss_expiry_gap", "earnings_on_front_expiration", "unclassified"):
         return "watch"
     if relation in ("short_leg_spans_earnings", "already_reported", "earnings_after_back_leg"):
+        return "fail"
+    return "unknown"
+
+
+def _calendar_entry_window_gate_status(status: str) -> str:
+    if status == "VALID_ENTRY_WINDOW":
+        return "pass"
+    if status == "ENTRY_WINDOW_CLOSING":
+        return "watch"
+    if status in {
+        "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
+        "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+    }:
         return "fail"
     return "unknown"
 

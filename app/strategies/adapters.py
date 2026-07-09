@@ -88,15 +88,7 @@ class ForwardFactorCalendarStrategy:
             if str(position.get("account") or "").lower() == "crypto"
         }
         crypto |= {"BTC", "SOL", "ETH", "DOGE", "LTC", "BCH", "AVAX", "LINK", "SHIB"}
-        existing = [ticker for ticker in _tickers(context) if ticker not in crypto]
-        try:
-            from app.services.universe_discovery_service import get_ff_candidates
-            return get_ff_candidates(
-                existing_tickers=existing,
-                max_tickers=int(getattr(config, "FF_UNIVERSE_MAX_TICKERS", 40) or 40),
-            )
-        except Exception:
-            return existing
+        return [ticker for ticker in _tickers(context) if ticker not in crypto]
 
     def data_requirements(self, context: Any, universe: list[str]):
         return forward_factor_requirement(universe)
