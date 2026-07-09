@@ -9,7 +9,7 @@ before the app attempts full option-chain/calendar calculations.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from app import config
@@ -623,6 +623,10 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "short_leg_time_value_minimum": int(getattr(config, "CALENDAR_MIN_FRONT_LEG_DTE", 7) or 7),
             "short_leg_does_not_span_event": False,
             "expiry_gap_valid": False,
+            "current_dte_to_earnings": (event_date - today).days,
+            "ideal_entry_window": _ideal_entry_window(event_date),
+            "blocker_code": "DATE_CONFLICT_REVIEW",
+            "blocker_detail": "Earnings date conflict detected.",
         }
     session = str(event.get("session_label") or event.get("time_of_day") or event.get("hour") or "").lower()
     same_day_ok = "after" in session or "amc" in session
@@ -651,6 +655,10 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "short_leg_time_value_minimum": min_short_dte,
             "short_leg_does_not_span_event": False,
             "expiry_gap_valid": False,
+            "current_dte_to_earnings": days_to_event,
+            "ideal_entry_window": _ideal_entry_window(event_date),
+            "blocker_code": status,
+            "blocker_detail": "Option expiration data unavailable." if status == "DATA_NEEDED" else "No listed expirations available before earnings.",
         }
     before = [
         item for item in parsed
@@ -687,6 +695,12 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "entry_window_front_expiration": selected[1],
             "entry_window_front_dte": selected[0],
             "expiry_gap_valid": True,
+            "current_dte_to_earnings": days_to_event,
+            "ideal_entry_window": _ideal_entry_window(event_date),
+            "estimated_entry_date": _estimated_entry_date(event_date),
+            "days_until_entry_window": _days_until_entry_window(event_date, today),
+            "blocker_code": None,
+            "blocker_detail": None,
             **expiration_context,
         }
     if before:
@@ -703,6 +717,12 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "entry_window_front_expiration": selected[1],
             "entry_window_front_dte": selected[0],
             "expiry_gap_valid": False,
+            "current_dte_to_earnings": days_to_event,
+            "ideal_entry_window": _ideal_entry_window(event_date),
+            "estimated_entry_date": _estimated_entry_date(event_date),
+            "days_until_entry_window": _days_until_entry_window(event_date, today),
+            "blocker_code": status,
+            "blocker_detail": f"Only pre-earnings short leg {selected[1]} has {selected[0]} DTE; minimum is {min_short_dte}.",
             **expiration_context,
         }
     if spanning:
@@ -718,6 +738,12 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
             "entry_window_front_expiration": selected[1],
             "entry_window_front_dte": selected[0],
             "expiry_gap_valid": False,
+            "current_dte_to_earnings": days_to_event,
+            "ideal_entry_window": _ideal_entry_window(event_date),
+            "estimated_entry_date": _estimated_entry_date(event_date),
+            "days_until_entry_window": _days_until_entry_window(event_date, today),
+            "blocker_code": "SHORT_LEG_SPANS_EARNINGS",
+            "blocker_detail": f"Nearest short leg {selected[1]} spans or follows earnings.",
             **expiration_context,
         }
     return {
@@ -729,6 +755,12 @@ def _entry_window_gate(expirations: list[str], event: dict[str, Any]) -> dict[st
         "short_leg_time_value_minimum": min_short_dte,
         "short_leg_does_not_span_event": False,
         "expiry_gap_valid": False,
+        "current_dte_to_earnings": days_to_event,
+        "ideal_entry_window": _ideal_entry_window(event_date),
+        "estimated_entry_date": _estimated_entry_date(event_date),
+        "days_until_entry_window": _days_until_entry_window(event_date, today),
+        "blocker_code": "NO_PRE_EARNINGS_SHORT_EXPIRY",
+        "blocker_detail": "No listed short expiration exists before earnings.",
         **expiration_context,
     }
 
@@ -757,11 +789,39 @@ def _entry_window_expiration_context(
             "reason": "short leg spans or follows earnings",
         })
     return {
+        "available_expirations": [
+            {"expiration": exp, "dte": dte, "position": "pre_earnings"}
+            for dte, exp, _ in before
+        ] + [
+            {"expiration": exp, "dte": dte, "position": "spans_or_after_earnings"}
+            for dte, exp, _ in spanning
+        ],
         "available_pre_earnings_expirations": available_pre,
         "rejected_expirations": rejected,
         "proposed_short_expiration": (before[-1][1] if before else (spanning[0][1] if spanning else None)),
         "proposed_long_expiration": (spanning[0][1] if spanning else None),
     }
+
+
+def _ideal_entry_window(event_date: date) -> dict[str, str]:
+    ideal_min = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MIN_DTE", 6) or 6)
+    ideal_max = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE", 12) or 12)
+    return {
+        "start": (event_date - timedelta(days=ideal_max)).isoformat(),
+        "end": (event_date - timedelta(days=ideal_min)).isoformat(),
+        "min_dte_to_earnings": ideal_min,
+        "max_dte_to_earnings": ideal_max,
+    }
+
+
+def _estimated_entry_date(event_date: date) -> str:
+    ideal_max = int(getattr(config, "EARNINGS_CALENDAR_IDEAL_ENTRY_MAX_DTE", 12) or 12)
+    return (event_date - timedelta(days=ideal_max)).isoformat()
+
+
+def _days_until_entry_window(event_date: date, today: date) -> int:
+    start = _parse_date(_estimated_entry_date(event_date))
+    return max(0, (start - today).days) if start else 0
 
 
 def _entry_window_diagnostics(gate: dict[str, Any]) -> dict[str, Any]:
@@ -772,6 +832,8 @@ def _entry_window_diagnostics(gate: dict[str, Any]) -> dict[str, Any]:
         "entry_window_front_expiration", "entry_window_front_dte", "expiry_gap_valid",
         "available_pre_earnings_expirations", "rejected_expirations",
         "proposed_short_expiration", "proposed_long_expiration",
+        "available_expirations", "current_dte_to_earnings", "ideal_entry_window",
+        "estimated_entry_date", "days_until_entry_window", "blocker_code", "blocker_detail",
     ) if key in gate}
 
 

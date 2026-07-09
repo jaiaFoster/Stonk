@@ -148,7 +148,10 @@ class StrategyRowRepository:
                 continue
             source_rows = result.get("canonical_opportunities") or result.get("rows") or result.get("items") or []
             if not isinstance(source_rows, list):
-                continue
+                source_rows = []
+            active_rows = result.get("active_rows") or []
+            if isinstance(active_rows, list):
+                source_rows = list(source_rows) + [row for row in active_rows if isinstance(row, dict)]
             errors_by_index = {
                 int(err.get("row_index")): err
                 for err in (result.get("canonical_normalizer_errors") or [])
@@ -188,7 +191,7 @@ class StrategyRowRepository:
             "score": _float_or_none(compact.get("score") or compact.get("signal_score") or compact.get("priority_score")),
             "confidence": compact.get("confidence") or compact.get("data_quality_status") or "",
             "primary_reason": compact.get("primary_reason") or compact.get("primary_blocker") or compact.get("reason_label") or compact.get("reason") or "",
-            "daily_opportunity_eligible": 1 if compact.get("daily_opportunity_eligible") else 0,
+            "daily_opportunity_eligible": 1 if (compact.get("daily_opportunity_eligible") or compact.get("can_enter_daily_opportunity")) else 0,
             "details_json": _json(details),
             "gates_json": _json(compact.get("gates") or []),
             "gate_groups_json": _json(compact.get("gate_groups") or {}),
@@ -254,7 +257,7 @@ def _strip_heavy(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _structure_summary(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    summary = {
         key: row.get(key)
         for key in (
             "structure_type", "structure_status", "front_expiration", "back_expiration",
@@ -263,10 +266,21 @@ def _structure_summary(row: dict[str, Any]) -> dict[str, Any]:
         )
         if row.get(key) is not None
     }
+    structure = row.get("structure")
+    if isinstance(structure, dict):
+        summary.update({key: value for key, value in structure.items() if value is not None})
+    value = row.get("value")
+    if isinstance(value, dict):
+        for key in ("current_debit", "current_mid_debit", "estimated_pnl_pct"):
+            if value.get(key) is not None:
+                summary[key] = value.get(key)
+    return summary
 
 
 def _row_type(strategy_id: str, row: dict[str, Any]) -> str:
     if strategy_id == "earnings_calendar":
+        if str(row.get("type") or "") == "open_calendar":
+            return "lifecycle_check"
         status = str(row.get("entry_window_status") or "")
         verdict = str(row.get("verdict") or "")
         if status in {"MONITOR_PRE_WINDOW", "DATA_NEEDED", "DATE_CONFLICT_REVIEW"}:
@@ -296,6 +310,17 @@ def _friendly_verdict(strategy_id: str, row: dict[str, Any]) -> str:
 
 def _derived_details(strategy_id: str, row: dict[str, Any]) -> dict[str, Any]:
     if strategy_id == "earnings_calendar":
+        if str(row.get("type") or "") == "open_calendar":
+            return {
+                "earnings_calendar": {
+                    "lifecycle_status": row.get("verdict") or row.get("action"),
+                    "next_action": row.get("next_action"),
+                    "structure": row.get("structure") or {},
+                    "value": row.get("value") or {},
+                    "hold_through_score": row.get("hold_through_score"),
+                    "hold_through_action": row.get("hold_through_action"),
+                }
+            }
         return {
             "earnings_calendar": {
                 "entry_window_status": row.get("entry_window_status"),
@@ -306,10 +331,17 @@ def _derived_details(strategy_id: str, row: dict[str, Any]) -> dict[str, Any]:
                 "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
                 "short_leg_time_value_minimum": row.get("short_leg_time_value_minimum"),
                 "short_leg_does_not_span_event": row.get("short_leg_does_not_span_event"),
+                "current_dte_to_earnings": row.get("current_dte_to_earnings"),
+                "ideal_entry_window": row.get("ideal_entry_window"),
+                "estimated_entry_date": row.get("estimated_entry_date"),
+                "days_until_entry_window": row.get("days_until_entry_window"),
+                "available_expirations": row.get("available_expirations") or [],
                 "available_pre_earnings_expirations": row.get("available_pre_earnings_expirations") or [],
                 "rejected_expirations": row.get("rejected_expirations") or [],
                 "proposed_short_expiration": row.get("proposed_short_expiration"),
                 "proposed_long_expiration": row.get("proposed_long_expiration"),
+                "blocker_code": row.get("blocker_code") or row.get("entry_window_status"),
+                "blocker_detail": row.get("blocker_detail") or row.get("entry_window_reason"),
             }
         }
     return {}

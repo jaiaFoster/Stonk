@@ -4,15 +4,16 @@ ASA Patch 30E — Payload Budget Tests
 Verifies:
   - Compact manifest is sub-50KB with realistic data
   - summary_json col targets sub-50KB (was ~1MB)
-  - daily_opportunity_api still reads full blob and returns actions
-  - open_positions_api still returns positions
-  - API reads use include_full=True / load_summary(full=True)
+  - daily_opportunity_api prefers row store and labels legacy fallback
+  - open_positions_api prefers row store and labels legacy fallback
   - No raw provider data in compact summary_json
 """
 from __future__ import annotations
 
 import json
 import py_compile
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 
@@ -69,26 +70,28 @@ class TestCompactManifestSize:
         )
 
 
-# ─── daily_opportunity_api uses full=True ─────────────────────────────────────
+# ─── daily_opportunity_api row-store first, labeled fallback ──────────────────
 
-class TestDailyOpportunityApiFullRead:
-    def test_daily_opportunity_api_calls_include_full_true(self):
+class TestDailyOpportunityApiRowStoreFirst:
+    def test_daily_opportunity_api_reads_row_store_first(self):
         import inspect
         from app.api import daily_opportunity_api
         source = inspect.getsource(daily_opportunity_api)
-        assert "include_full=True" in source, "daily_opportunity_api must use include_full=True"
+        assert "_daily_opportunity_from_row_store" in source
 
-    def test_daily_opportunity_api_calls_load_summary_full_true(self):
+    def test_daily_opportunity_api_labels_legacy_fallback(self):
         import inspect
         from app.api import daily_opportunity_api
         source = inspect.getsource(daily_opportunity_api)
-        assert "full=True" in source, "daily_opportunity_api must use load_summary(full=True)"
+        assert "legacy_snapshot_fallback" in source
 
     def test_daily_opportunity_returns_dict_when_no_snapshot(self):
         from app.api.daily_opportunity_api import build_daily_opportunity_response
-        with patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
-            MockRepo.return_value.latest_success.return_value = None
-            result = build_daily_opportunity_response()
+        with TemporaryDirectory() as tmp, \
+             patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", str(Path(tmp) / "rows.sqlite3")), \
+             patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
+                MockRepo.return_value.latest_success.return_value = None
+                result = build_daily_opportunity_response()
         assert isinstance(result, dict)
         assert result.get("provider_calls_triggered") is False
 
@@ -108,35 +111,40 @@ class TestDailyOpportunityApiFullRead:
                 }
             }
         }
-        with patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
-            instance = MockRepo.return_value
-            instance.latest_success.return_value = fake_snapshot
-            instance.load_summary.return_value = fake_summary
-            result = build_daily_opportunity_response()
+        with TemporaryDirectory() as tmp, \
+             patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", str(Path(tmp) / "rows.sqlite3")), \
+             patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.latest_success.return_value = fake_snapshot
+                instance.load_summary.return_value = fake_summary
+                result = build_daily_opportunity_response()
         assert "actions" in result
         assert isinstance(result["actions"], list)
+        assert result["source"] == "legacy_snapshot_fallback"
 
 
-# ─── open_positions_api uses full=True ────────────────────────────────────────
+# ─── open_positions_api row-store first, labeled fallback ─────────────────────
 
-class TestOpenPositionsApiFullRead:
-    def test_open_positions_api_calls_include_full_true(self):
+class TestOpenPositionsApiRowStoreFirst:
+    def test_open_positions_api_reads_row_store_first(self):
         import inspect
         from app.api import open_positions_api
         source = inspect.getsource(open_positions_api)
-        assert "include_full=True" in source, "open_positions_api must use include_full=True"
+        assert "_open_positions_from_row_store" in source
 
-    def test_open_positions_api_calls_load_summary_full_true(self):
+    def test_open_positions_api_labels_legacy_fallback(self):
         import inspect
         from app.api import open_positions_api
         source = inspect.getsource(open_positions_api)
-        assert "full=True" in source, "open_positions_api must use load_summary(full=True)"
+        assert "legacy_snapshot_fallback" in source
 
     def test_open_positions_returns_dict_when_no_snapshot(self):
         from app.api.open_positions_api import build_open_positions_response
-        with patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
-            MockRepo.return_value.latest_success.return_value = None
-            result = build_open_positions_response()
+        with TemporaryDirectory() as tmp, \
+             patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", str(Path(tmp) / "rows.sqlite3")), \
+             patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
+                MockRepo.return_value.latest_success.return_value = None
+                result = build_open_positions_response()
         assert isinstance(result, dict)
         assert result.get("provider_calls_triggered") is False
 
@@ -156,12 +164,15 @@ class TestOpenPositionsApiFullRead:
                 }
             }
         }
-        with patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
-            instance = MockRepo.return_value
-            instance.latest_success.return_value = fake_snapshot
-            instance.load_summary.return_value = fake_summary
-            result = build_open_positions_response()
+        with TemporaryDirectory() as tmp, \
+             patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", str(Path(tmp) / "rows.sqlite3")), \
+             patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
+                instance = MockRepo.return_value
+                instance.latest_success.return_value = fake_snapshot
+                instance.load_summary.return_value = fake_summary
+                result = build_open_positions_response()
         assert "options_positions" in result
+        assert result["source"] == "legacy_snapshot_fallback"
 
 
 # ─── CAVEMAN config invariants ────────────────────────────────────────────────
