@@ -298,12 +298,19 @@ def _metrics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
             "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
             "entry_window_front_expiration": row.get("entry_window_front_expiration"),
             "entry_window_front_dte": row.get("entry_window_front_dte"),
+            "current_dte_to_earnings": row.get("current_dte_to_earnings"),
+            "ideal_entry_window": row.get("ideal_entry_window"),
+            "estimated_entry_date": row.get("estimated_entry_date"),
+            "days_until_entry_window": row.get("days_until_entry_window"),
+            "available_expirations": row.get("available_expirations"),
             "short_leg_expires_before_earnings": row.get("short_leg_expires_before_earnings"),
             "short_leg_does_not_span_event": row.get("short_leg_does_not_span_event"),
             "available_pre_earnings_expirations": row.get("available_pre_earnings_expirations"),
             "rejected_expirations": row.get("rejected_expirations"),
             "proposed_short_expiration": row.get("proposed_short_expiration"),
             "proposed_long_expiration": row.get("proposed_long_expiration"),
+            "blocker_code": row.get("blocker_code"),
+            "blocker_detail": row.get("blocker_detail"),
         }
 
     if strategy_id == "skew_momentum_vertical":

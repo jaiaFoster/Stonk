@@ -60,6 +60,8 @@ _SURVIVAL_FIELDS = (
     "entry_window_front_expiration", "entry_window_front_dte", "expiry_gap_valid",
     "available_pre_earnings_expirations", "rejected_expirations",
     "proposed_short_expiration", "proposed_long_expiration",
+    "available_expirations", "current_dte_to_earnings", "ideal_entry_window",
+    "estimated_entry_date", "days_until_entry_window", "blocker_code", "blocker_detail",
 )
 
 
