@@ -276,6 +276,9 @@ def _metrics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
             "back_dte": row.get("back_dte"),
             "earnings_trust_label": row.get("earnings_trust_label"),
             "expiration_pair_diagnostics": row.get("expiration_pair_diagnostics"),
+            "entry_window_status": row.get("entry_window_status"),
+            "entry_window_open": row.get("entry_window_open"),
+            "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
         }
 
     if strategy_id == "skew_momentum_vertical":

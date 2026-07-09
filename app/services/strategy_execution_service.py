@@ -54,7 +54,9 @@ _SURVIVAL_FIELDS = (
     "side", "position_type", "provider_fetch_count", "pipeline_trace",
     "earnings_date_confidence", "earnings_source_count", "earnings_sources_seen",
     "earnings_source_conflict", "earnings_conflict_details", "earnings_trust_label",
-    "earnings_trust_reason", "calendar_entry_allowed",
+    "earnings_trust_reason", "calendar_entry_allowed", "entry_window_status",
+    "entry_window_open", "entry_window_reason", "short_leg_expires_before_earnings",
+    "short_leg_dte_minimum", "short_leg_time_value_minimum", "short_leg_does_not_span_event",
 )
 
 

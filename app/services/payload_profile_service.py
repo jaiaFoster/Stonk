@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from app.services.provider_payload_compaction_service import build_provider_payload_budget
+from app.services.payload_path_audit_service import largest_json_paths
 
 # TKT-038 / 29.8: Tiered payload budget thresholds
 _PAYLOAD_HEALTHY_BYTES  = 750_000    # ≤750KB = healthy
@@ -58,6 +59,8 @@ def build_payload_size_profile(
     sections["tradier_snapshot_compact"] = provider_budget["compact_tradier_snapshot_bytes"]
     summary_json_bytes = sections.get("report_summary_json", 0)
     largest_top_level_keys = _largest_snapshot_keys(snapshot)
+    largest_report_summary_paths = largest_json_paths(report_summary or {}, root="report_summary", limit=10)
+    largest_snapshot_paths = largest_json_paths(snapshot or {}, root="tradier_snapshot", limit=10)
 
     # TKT-038: per-strategy row-level breakdown.
     strategy_row_profile = _strategy_row_profile(
@@ -75,6 +78,11 @@ def build_payload_size_profile(
     return {
         "total_profiled_bytes": sum(sections.values()),
         "summary_json_bytes": summary_json_bytes,
+        "legacy_report_summary_json_bytes": summary_json_bytes,
+        "compact_summary_json_bytes": 0,
+        "full_archive_blob_bytes": 0,
+        "raw_provider_archive_blob_bytes": 0,
+        "api_hot_path_bytes": 0,
         "summary_payload_status": summary_payload_status,
         "summary_payload_limit_bytes": _PAYLOAD_HEALTHY_BYTES,
         "summary_payload_watch_bytes": _PAYLOAD_WATCH_BYTES,
@@ -85,6 +93,8 @@ def build_payload_size_profile(
         "largest_strategy_rows": largest_strategy_rows,
         "provider_payload_budget": provider_budget,
         "largest_top_level_keys": largest_top_level_keys,
+        "largest_report_summary_paths": largest_report_summary_paths,
+        "largest_snapshot_paths": largest_snapshot_paths,
     }
 
 

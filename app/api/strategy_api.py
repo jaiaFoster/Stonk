@@ -135,6 +135,33 @@ def get_strategy_rows(
         }
 
     try:
+        from app.services.strategy_row_repository import StrategyRowRepository
+        row_store = StrategyRowRepository()
+        stored = row_store.read_latest(strategy_id, limit=min(int(limit or 20), 50))
+        if stored.get("rows"):
+            rows = stored["rows"]
+            error_count = sum(1 for row in rows if row.get("normalization_status") != "ok")
+            return {
+                **_READ_ONLY_BASE,
+                "strategy_id": strategy_id,
+                "schema_version": rows[0].get("schema_version") if rows else None,
+                "latest_run_id": stored.get("run_id"),
+                "source_run_id": stored.get("run_id"),
+                "row_count": len(rows),
+                "rows": rows,
+                "source": "strategy_row_store",
+                "empty_state": None,
+                "normalization_summary": {
+                    "row_count": len(rows),
+                    "error_count": error_count,
+                    "ok_count": len(rows) - error_count,
+                },
+                "dry_run": True if strategy_id == "forward_factor_calendar" else None,
+            }
+    except Exception:
+        pass
+
+    try:
         from app.services.report_snapshot_service import ReportSnapshotRepository
         repo = ReportSnapshotRepository()
         snapshot = repo.latest_success(include_full=True)
@@ -145,6 +172,7 @@ def get_strategy_rows(
                 "rows": [],
                 "count": 0,
                 "empty_state": "no_snapshot",
+                "source": "empty",
                 "note": "No successful snapshot available.",
             }
         summary = repo.load_summary(snapshot, full=True)
@@ -177,6 +205,8 @@ def get_strategy_rows(
                 "row_count": len(rows),
                 "source_run_id": snapshot.get("run_id"),
                 "schema_version": rows[0].get("schema_version") if rows else None,
+                "source": "legacy_snapshot_fallback",
+                "normalization_summary": {"row_count": len(rows), "error_count": 0},
             }
 
         if strategy_id == "earnings_calendar":
@@ -215,6 +245,8 @@ def get_strategy_rows(
                 "row_count": len(rows),
                 "source_run_id": run_id,
                 "schema_version": rows[0].get("schema_version") if rows else None,
+                "source": "legacy_snapshot_fallback",
+                "normalization_summary": {"row_count": len(rows), "error_count": 0},
             }
 
         if strategy_id == "skew_momentum_vertical":
@@ -240,6 +272,8 @@ def get_strategy_rows(
                 "row_count": len(rows),
                 "source_run_id": run_id,
                 "schema_version": rows[0].get("schema_version") if rows else None,
+                "source": "legacy_snapshot_fallback",
+                "normalization_summary": {"row_count": len(rows), "error_count": 0},
             }
 
         if strategy_id == "forward_factor_calendar":
@@ -266,6 +300,8 @@ def get_strategy_rows(
                 "source_run_id": run_id,
                 "schema_version": rows[0].get("schema_version") if rows else None,
                 "dry_run": True,
+                "source": "legacy_snapshot_fallback",
+                "normalization_summary": {"row_count": len(rows), "error_count": 0},
             }
 
         # Other strategies: return empty state — future lanes will implement them.

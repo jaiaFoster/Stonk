@@ -80,12 +80,13 @@ def discover_accounts() -> list[dict[str, Any]]:
             acct_num = str(acct.get("account_number") or "").strip()
             if not acct_num:
                 continue
-            print(
-                f"[discover_accounts] account={acct_num} "
-                f"FULL_RAW_KEYS={sorted(acct.keys())} "
-                f"FULL_RAW_DICT={acct!r}",
-                flush=True,
-            )
+            if bool(getattr(config, "BROKER_DEBUG_RAW_LOGS_ENABLED", False)):
+                print(
+                    f"[discover_accounts] account={acct_num} "
+                    f"FULL_RAW_KEYS={sorted(acct.keys())} "
+                    f"FULL_RAW_DICT={sanitize_for_log(acct)!r}",
+                    flush=True,
+                )
             classified = _classify_account_type(acct)
             is_pinnacle = acct.get("is_pinnacle_account")
             print(
@@ -138,6 +139,8 @@ def _classify_account_type(acct: dict) -> str:
             return mapped
         if "ira" in brokerage_type:
             return "IRA"
+    if acct.get("is_pinnacle_account") is True:
+        return "IRA"
 
     acct_type = str(acct.get("type") or "").lower().strip()
     if "roth" in acct_type:
