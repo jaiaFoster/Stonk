@@ -170,7 +170,7 @@ def test_calendar_entry_window_blocks_july16_july8_july10_july17_case(monkeypatc
         {"ticker": "NFLX", "earnings_date": "2026-07-16", "session_label": "AMC"},
     )
     assert gate["entry_window_open"] is False
-    assert gate["entry_window_status"] in {"SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED"}
+    assert gate["entry_window_status"] == "ENTRY_WINDOW_CLOSED"
     assert gate["short_leg_dte_minimum"] >= 4
 
 
@@ -207,7 +207,62 @@ def test_calendar_entry_window_valid_case_can_watch(monkeypatch):
         {"ticker": "BAC", "earnings_date": "2026-07-16", "session_label": "BMO"},
     )
     assert gate["entry_window_open"] is True
-    assert gate["entry_window_status"] in {"VALID_ENTRY_WINDOW", "ENTRY_WINDOW_CLOSING"}
+    assert gate["entry_window_status"] in {"ENTRY_WINDOW_OPEN", "ENTRY_WINDOW_CLOSING"}
+
+
+def test_calendar_entry_window_future_event_monitors_pre_window(monkeypatch):
+    from datetime import date
+    from app.services import earnings_discovery_quality_service as svc
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 1)
+
+    monkeypatch.setattr(svc, "date", FixedDate)
+    gate = svc._entry_window_gate(
+        ["2026-07-17", "2026-08-21"],
+        {"ticker": "JPM", "earnings_date": "2026-07-20", "session_label": "BMO"},
+    )
+    assert gate["entry_window_status"] == "MONITOR_PRE_WINDOW"
+    assert gate["entry_window_open"] is False
+    assert "Pre-window monitor" in gate["entry_window_reason"]
+
+
+def test_calendar_entry_window_chain_unavailable_yields_data_needed(monkeypatch):
+    from datetime import date
+    from app.services import earnings_discovery_quality_service as svc
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 1)
+
+    monkeypatch.setattr(svc, "date", FixedDate)
+    gate = svc._entry_window_gate(
+        [],
+        {"ticker": "JPM", "earnings_date": "2026-07-20", "session_label": "BMO"},
+    )
+    assert gate["entry_window_status"] == "DATA_NEEDED"
+    assert gate["entry_window_open"] is False
+
+
+def test_calendar_entry_window_date_conflict_yields_review(monkeypatch):
+    from datetime import date
+    from app.services import earnings_discovery_quality_service as svc
+
+    class FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 7, 8)
+
+    monkeypatch.setattr(svc, "date", FixedDate)
+    gate = svc._entry_window_gate(
+        ["2026-07-15", "2026-08-21"],
+        {"ticker": "CTAS", "earnings_date": "2026-07-16", "earnings_source_conflict": True},
+    )
+    assert gate["entry_window_status"] == "DATE_CONFLICT_REVIEW"
+    assert gate["entry_window_open"] is False
 
 
 def test_universal_earnings_row_includes_entry_window_gate():

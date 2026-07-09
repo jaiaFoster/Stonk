@@ -146,13 +146,13 @@ class TestB3NearMissExpiry(unittest.TestCase):
         candidate = {
             "ticker": "ESI",
             "score": 70,
-            "front_expiration": "2026-07-17",
+            "front_expiration": "2026-07-24",
             "back_expiration": "2026-08-21",
         }
         event = {
             "has_data": True,
             "ticker": "ESI",
-            "earnings_date": "2026-07-08",
+            "earnings_date": "2026-07-20",
             "time_of_day": "before_open",
             "session_label": "Before market open",
         }
