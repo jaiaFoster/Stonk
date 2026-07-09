@@ -348,6 +348,7 @@ def _build_candidate_gate_groups(row: dict[str, Any]) -> dict[str, Any]:
             blocking=entry_status in {
                 "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
                 "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+                "DATE_CONFLICT_REVIEW",
             },
             custom={
                 "entry_window_status": row.get("entry_window_status"),
@@ -643,13 +644,14 @@ def _event_window_gate_status(relation: str) -> str:
 
 
 def _calendar_entry_window_gate_status(status: str) -> str:
-    if status == "VALID_ENTRY_WINDOW":
+    if status == "ENTRY_WINDOW_OPEN":
         return "pass"
-    if status == "ENTRY_WINDOW_CLOSING":
+    if status in {"ENTRY_WINDOW_CLOSING", "MONITOR_PRE_WINDOW", "DATA_NEEDED"}:
         return "watch"
     if status in {
         "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
         "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED",
+        "DATE_CONFLICT_REVIEW",
     }:
         return "fail"
     return "unknown"
