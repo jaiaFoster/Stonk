@@ -176,6 +176,10 @@ def _build_details(row: dict[str, Any]) -> dict[str, Any]:
         "short_leg_dte_minimum": row.get("short_leg_dte_minimum"),
         "short_leg_time_value_minimum": row.get("short_leg_time_value_minimum"),
         "short_leg_does_not_span_event": row.get("short_leg_does_not_span_event"),
+        "available_pre_earnings_expirations": row.get("available_pre_earnings_expirations"),
+        "rejected_expirations": row.get("rejected_expirations"),
+        "proposed_short_expiration": row.get("proposed_short_expiration"),
+        "proposed_long_expiration": row.get("proposed_long_expiration"),
         # Strike
         "strike": row.get("strike"),
         "strike_selection_status": "not_evaluated",

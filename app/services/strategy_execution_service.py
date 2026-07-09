@@ -57,6 +57,9 @@ _SURVIVAL_FIELDS = (
     "earnings_trust_reason", "calendar_entry_allowed", "entry_window_status",
     "entry_window_open", "entry_window_reason", "short_leg_expires_before_earnings",
     "short_leg_dte_minimum", "short_leg_time_value_minimum", "short_leg_does_not_span_event",
+    "entry_window_front_expiration", "entry_window_front_dte", "expiry_gap_valid",
+    "available_pre_earnings_expirations", "rejected_expirations",
+    "proposed_short_expiration", "proposed_long_expiration",
 )
 
 
