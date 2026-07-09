@@ -5,6 +5,7 @@ Serves compact positions list and lifecycle summary from the latest stored snaps
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 _READ_ONLY_BASE: dict[str, Any] = {"provider_calls_triggered": False, "read_only": True}
@@ -69,7 +70,9 @@ def build_open_positions_response() -> dict[str, Any]:
             "status": lifecycle.get("status"),
         }
 
-        return {
+        active_calendar_count = max(int(open_opts.get("active_calendar_count") or 0), lifecycle_summary["checked_count"])
+        calendar_structures = _legacy_calendar_structures(lifecycle)
+        return _mask_account_fields({
             **_READ_ONLY_BASE,
             "source": "legacy_snapshot_fallback",
             "fallback_used": True,
@@ -78,13 +81,13 @@ def build_open_positions_response() -> dict[str, Any]:
             "options_positions": positions,
             "options_count": len(positions),
             "has_open_verticals": bool(open_opts.get("has_open_verticals")),
-            "has_open_calendars": bool(open_opts.get("has_open_calendars")),
-            "active_calendar_count": max(int(open_opts.get("active_calendar_count") or 0), lifecycle_summary["checked_count"]),
-            "calendar_structures": _legacy_calendar_structures(lifecycle),
+            "has_open_calendars": bool(open_opts.get("has_open_calendars")) or active_calendar_count > 0 or bool(calendar_structures),
+            "active_calendar_count": active_calendar_count,
+            "calendar_structures": calendar_structures,
             "lifecycle_summary": lifecycle_summary,
             "lifecycle_rows": lifecycle.get("checks") or [],
             "dedup_summary": _dedup_summary(positions),
-        }
+        })
     except Exception as exc:
         return {**_READ_ONLY_BASE, "error": str(exc), "options_positions": [], "options_count": 0}
 
@@ -123,7 +126,7 @@ def _open_positions_from_row_store() -> dict[str, Any]:
     dedup = _structure_dedup_summary(structures)
     if dedup.get("duplicate_group_count"):
         warnings.append("Potential duplicate option structures detected; preserved separately pending account-alias confirmation.")
-    return {
+    return _mask_account_fields({
         **_READ_ONLY_BASE,
         "source": "strategy_row_store",
         "fallback_used": False,
@@ -142,13 +145,14 @@ def _open_positions_from_row_store() -> dict[str, Any]:
         "lifecycle_summary": {"checked_count": len(lifecycle_rows), "status": "row_store"},
         "warnings": warnings,
         "dedup_summary": dedup,
-    }
+    })
 
 
 def _calendar_structure_from_row(row: dict[str, Any]) -> dict[str, Any]:
     details = (row.get("details") or {}).get("earnings_calendar") or {}
-    structure = dict(row.get("structure_summary") or details.get("structure") or {})
+    structure = _coerce_structure(row.get("structure_summary") or details.get("structure") or {})
     value = details.get("value") or {}
+    value_summary = _coerce_value(value)
     ticker = row.get("ticker") or row.get("symbol")
     return {
         "structure_id": row.get("row_id"),
@@ -160,12 +164,48 @@ def _calendar_structure_from_row(row: dict[str, Any]) -> dict[str, Any]:
         "strike": structure.get("strike"),
         "option_type": structure.get("option_type"),
         "legs": structure.get("legs") or [],
-        "current_debit": value.get("current_debit") or value.get("current_mid_debit") or structure.get("current_debit"),
+        "current_debit": value_summary.get("current_debit") or value_summary.get("current_mid_debit") or structure.get("current_debit"),
         "lifecycle_action": row.get("verdict"),
         "lifecycle_reason": row.get("primary_reason"),
         "source_row_id": row.get("row_id"),
         "source_table": "strategy_rows",
     }
+
+
+def _coerce_structure(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str):
+        return {}
+    # Example row-store lifecycle value:
+    # "110.0 CALL | short 2026-08-21 / long 2026-09-18"
+    match = re.search(
+        r"(?P<strike>\d+(?:\.\d+)?)\s+(?P<option_type>CALL|PUT)\s+\|\s+short\s+"
+        r"(?P<front>\d{4}-\d{2}-\d{2})\s*/\s*long\s+(?P<back>\d{4}-\d{2}-\d{2})",
+        value,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return {"structure_type": "calendar", "description": value}
+    return {
+        "structure_type": "calendar",
+        "strike": float(match.group("strike")),
+        "option_type": match.group("option_type").lower(),
+        "front_expiration": match.group("front"),
+        "back_expiration": match.group("back"),
+        "description": value,
+    }
+
+
+def _coerce_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if not isinstance(value, str):
+        return {}
+    match = re.search(r"current debit\s+(?P<debit>-?\d+(?:\.\d+)?)", value, flags=re.IGNORECASE)
+    if not match:
+        return {"description": value}
+    return {"current_debit": float(match.group("debit")), "description": value}
 
 
 def _legacy_calendar_structures(lifecycle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -222,3 +262,29 @@ def _structure_dedup_summary(structures: list[dict[str, Any]]) -> dict[str, Any]
         "duplicate_warning": bool(duplicates),
         "structure_count": len(structures),
     }
+
+
+def _mask_account_fields(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_mask_account_fields(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    output: dict[str, Any] = {}
+    for key, item in value.items():
+        key_lower = str(key).lower()
+        if key_lower in {"account_number", "account_number_rhs", "rhs_account_number", "account_id", "_source_account_number"}:
+            output[key] = _mask_account_id(item)
+        elif key_lower in {"account", "url"} and isinstance(item, str) and "/accounts/" in item:
+            output[key] = re.sub(r"(/accounts/)([^/]+)", lambda m: m.group(1) + _mask_account_id(m.group(2)), item)
+        else:
+            output[key] = _mask_account_fields(item)
+    return output
+
+
+def _mask_account_id(value: Any) -> Any:
+    if value in (None, ""):
+        return value
+    text = str(value)
+    if len(text) <= 4:
+        return "***"
+    return f"***{text[-4:]}"

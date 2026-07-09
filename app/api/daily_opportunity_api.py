@@ -163,7 +163,8 @@ def _daily_opportunity_from_row_store(limit: int = 12) -> dict[str, Any]:
             "eligible_count": len(actions),
             "excluded_count": len(exclusions),
             "calendar_count": sum(1 for action in actions if action.get("type") in {"calendar", "active_calendar"}),
-            "stock_count": sum(1 for action in actions if action.get("type") in {"stock", "stock_add"}),
+            "stock_count": sum(1 for action in actions if action.get("type") in {"stock", "stock_add", "stock_watch", "tactical_stock_watch"}),
+            "stock_watch_count": sum(1 for action in actions if action.get("type") in {"stock_watch", "tactical_stock_watch"}),
             "skew_vertical_count": sum(1 for action in actions if action.get("type") in {"skew_vertical", "active_skew_vertical"}),
             "risk_count": sum(1 for action in actions if action.get("type") in {"risk", "portfolio_risk"}),
         },
@@ -185,7 +186,7 @@ def _action_from_strategy_row(row: dict[str, Any], run_id: str | None) -> tuple[
         return None, _exclusion(row, run_id, "fail_verdict")
     eligible = bool(row.get("daily_opportunity_eligible"))
     if sid == "stock_momentum" and not eligible:
-        eligible = verdict_upper.startswith(("CONSIDER ADDING", "ADD ON")) or row.get("friendly_verdict") == "Momentum Pass"
+        eligible = _stock_row_daily_eligible(verdict_upper, str(row.get("friendly_verdict") or ""))
     if sid == "earnings_calendar" and row_type == "lifecycle_check":
         eligible = True
     if sid == "skew_momentum_vertical" and verdict_upper.startswith("PASS"):
@@ -194,7 +195,7 @@ def _action_from_strategy_row(row: dict[str, Any], run_id: str | None) -> tuple[
         return None, _exclusion(row, run_id, "not_daily_opportunity_eligible")
     action_type = {
         "earnings_calendar": "active_calendar" if row_type == "lifecycle_check" else "calendar",
-        "stock_momentum": "stock_add",
+        "stock_momentum": _stock_action_type(verdict_upper),
         "skew_momentum_vertical": "skew_vertical",
     }.get(sid, "monitor")
     return {
@@ -234,10 +235,32 @@ def _daily_sort_key(action: dict[str, Any]) -> tuple[int, float]:
         "skew_vertical": 3,
         "stock_add": 4,
         "stock": 4,
+        "stock_watch": 5,
+        "tactical_stock_watch": 6,
         "risk": 7,
         "portfolio_risk": 7,
     }
     return (priority.get(str(action.get("type") or ""), 99), -float(action.get("priority_score") or 0))
+
+
+def _stock_row_daily_eligible(verdict_upper: str, friendly_verdict: str) -> bool:
+    """Preserve legacy Daily Opportunity stock-watch behavior from row-store rows."""
+    friendly_upper = friendly_verdict.upper()
+    if verdict_upper.startswith(("FAIL", "AVOID")) or "WEAK" in verdict_upper:
+        return False
+    if verdict_upper.startswith(("CONSIDER ADDING", "ADD ON", "WATCH / CONFIRM TREND")):
+        return True
+    if verdict_upper.startswith(("TACTICAL ONLY", "STARTER ONLY", "HOLD / DO NOT ADD")):
+        return True
+    return friendly_upper in {"MOMENTUM PASS", "WATCH", "TACTICAL WATCH"}
+
+
+def _stock_action_type(verdict_upper: str) -> str:
+    if verdict_upper.startswith(("CONSIDER ADDING", "ADD ON")):
+        return "stock_add"
+    if verdict_upper.startswith(("TACTICAL ONLY", "STARTER ONLY", "HOLD / DO NOT ADD")):
+        return "tactical_stock_watch"
+    return "stock_watch"
 
 
 def _dedupe_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:

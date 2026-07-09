@@ -82,7 +82,7 @@ def discover_accounts() -> list[dict[str, Any]]:
                 continue
             if bool(getattr(config, "BROKER_DEBUG_RAW_LOGS_ENABLED", False)):
                 print(
-                    f"[discover_accounts] account={acct_num} "
+                    f"[discover_accounts] account={_mask_account_id_for_log(acct_num)} "
                     f"FULL_RAW_KEYS={sorted(acct.keys())} "
                     f"FULL_RAW_DICT={sanitize_for_log(acct)!r}",
                     flush=True,
@@ -90,7 +90,7 @@ def discover_accounts() -> list[dict[str, Any]]:
             classified = _classify_account_type(acct)
             is_pinnacle = acct.get("is_pinnacle_account")
             print(
-                f"[discover_accounts] account={acct_num} raw_type={acct.get('type')!r} "
+                f"[discover_accounts] account={_mask_account_id_for_log(acct_num)} raw_type={acct.get('type')!r} "
                 f"is_pinnacle={is_pinnacle!r} → classified={classified!r}",
                 flush=True,
             )
@@ -100,13 +100,22 @@ def discover_accounts() -> list[dict[str, Any]]:
             })
         print(
             f"[discover_accounts] {len(result)} account(s): "
-            + ", ".join(f"{a['account_type']}({a['account_number']})" for a in result),
+            + ", ".join(f"{a['account_type']}({_mask_account_id_for_log(a['account_number'])})" for a in result),
             flush=True,
         )
         return result
     except Exception as e:
         print(f"[discover_accounts] failed: {sanitize_for_log(e)}", flush=True)
         return []
+
+
+def _mask_account_id_for_log(value):
+    if value in (None, ""):
+        return "default"
+    text = str(value)
+    if len(text) <= 4:
+        return "***"
+    return f"***{text[-4:]}"
 
 
 _BROKERAGE_ACCOUNT_TYPE_MAP: dict[str, str] = {
@@ -1010,7 +1019,7 @@ def get_open_option_positions(account_numbers=None, max_positions=None):
         accounts = _option_accounts_to_scan(account_numbers, discovered_accounts=discovered)
         result["debug"].append(
             "accounts_to_scan="
-            + ", ".join(f"{label}({display or 'default'})" for call_number, display, label in accounts)
+            + ", ".join(f"{label}({_mask_account_id_for_log(display)})" for call_number, display, label in accounts)
         )
 
         seen_positions = set()
