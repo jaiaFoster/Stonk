@@ -126,6 +126,7 @@ def _open_positions_from_row_store() -> dict[str, Any]:
     dedup = _structure_dedup_summary(structures)
     if dedup.get("duplicate_group_count"):
         warnings.append("Potential duplicate option structures detected; preserved separately pending account-alias confirmation.")
+    lifecycle_reconciliation = _lifecycle_row_reconciliation(lifecycle_rows, structures, dedup)
     return _mask_account_fields({
         **_READ_ONLY_BASE,
         "source": "strategy_row_store",
@@ -143,6 +144,7 @@ def _open_positions_from_row_store() -> dict[str, Any]:
         "calendar_structures": structures,
         "lifecycle_rows": lifecycle_rows,
         "lifecycle_summary": {"checked_count": len(lifecycle_rows), "status": "row_store"},
+        "lifecycle_reconciliation": lifecycle_reconciliation,
         "warnings": warnings,
         "dedup_summary": dedup,
     })
@@ -242,6 +244,38 @@ def _dedup_summary(positions: list[dict[str, Any]]) -> dict[str, Any]:
         groups[key] = groups.get(key, 0) + 1
     duplicates = [key for key, count in groups.items() if count > 1]
     return {"duplicate_group_count": len(duplicates), "duplicate_warning": bool(duplicates)}
+
+
+def _lifecycle_row_reconciliation(
+    lifecycle_rows: list[dict[str, Any]],
+    structures: list[dict[str, Any]],
+    dedup: dict[str, Any],
+) -> dict[str, Any]:
+    """LifecycleRowReconciliation: audit cardinality between raw rows and built structures.
+
+    Structure keys include underlying, structure_type, option_type, strike,
+    front_expiration, back_expiration so call vs put calendars on the same
+    ticker are never collapsed into a single structure.
+    """
+    unique_keys: set[tuple[Any, ...]] = set()
+    for s in structures:
+        key = (
+            s.get("underlying"),
+            s.get("structure_type"),
+            s.get("option_type"),
+            s.get("strike"),
+            s.get("front_expiration"),
+            s.get("back_expiration"),
+        )
+        unique_keys.add(key)
+    return {
+        "lifecycle_row_count": len(lifecycle_rows),
+        "structure_count": len(structures),
+        "unique_structure_keys": len(unique_keys),
+        "duplicate_group_count": dedup.get("duplicate_group_count", 0),
+        "cardinality_ok": len(lifecycle_rows) == len(structures),
+        "key_fields": ["underlying", "structure_type", "option_type", "strike", "front_expiration", "back_expiration"],
+    }
 
 
 def _structure_dedup_summary(structures: list[dict[str, Any]]) -> dict[str, Any]:

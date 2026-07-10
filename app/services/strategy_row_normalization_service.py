@@ -121,6 +121,8 @@ def normalize_strategy_row(
         row["can_trade_live"] = False
         row["dry_run"] = True
 
+    # Capture pre-semantics classification so the invariant survives _decision_semantics overwrite.
+    _pre_semantics_decision_class = str(row.get("decision_class") or "")
     semantics = _decision_semantics(row, strategy_id)
     for key, value in semantics.items():
         row[key] = value
@@ -128,6 +130,31 @@ def normalize_strategy_row(
         row["daily_opportunity_eligible"] = False
         row["can_enter_daily_opportunity"] = False
         row["daily_opportunity_reason"] = f"Excluded from Daily Opportunity: {semantics.get('exclusion_reason') or 'not eligible'}."
+
+    # Canonical rejected-row invariant (31B.G): after _decision_semantics, enforce that
+    # any row classified as rejected can never leak into eligibility paths.
+    _row_type = str(row.get("row_type") or "")
+    _verdict_upper = str(row.get("verdict") or "").upper()
+    _decision_class = str(row.get("decision_class") or "")
+    if (
+        _row_type == "rejected_candidate"
+        or _verdict_upper.startswith("FAIL")
+        or _decision_class == "rejected"
+        or _pre_semantics_decision_class == "rejected"
+    ):
+        # Force all boolean eligibility flags to False — rejected rows must not leak.
+        row["daily_opportunity_eligible"] = False
+        row["can_enter_daily_opportunity"] = False
+        row["journal_eligible"] = False
+        row["decision_class"] = "rejected"
+        # Only override eligibility_status if semantics did not already set a non-eligible value.
+        _current_elig = str(row.get("eligibility_status") or "")
+        if _current_elig not in {"excluded", "ineligible", "dry_run_excluded", "blocked"}:
+            row["eligibility_status"] = "ineligible"
+        _action_type = str(row.get("action_type") or "")
+        if _action_type in {"entry", "calendar_entry", "vertical_entry", "stock_add"}:
+            row["action_type"] = "none"
+
     row.setdefault("semantic_source", "row")
     row.setdefault("semantic_fields_version", SEMANTIC_FIELDS_VERSION)
 
