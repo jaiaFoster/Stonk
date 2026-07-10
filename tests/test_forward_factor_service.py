@@ -426,7 +426,8 @@ class ForwardFactorTests(unittest.TestCase):
 
     def test_production_cap_is_mode_aware_and_terminal_counts_reconcile(self):
         hub = FakeFFHub({})
-        tickers = [f"T{i:02d}" for i in range(12)] + ["BTC", "SOL"]
+        # 32C: FF_MAX_TICKERS_PER_RUN raised to 20; need 22 supported + 2 crypto to trigger cap
+        tickers = [f"T{i:02d}" for i in range(22)] + ["BTC", "SOL"]
         result = build_forward_factor_strategy(tickers, {"BTC": {"asset_type": "crypto"}, "SOL": {"asset_type": "crypto"}}, hub, run_mode="prod")
         verdicts = [row["verdict"] for row in result["items"]]
         self.assertIn("SKIPPED / STRATEGY CAP", verdicts)

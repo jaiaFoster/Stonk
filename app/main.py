@@ -2428,6 +2428,13 @@ def api_strategies_compare():
     return jsonify(get_ticker_comparison(ticker)), 200
 
 
+@app.route("/api/strategies/catalog")
+def api_strategies_catalog():
+    """Strategy catalog — all catalog-visible strategies with metadata. No provider calls."""
+    from app.api.strategy_api import get_strategy_catalog
+    return jsonify(get_strategy_catalog()), 200
+
+
 # ─── 31A: Custom Strategy Builder catalog endpoints ───────────────────────────
 
 def _catalog_filters() -> dict[str, Any]:

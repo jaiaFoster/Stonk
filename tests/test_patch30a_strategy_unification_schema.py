@@ -242,8 +242,9 @@ class TestStrategySpecRegistry:
         assert spec["status"] in ("dry_run", "research"), f"FF status must be dry_run/research, got: {spec['status']!r}"
 
     def test_ff_daily_opportunity_not_allowed(self):
+        # 32C: FF promoted; daily_opportunity_allowed=True (research signals; dry_run enforces no execution).
         from app.services.strategy_spec_registry import is_daily_opportunity_allowed
-        assert is_daily_opportunity_allowed("forward_factor_calendar") is False
+        assert is_daily_opportunity_allowed("forward_factor_calendar") is True
 
     def test_earnings_calendar_is_active(self):
         from app.services.strategy_spec_registry import get_spec
@@ -922,8 +923,9 @@ class TestCavemanModeSafetyInvariants:
         assert get_spec("forward_factor_calendar")["dry_run"] is True
 
     def test_ff_spec_daily_opportunity_not_allowed(self):
+        # 32C: FF promoted; daily_opportunity_allowed=True (research signals; dry_run enforces no execution).
         from app.services.strategy_spec_registry import get_spec
-        assert get_spec("forward_factor_calendar")["daily_opportunity_allowed"] is False
+        assert get_spec("forward_factor_calendar")["daily_opportunity_allowed"] is True
 
     def test_normalization_enforces_ff_can_trade_live_false(self):
         from app.services.strategy_row_normalization_service import normalize_strategy_row

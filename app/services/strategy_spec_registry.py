@@ -105,16 +105,27 @@ STRATEGY_SPECS: dict[str, dict[str, Any]] = {
         "strategy_family": STRATEGY_FAMILY_OPTIONS_FORWARD,
         "strategy_goal": (
             "Identify calendar spreads where front/back IV divergence creates a structural edge. "
-            "Currently signal-only — all tickers excluded from live execution."
+            "PASS and WATCH are research signals; all execution remains dry-run."
+        ),
+        "description": (
+            "Evaluates double-calendar spreads using Forward Factor (FF) — the ratio of implied "
+            "forward variance to total back variance. A positive FF above threshold indicates the "
+            "market prices a term-structure dislocation exploitable via calendar spread. "
+            "Four-tier verdict: PASS / WATCH / NEAR MISS / FAIL. Dry-run only."
         ),
         "status": "dry_run",
         "dry_run": True,
-        "daily_opportunity_allowed": False,
+        "catalog_visible": True,
+        "daily_opportunity_allowed": True,
+        "display_order": 3,
+        "tags": ["options", "calendar", "volatility", "dry_run", "forward_factor"],
         "requires_broker_positions": False,
         "requires_options_chain": True,
         "requires_earnings_date": True,
         "primary_outputs": [
             "forward_factor_signal",
+            "forward_factor_watch",
+            "forward_factor_near_miss",
             "diagnostic_signal",
         ],
         "gate_ids": [

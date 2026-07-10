@@ -451,6 +451,40 @@ def get_ticker_comparison(ticker: str) -> dict[str, Any]:
     }
 
 
+def get_strategy_catalog() -> dict[str, Any]:
+    """Return all catalog-visible strategy specs with metadata.
+
+    32C: Exposes FF as first-class with catalog_visible=True, tags, description, display_order.
+    Read-only — no provider calls, no execution triggers.
+    """
+    from app.services.strategy_spec_registry import STRATEGY_SPECS as STRATEGY_REGISTRY
+    strategies = []
+    for sid, spec in STRATEGY_REGISTRY.items():
+        if not spec.get("catalog_visible", False):
+            continue
+        strategies.append({
+            "strategy_id": sid,
+            "strategy_name": spec.get("strategy_name"),
+            "strategy_family": spec.get("strategy_family"),
+            "description": spec.get("description") or spec.get("strategy_goal"),
+            "status": spec.get("status"),
+            "dry_run": bool(spec.get("dry_run")),
+            "daily_opportunity_allowed": bool(spec.get("daily_opportunity_allowed")),
+            "tags": list(spec.get("tags") or []),
+            "display_order": spec.get("display_order", 99),
+            "primary_outputs": list(spec.get("primary_outputs") or []),
+            "requires_options_chain": bool(spec.get("requires_options_chain")),
+            "requires_earnings_date": bool(spec.get("requires_earnings_date")),
+        })
+    strategies.sort(key=lambda s: (s["display_order"], s["strategy_id"]))
+    return {
+        **_READ_ONLY_BASE,
+        "strategies": strategies,
+        "count": len(strategies),
+        "catalog_version": "32C.v1",
+    }
+
+
 def validate_draft(draft: Any) -> dict[str, Any]:
     """Validate a draft strategy DSL object.
 

@@ -217,8 +217,9 @@ class TestCavemanModeSafety:
         assert get_spec("forward_factor_calendar")["dry_run"] is True
 
     def test_ff_spec_daily_opportunity_not_allowed(self):
+        # 32C: FF promoted; daily_opportunity_allowed=True (research signals; dry_run enforces no execution).
         from app.services.strategy_spec_registry import get_spec
-        assert get_spec("forward_factor_calendar")["daily_opportunity_allowed"] is False
+        assert get_spec("forward_factor_calendar")["daily_opportunity_allowed"] is True
 
 
 def cfg_forward_factor_dry_run() -> bool:

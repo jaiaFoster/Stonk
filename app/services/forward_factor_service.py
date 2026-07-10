@@ -549,9 +549,10 @@ def build_forward_factor_strategy(
                 watch_lower = float(getattr(config, "FF_WATCH_FF_LOWER_BOUND", 0.12))
                 near_miss = formula["forward_factor"] >= config.FF_MIN_FORWARD_FACTOR - config.FF_NEAR_MISS_WINDOW
                 watch_zone = formula["forward_factor"] >= watch_lower and structure.get("structure_status") == "COMPLETE" and bool(structure.get("liquidity_pass"))
+                miss_distance = round(config.FF_MIN_FORWARD_FACTOR - formula["forward_factor"], 4)
                 if near_miss:
                     stage["near_miss_ff"] += 1
-                    log_print(f"FF {ticker} {front}/{back}: near-miss FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f} window={config.FF_NEAR_MISS_WINDOW:.2f}")
+                    log_print(f"FF {ticker} {front}/{back}: near-miss FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f} window={config.FF_NEAR_MISS_WINDOW:.2f} miss_distance={miss_distance:.4f}")
                 if watch_zone:
                     # 31B.6: valid structure + FF in watch zone → WATCH, not hard FAIL
                     watch_reason = "near_miss" if near_miss else "below_threshold_valid_structure"
@@ -561,6 +562,7 @@ def build_forward_factor_strategy(
                         "near_miss_ff": near_miss,
                         "watch_zone_ff": True,
                         "watch_reason": watch_reason,
+                        "miss_distance": miss_distance,
                         "verdict": "WATCH / FORWARD FACTOR NEAR THRESHOLD",
                         "primary_blocker": f"Forward Factor {formula['forward_factor']:.4f} is below threshold {config.FF_MIN_FORWARD_FACTOR:.2f} but structure is complete.",
                         "next_action": "MONITOR — do not enter; valid structure but FF edge insufficient.",
@@ -570,10 +572,38 @@ def build_forward_factor_strategy(
                     row["signal_score"] = row["ranking"]["total_score"]
                     ticker_rows.append(row)
                     pair_audit.append(_pair_audit(row, "watch — below threshold with complete structure"))
-                else:
-                    row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, near_miss_ff=near_miss, watch_zone_ff=False, ff_candidate_stage="fetched")
+                elif near_miss:
+                    # 32C.3: NEAR MISS — FF is close but structure incomplete or liquidity failing
+                    _nm_reason = "structure_incomplete" if structure.get("structure_status") != "COMPLETE" else "liquidity_fail"
+                    row = {
+                        **_base(ticker), **base, **formula, **structure,
+                        "ff_candidate_stage": "near_miss",
+                        "near_miss_ff": True,
+                        "watch_zone_ff": False,
+                        "miss_distance": miss_distance,
+                        "miss_reason": _nm_reason,
+                        "near_miss_details": {
+                            "forward_factor": formula["forward_factor"],
+                            "threshold": config.FF_MIN_FORWARD_FACTOR,
+                            "miss_distance": miss_distance,
+                            "near_miss_window": config.FF_NEAR_MISS_WINDOW,
+                            "reason": _nm_reason,
+                            "structure_status": structure.get("structure_status"),
+                            "liquidity_pass": structure.get("liquidity_pass"),
+                        },
+                        "verdict": "NEAR MISS / FORWARD FACTOR NEAR THRESHOLD",
+                        "primary_blocker": f"Forward Factor {formula['forward_factor']:.4f} missed threshold {config.FF_MIN_FORWARD_FACTOR:.2f} by {miss_distance:.4f} ({_nm_reason.replace('_', ' ')}).",
+                        "next_action": "NEAR MISS — monitor for threshold improvement; do not enter.",
+                        "actionability_score": 0,
+                    }
+                    row["ranking"] = rank_forward_factor(row)
+                    row["signal_score"] = row["ranking"]["total_score"]
                     ticker_rows.append(row)
-                    pair_audit.append(_pair_audit(row, "selected — below threshold (near miss)" if near_miss else "selected — below threshold"))
+                    pair_audit.append(_pair_audit(row, "near miss — below threshold within window"))
+                else:
+                    row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, near_miss_ff=near_miss, watch_zone_ff=False, miss_distance=miss_distance, ff_candidate_stage="fetched")
+                    ticker_rows.append(row)
+                    pair_audit.append(_pair_audit(row, "selected — below threshold"))
                 continue
             if structure.get("structure_status") != "COMPLETE":
                 row = _blocked(ticker, _source_structure_verdict(structure), structure.get("structure_reason") or "Double-calendar structure unavailable.", **{**base, **formula, **structure}, ff_candidate_stage="fetched")
@@ -830,14 +860,15 @@ def _candidate_rank(ticker: str, metrics: dict[str, Any]) -> tuple[Any, ...]:
 def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
     def verdict(row): return str(row.get("verdict") or "").upper()
     summary = {
-        "pass_count": sum("PASS" in verdict(row) and "SKIPPED" not in verdict(row) for row in rows),
+        "pass_count": sum("PASS" in verdict(row) and "FAIL" not in verdict(row) and "SKIPPED" not in verdict(row) for row in rows),
         "watch_count": sum(verdict(row).startswith("WATCH") for row in rows),
+        "near_miss_count": sum(verdict(row).startswith("NEAR MISS") for row in rows),
         "skipped_count": sum(verdict(row).startswith("SKIPPED") for row in rows),
     }
-    summary["fail_count"] = len(rows) - summary["pass_count"] - summary["watch_count"] - summary["skipped_count"]
+    summary["fail_count"] = len(rows) - summary["pass_count"] - summary["watch_count"] - summary["near_miss_count"] - summary["skipped_count"]
     summary["universe_count"] = len(scanned)
     summary["terminal_count"] = len(rows)
-    summary["counts_reconcile"] = len(rows) == len(scanned) and summary["pass_count"] + summary["watch_count"] + summary["fail_count"] + summary["skipped_count"] == len(scanned)
+    summary["counts_reconcile"] = len(rows) == len(scanned) and summary["pass_count"] + summary["watch_count"] + summary["near_miss_count"] + summary["fail_count"] + summary["skipped_count"] == len(scanned)
     if not summary["counts_reconcile"]:
         summary["accounting_warning"] = f"Terminal rows {len(rows)} did not reconcile to universe {len(scanned)}."
     summary["calculation_complete_observations"] = int((stage or {}).get("ff_calculated", 0))
@@ -915,9 +946,10 @@ def _calibration_report(rows: list, stage: dict, summary: dict) -> dict:
         "outcomes": {
             "pass": summary.get("pass_count", 0),
             "watch": summary.get("watch_count", 0),
+            "near_miss": summary.get("near_miss_count", 0),
             "fail": summary.get("fail_count", 0),
             "skipped": summary.get("skipped_count", 0),
-            "near_miss_ff": stage.get("near_miss_ff", 0),
+            "near_miss_ff_stage": stage.get("near_miss_ff", 0),
         },
     }
 
