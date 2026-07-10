@@ -70,6 +70,65 @@ def test_strategy_row_repository_persists_semantic_fields_and_infers_old_rows():
     assert by_ticker["ALGN"]["action_type"] == "stock_watch"
 
 
+def test_collect_results_persists_row_owned_semantics_through_write_path():
+    from types import SimpleNamespace
+
+    from app.services.strategy_execution_service import collect_strategy_results
+    from app.services.strategy_row_repository import StrategyRowRepository
+
+    raw_results = {
+        "earnings_calendar": {
+            "new_trade_rows": [
+                {"ticker": "ABT", "verdict": "FAIL / ENTRY_WINDOW_CLOSED", "entry_window_status": "ENTRY_WINDOW_CLOSED"}
+            ],
+            "active_items": [
+                {"ticker": "SBUX", "type": "open_calendar", "verdict": "HOLD / MONITOR"}
+            ],
+        },
+        "stock_momentum": {
+            "items": [
+                {"ticker": "GE", "action": "WATCH / CONFIRM TREND", "score": 80}
+            ],
+        },
+        "forward_factor_calendar": {
+            "items": [
+                {"ticker": "ELF", "verdict": "WATCH / EX-EARNINGS IV UNAVAILABLE"}
+            ],
+        },
+    }
+
+    context = SimpleNamespace(run_id="run-30j1", analysis_tickers=[])
+    normalized_results = collect_strategy_results(context, raw_results)
+
+    with TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "rows.sqlite3")
+        repo = StrategyRowRepository(db)
+        repo.write_run("run-30j1", normalized_results)
+        earnings = repo.read_latest("earnings_calendar", limit=10)["rows"]
+        stock = repo.read_latest("stock_momentum", limit=10)["rows"]
+        ff = repo.read_latest("forward_factor_calendar", limit=10)["rows"]
+
+    earnings_by_ticker = {row["ticker"]: row for row in earnings}
+    assert earnings_by_ticker["SBUX"]["semantic_source"] == "row"
+    assert earnings_by_ticker["SBUX"]["decision_class"] == "lifecycle"
+    assert earnings_by_ticker["SBUX"]["action_type"] == "active_calendar"
+    assert earnings_by_ticker["ABT"]["semantic_source"] == "row"
+    assert earnings_by_ticker["ABT"]["decision_class"] == "rejected"
+    assert earnings_by_ticker["ABT"]["eligibility_status"] == "excluded"
+    assert earnings_by_ticker["ABT"]["exclusion_reason"] == "entry_window_closed"
+
+    stock_by_ticker = {row["ticker"]: row for row in stock}
+    assert stock_by_ticker["GE"]["semantic_source"] == "row"
+    assert stock_by_ticker["GE"]["decision_class"] == "watch"
+    assert stock_by_ticker["GE"]["action_type"] == "stock_watch"
+
+    ff_by_ticker = {row["ticker"]: row for row in ff}
+    assert ff_by_ticker["ELF"]["semantic_source"] == "row"
+    assert ff_by_ticker["ELF"]["actionability"] == "dry_run_only"
+    assert ff_by_ticker["ELF"]["eligibility_status"] == "dry_run_excluded"
+    assert ff_by_ticker["ELF"]["exclusion_reason"] == "dry_run"
+
+
 def _write_daily_rows(db: str):
     from app.services.strategy_row_normalization_service import normalize_strategy_row
     from app.services.strategy_row_repository import StrategyRowRepository
