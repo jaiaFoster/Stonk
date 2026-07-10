@@ -885,7 +885,7 @@ class TestRegression:
         from app.services.strategy_spec_registry import get_spec
         row = {"ticker": "AAPL", "verdict": "PASS / OK"}
         normalize_strategy_row(row, "skew_momentum_vertical")
-        assert row.get("strategy_row_schema_version") == "30A.v1"
+        assert row.get("strategy_row_schema_version") == "30J.v1"
 
     def test_ff_excluded_from_daily_opportunity_invariant(self):
         from app.services.strategy_row_normalization_service import normalize_strategy_row

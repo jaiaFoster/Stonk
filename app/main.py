@@ -2378,7 +2378,7 @@ def api_strategies_rows(strategy_id: str):
     _require_dev_diagnostics_token()
     from app.api.strategy_api import get_strategy_rows
     limit = min(int(request.args.get("limit") or 20), 50)
-    result = get_strategy_rows(strategy_id=strategy_id, limit=limit)
+    result = get_strategy_rows(strategy_id=strategy_id, limit=limit, row_id=request.args.get("row_id"))
     status = 404 if result.get("error") == "Unknown strategy_id." else 200
     return jsonify(result), status
 
@@ -2495,7 +2495,8 @@ def api_daily_opportunity():
     _require_dev_diagnostics_token()
     from app.api.daily_opportunity_api import build_daily_opportunity_response
     limit = min(int(request.args.get("limit") or 12), 50)
-    return jsonify(build_daily_opportunity_response(limit=limit)), 200
+    include_exclusions = str(request.args.get("include_exclusions") or "").strip().lower() in {"1", "true", "yes"}
+    return jsonify(build_daily_opportunity_response(limit=limit, include_exclusions=include_exclusions)), 200
 
 
 # ─── 30D.1: Open Positions read-only API ──────────────────────────────────────

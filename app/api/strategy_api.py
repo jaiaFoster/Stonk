@@ -63,9 +63,17 @@ def get_strategy(strategy_id: str) -> dict[str, Any] | None:
 
 def get_strategy_schema() -> dict[str, Any]:
     """Return the universal row schema definition."""
+    from app.services.strategy_row_schema import (
+        STRATEGY_ROW_SCHEMA_VERSION,
+        MINIMUM_SUPPORTED_STRATEGY_ROW_SCHEMA_VERSION,
+        SEMANTIC_FIELDS_VERSION,
+    )
     return {
         **_READ_ONLY_BASE,
         "schema_version": SCHEMA_VERSION,
+        "canonical_strategy_row_schema_version": STRATEGY_ROW_SCHEMA_VERSION,
+        "minimum_supported_schema_version": MINIMUM_SUPPORTED_STRATEGY_ROW_SCHEMA_VERSION,
+        "semantic_fields_version": SEMANTIC_FIELDS_VERSION,
         "required_core_fields": list(REQUIRED_CORE_FIELDS),
         "valid_row_types": sorted(VALID_ROW_TYPES),
         "valid_gate_statuses": sorted(
@@ -115,6 +123,7 @@ def get_test_rows(
 def get_strategy_rows(
     strategy_id: str,
     limit: int = 20,
+    row_id: str | None = None,
 ) -> dict[str, Any]:
     """Return universalized rows for a registered strategy from the latest snapshot.
 
@@ -140,6 +149,8 @@ def get_strategy_rows(
         stored = row_store.read_latest(strategy_id, limit=min(int(limit or 20), 50))
         if stored.get("rows"):
             rows = stored["rows"]
+            if row_id:
+                rows = [row for row in rows if str(row.get("row_id") or "") == str(row_id)]
             error_count = sum(1 for row in rows if row.get("normalization_status") != "ok")
             return {
                 **_READ_ONLY_BASE,
