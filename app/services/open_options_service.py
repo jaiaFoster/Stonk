@@ -1017,6 +1017,7 @@ def _finalize_result(result: dict[str, Any]) -> dict[str, Any]:
     inferred_calendar_count = sum(1 for cal in calendars if isinstance(cal, dict) and cal.get("side_inferred"))
     result.setdefault("verticals", verticals)
     result.setdefault("single_legs", single_legs)
+    result["active_calendar_count"] = len(calendars)
     result["summary"] = {
         "account_count": len(result.get("account_ids") or []),
         "total_positions": len(result.get("positions") or []),

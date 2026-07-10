@@ -475,7 +475,8 @@ def get_positions():
         for acct in discovered:
             acct_num = acct["account_number"]
             acct_label = acct["account_type"]
-            print(f"Account: {acct_label} ({acct_num})", flush=True)
+            masked = f"***{str(acct_num)[-4:]}" if acct_num and len(str(acct_num)) > 4 else (acct_num or "default")
+            print(f"Account: {acct_label} ({masked})", flush=True)
             account_positions = []
             build_errors = []
             try:
@@ -1129,7 +1130,15 @@ def _option_accounts_to_scan(account_numbers=None, discovered_accounts=None):
 def _dedupe_key_for_option_position(raw, account_number, account_label):
     if not isinstance(raw, dict):
         return (str(account_number), str(account_label), str(raw))
-    for key in ["id", "url", "option", "instrument"]:
+    # Broker position IDs (id, url) are globally unique per position across accounts;
+    # use a stable cross-account key so alias accounts (Investing / Individual) don't
+    # produce duplicate normalized legs for the same open position.
+    for key in ["id", "url"]:
+        value = raw.get(key)
+        if value:
+            return ("broker_position_id", str(value))
+    # option/instrument URLs encode contract identity but not account — still cross-account safe.
+    for key in ["option", "instrument"]:
         value = raw.get(key)
         if value:
             return (str(account_number), str(value))
