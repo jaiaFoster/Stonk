@@ -170,6 +170,16 @@ def normalize_strategy_row(
     row.setdefault("observation_key", _observation_key(row, strategy_id))
     row.setdefault("observation_refs", [])
 
+    # 31B.9: Universal scoring — only compute if not already present.
+    if "universal_score" not in row:
+        try:
+            from app.services.universal_scoring_service import compute_universal_score
+            _us = compute_universal_score(row, strategy_id)
+            for _k, _v in _us.items():
+                row.setdefault(_k, _v)
+        except Exception:
+            pass
+
     return row
 
 
@@ -470,6 +480,39 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
     status = str(row.get("entry_window_status") or "")
 
     if strategy_id == "forward_factor_calendar":
+        # 31B.8: PASS/WATCH rows surface as research signals in Daily Opportunity (clearly labeled dry-run).
+        # FAIL/diagnostic rows remain excluded.
+        _upper = upper
+        _is_ff_pass = "PASS" in _upper and "FAIL" not in _upper
+        # Only actionable WATCH verdicts are research signals; diagnostic WATCHes (e.g., EX-EARNINGS IV UNAVAILABLE) remain excluded.
+        _ACTIONABLE_FF_WATCHES = ("WATCH / FORWARD FACTOR NEAR THRESHOLD", "WATCH / LIQUIDITY DATA PARTIAL", "WATCH / DEBIT ELEVATED")
+        _is_ff_watch = (
+            any(_upper.startswith(pfx) for pfx in _ACTIONABLE_FF_WATCHES)
+            or "DRY RUN PASS" in _upper
+            or bool(row.get("watch_zone_ff"))
+        )
+        if _is_ff_pass:
+            return {
+                "decision_class": "dry_run_entry",
+                "action_type": "forward_factor_entry",
+                "actionability": "dry_run_only",
+                "eligibility_status": "conditional",
+                "eligibility_reason": "Forward Factor PASS signal — dry-run only, no execution.",
+                "exclusion_reason": "dry_run",
+                "priority_tier": "normal",
+                "review_status": "review_required",
+            }
+        if _is_ff_watch:
+            return {
+                "decision_class": "dry_run_watch",
+                "action_type": "forward_factor_watch",
+                "actionability": "dry_run_only",
+                "eligibility_status": "conditional",
+                "eligibility_reason": "Forward Factor WATCH signal — dry-run only, no execution.",
+                "exclusion_reason": "dry_run",
+                "priority_tier": "low",
+                "review_status": "review_required",
+            }
         return {
             "decision_class": "diagnostic",
             "action_type": "diagnostic",

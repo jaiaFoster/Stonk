@@ -2397,6 +2397,37 @@ def api_strategies_get(strategy_id: str):
     return jsonify({**spec, "provider_calls_triggered": False, "read_only": True}), 200
 
 
+# ─── 31B.15: Universal Rankings + Compare endpoints ─────────────────────────
+
+@app.route("/api/strategies/rankings")
+def api_strategies_rankings():
+    """Universal strategy rankings from the Strategy Row Store — no provider calls."""
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import get_strategy_rankings
+    limit = min(int(request.args.get("limit") or 20), 100)
+    strategy_id = request.args.get("strategy_id") or None
+    ticker = request.args.get("ticker") or None
+    verdict = request.args.get("verdict") or None
+    tier = request.args.get("tier") or None
+    actionable_only = str(request.args.get("actionable_only") or "").lower() in {"1", "true", "yes"}
+    include_diagnostic = str(request.args.get("include_diagnostic") or "").lower() in {"1", "true", "yes"}
+    return jsonify(get_strategy_rankings(
+        strategy_id=strategy_id, ticker=ticker, verdict=verdict, tier=tier,
+        actionable_only=actionable_only, include_diagnostic=include_diagnostic, limit=limit,
+    )), 200
+
+
+@app.route("/api/strategies/compare")
+def api_strategies_compare():
+    """Compare all strategies evaluated for a single ticker — no provider calls."""
+    _require_dev_diagnostics_token()
+    from app.api.strategy_api import get_ticker_comparison
+    ticker = request.args.get("ticker") or ""
+    if not ticker:
+        return jsonify({"error": "ticker parameter required", "provider_calls_triggered": False}), 400
+    return jsonify(get_ticker_comparison(ticker)), 200
+
+
 # ─── 31A: Custom Strategy Builder catalog endpoints ───────────────────────────
 
 def _catalog_filters() -> dict[str, Any]:

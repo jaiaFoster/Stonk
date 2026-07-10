@@ -115,8 +115,14 @@ def calculate_forward_factor(front_iv: float, back_iv: float, front_dte: int, ba
 
 
 def eligible_expiration_pairs(expirations: list[str], today: date | None = None) -> list[dict[str, Any]]:
+    """Return ranked expiration pairs within configured DTE ranges.
+
+    31B.4: Uses derived back-DTE range (front + gap) when FF_USE_DERIVED_BACK_DTE=True.
+    31B.5: Ranks pairs by composite quality score, not just distance-from-target.
+    """
     now = today or date.today()
     dated = sorted((str(value)[:10], (date.fromisoformat(str(value)[:10]) - now).days) for value in expirations)
+    use_derived = getattr(config, "FF_USE_DERIVED_BACK_DTE", True)
     pairs = []
     for front, front_dte in dated:
         if front_dte < int(config.FF_MIN_FRONT_LEG_DTE):
@@ -125,13 +131,40 @@ def eligible_expiration_pairs(expirations: list[str], today: date | None = None)
             continue
         for back, back_dte in dated:
             gap = back_dte - front_dte
-            if config.FF_BACK_DTE_MIN <= back_dte <= config.FF_BACK_DTE_MAX and config.FF_MIN_EXPIRATION_GAP_DAYS <= gap <= config.FF_MAX_EXPIRATION_GAP_DAYS:
-                pairs.append({
-                    "front_expiration": front, "back_expiration": back,
-                    "front_dte": front_dte, "back_dte": back_dte, "gap_days": gap,
-                    "distance_from_target": abs(front_dte - config.FF_FRONT_TARGET_DTE) + abs(back_dte - config.FF_BACK_TARGET_DTE),
-                })
-    pairs.sort(key=lambda row: row["distance_from_target"])
+            if gap < config.FF_MIN_EXPIRATION_GAP_DAYS or gap > config.FF_MAX_EXPIRATION_GAP_DAYS:
+                continue
+            if use_derived:
+                back_ok = True
+            else:
+                back_ok = config.FF_BACK_DTE_MIN <= back_dte <= config.FF_BACK_DTE_MAX
+            if not back_ok:
+                continue
+            front_target_min = getattr(config, "FF_FRONT_TARGET_DTE_MIN", 45)
+            front_target_max = getattr(config, "FF_FRONT_TARGET_DTE_MAX", 80)
+            sep_target_min = getattr(config, "FF_SEPARATION_TARGET_MIN", 21)
+            sep_target_max = getattr(config, "FF_SEPARATION_TARGET_MAX", 35)
+            in_front_target = front_target_min <= front_dte <= front_target_max
+            in_sep_target = sep_target_min <= gap <= sep_target_max
+            # Quality score: lower = better (like a distance metric)
+            front_penalty = 0 if in_front_target else min(
+                abs(front_dte - front_target_min), abs(front_dte - front_target_max)
+            )
+            sep_penalty = 0 if in_sep_target else min(
+                abs(gap - sep_target_min), abs(gap - sep_target_max)
+            )
+            distance_from_target = (
+                abs(front_dte - config.FF_FRONT_TARGET_DTE) + abs(back_dte - config.FF_BACK_TARGET_DTE)
+            )
+            pair_quality_score = front_penalty * 2 + sep_penalty + distance_from_target * 0.3
+            pairs.append({
+                "front_expiration": front, "back_expiration": back,
+                "front_dte": front_dte, "back_dte": back_dte, "gap_days": gap,
+                "distance_from_target": distance_from_target,
+                "in_front_target_range": in_front_target,
+                "in_sep_target_range": in_sep_target,
+                "pair_quality_score": round(pair_quality_score, 2),
+            })
+    pairs.sort(key=lambda row: (row["pair_quality_score"], row["distance_from_target"]))
     return pairs[: max(1, config.FF_EXPIRATION_PAIRS_PER_TICKER)]
 
 
@@ -182,6 +215,7 @@ def build_forward_factor_double_calendar_structure(front_chain: list[dict[str, A
         "debit_at_risk": round(conservative * 100, 2), "package_slippage_pct": round(slippage, 2),
         "liquidity_status": liquidity["status"], "liquidity_pass": liquidity["status"] == "PASS",
         "liquidity_result": liquidity, "liquidity_checks": liquidity["leg_checks"], "legs": legs,
+        "structure_quality_score": _structure_quality_score(liquidity["status"] == "PASS", round(slippage, 2), abs(float(put["delta"]) - config.FF_TARGET_PUT_DELTA), abs(float(call["delta"]) - config.FF_TARGET_CALL_DELTA), round(conservative * 100, 2)),
     }
 
 
@@ -512,13 +546,34 @@ def build_forward_factor_strategy(
                 stage["structures"] += 1
                 stage["liquidity_complete"] += 1
             if formula["forward_factor"] + 1e-12 < config.FF_MIN_FORWARD_FACTOR:
+                watch_lower = float(getattr(config, "FF_WATCH_FF_LOWER_BOUND", 0.12))
                 near_miss = formula["forward_factor"] >= config.FF_MIN_FORWARD_FACTOR - config.FF_NEAR_MISS_WINDOW
+                watch_zone = formula["forward_factor"] >= watch_lower and structure.get("structure_status") == "COMPLETE" and bool(structure.get("liquidity_pass"))
                 if near_miss:
                     stage["near_miss_ff"] += 1
                     log_print(f"FF {ticker} {front}/{back}: near-miss FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f} window={config.FF_NEAR_MISS_WINDOW:.2f}")
-                row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, near_miss_ff=near_miss, ff_candidate_stage="fetched")
-                ticker_rows.append(row)
-                pair_audit.append(_pair_audit(row, "selected — below threshold (near miss)" if near_miss else "selected — below threshold"))
+                if watch_zone:
+                    # 31B.6: valid structure + FF in watch zone → WATCH, not hard FAIL
+                    watch_reason = "near_miss" if near_miss else "below_threshold_valid_structure"
+                    row = {
+                        **_base(ticker), **base, **formula, **structure,
+                        "ff_candidate_stage": "watch_near_threshold",
+                        "near_miss_ff": near_miss,
+                        "watch_zone_ff": True,
+                        "watch_reason": watch_reason,
+                        "verdict": "WATCH / FORWARD FACTOR NEAR THRESHOLD",
+                        "primary_blocker": f"Forward Factor {formula['forward_factor']:.4f} is below threshold {config.FF_MIN_FORWARD_FACTOR:.2f} but structure is complete.",
+                        "next_action": "MONITOR — do not enter; valid structure but FF edge insufficient.",
+                        "actionability_score": 0,
+                    }
+                    row["ranking"] = rank_forward_factor(row)
+                    row["signal_score"] = row["ranking"]["total_score"]
+                    ticker_rows.append(row)
+                    pair_audit.append(_pair_audit(row, "watch — below threshold with complete structure"))
+                else:
+                    row = _blocked(ticker, "FAIL / FORWARD FACTOR BELOW THRESHOLD", "Forward Factor is below source-reported 0.20 threshold.", **{**base, **formula, **structure}, near_miss_ff=near_miss, watch_zone_ff=False, ff_candidate_stage="fetched")
+                    ticker_rows.append(row)
+                    pair_audit.append(_pair_audit(row, "selected — below threshold (near miss)" if near_miss else "selected — below threshold"))
                 continue
             if structure.get("structure_status") != "COMPLETE":
                 row = _blocked(ticker, _source_structure_verdict(structure), structure.get("structure_reason") or "Double-calendar structure unavailable.", **{**base, **formula, **structure}, ff_candidate_stage="fetched")
@@ -797,7 +852,9 @@ def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
     summary["pair_audit"] = pair_audit
     summary["candidate_selection_audit"] = candidate_audit or []
     summary["best_near_positive_ticker"] = _best_near_positive(rows)
-    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": bool(config.FORWARD_FACTOR_DRY_RUN), "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness}
+    calibration = _calibration_report(rows, stage, summary)
+    summary["calibration_report"] = calibration
+    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": bool(config.FORWARD_FACTOR_DRY_RUN), "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness, "calibration_report": calibration}
 
 
 def _readiness(stage, summary):
@@ -813,6 +870,55 @@ def _readiness(stage, summary):
         "diagnostic_only_observations": int((stage or {}).get("diagnostic_only", 0)),
         "dry_run_pass_observations": summary.get("pass_count", 0),
         "backtest_reproduction": "blocked — historical options data unavailable",
+    }
+
+
+def _structure_quality_score(liquidity_pass: bool, slippage_pct: float, put_delta_dev: float, call_delta_dev: float, debit_at_risk: float) -> int:
+    """31B.7: 0–100 quality score for a COMPLETE double-calendar structure."""
+    score = 100.0
+    # Slippage: -3 per % above 3%, max -30
+    score -= min(30.0, max(0.0, (slippage_pct - 3.0) * 3.0))
+    # Delta deviation: 0.04 avg deviation → -20 pts, max -20
+    avg_dev = (put_delta_dev + call_delta_dev) / 2.0
+    score -= min(20.0, avg_dev * 500.0)
+    # Debit: relative to FF_MAX_DEBIT_DOLLARS; above 80% of max → penalty up to -20
+    max_debit = float(getattr(config, "FF_MAX_DEBIT_DOLLARS", 500.0) or 500.0)
+    if max_debit > 0 and debit_at_risk > 0:
+        ratio = debit_at_risk / max_debit
+        if ratio > 0.8:
+            score -= min(20.0, (ratio - 0.8) * 100.0)
+    # Liquidity: -20 if not passing
+    if not liquidity_pass:
+        score -= 20.0
+    return max(0, min(100, int(round(score))))
+
+
+def _calibration_report(rows: list, stage: dict, summary: dict) -> dict:
+    """31B.3: Structured funnel report from a completed FF run."""
+    rejection_codes: dict[str, int] = {}
+    for row in rows:
+        code = str(row.get("ff_pair_result_code") or row.get("ff_rejection_code") or "")
+        if code and code not in ("CALCULATED", ""):
+            rejection_codes[code] = rejection_codes.get(code, 0) + 1
+    return {
+        "version": getattr(config, "FF_CALIBRATION_VERSION", "31B.ff.v1"),
+        "funnel": {
+            "universe": stage.get("universe", 0),
+            "cheap_filter_pass": stage.get("cheap_pass", 0),
+            "chain_approved": stage.get("chain_approved", 0),
+            "expiration_pair_found": stage.get("expiration_coverage_pass", 0),
+            "ff_calculated": stage.get("source_ff_calculated", 0),
+            "structure_built": stage.get("structures", 0),
+            "liquidity_validated": stage.get("liquidity_complete", 0),
+        },
+        "rejection_codes": rejection_codes,
+        "outcomes": {
+            "pass": summary.get("pass_count", 0),
+            "watch": summary.get("watch_count", 0),
+            "fail": summary.get("fail_count", 0),
+            "skipped": summary.get("skipped_count", 0),
+            "near_miss_ff": stage.get("near_miss_ff", 0),
+        },
     }
 
 
