@@ -70,7 +70,7 @@ def build_open_positions_response() -> dict[str, Any]:
             "status": lifecycle.get("status"),
         }
 
-        active_calendar_count = max(int(open_opts.get("active_calendar_count") or 0), lifecycle_summary["checked_count"])
+        active_calendar_count = max(int(open_opts.get("active_calendar_count") or (open_opts.get("summary") or {}).get("calendar_count") or 0), lifecycle_summary["checked_count"])
         calendar_structures = _legacy_calendar_structures(lifecycle)
         return _mask_account_fields({
             **_READ_ONLY_BASE,

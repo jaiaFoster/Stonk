@@ -68,8 +68,17 @@ def build_earnings_calendar_universal_row(
 
     # ── daily_opportunity dict ────────────────────────────────────────────────
     if "daily_opportunity" not in row:
-        do_eligible = bool(row.get("daily_opportunity_eligible"))
-        do_reason = str(row.get("daily_opportunity_reason") or "")
+        row_type = str(row.get("row_type") or "observation")
+        # Semantic precedence: rejected_candidate rows must never be eligible,
+        # regardless of calendar_entry_allowed (that field reflects pre-rejection
+        # entry logic and may be stale when row_type is overridden to rejected).
+        if row_type == "rejected_candidate":
+            do_eligible = False
+            row["daily_opportunity_eligible"] = False
+            do_reason = "Rejected candidate excluded from Daily Opportunity."
+        else:
+            do_eligible = bool(row.get("daily_opportunity_eligible"))
+            do_reason = str(row.get("daily_opportunity_reason") or "")
         row["daily_opportunity"] = {
             "eligible": do_eligible,
             "priority": round(score, 1) if do_eligible else None,

@@ -417,6 +417,9 @@ def _daily_opportunity_eligible(
         return False
 
     if strategy_id == "earnings_calendar":
+        verdict = str(row.get("verdict") or row.get("action") or "").upper()
+        if verdict.startswith("FAIL") or verdict.startswith("AVOID") or "NOT AN EARNINGS SETUP" in verdict:
+            return False
         return bool(row.get("calendar_entry_allowed"))
 
     if strategy_id == "skew_momentum_vertical":

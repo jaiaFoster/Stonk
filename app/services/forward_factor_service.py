@@ -92,9 +92,18 @@ def calculate_forward_factor(front_iv: float, back_iv: float, front_dte: int, ba
     t1, t2 = float(front_dte) / 365.0, float(back_dte) / 365.0
     if t2 <= t1:
         raise ValueError("INVALID_EXPIRATION_ORDER: far expiration must be later than near expiration.")
-    forward_variance = ((sigma2 * sigma2 * t2) - (sigma1 * sigma1 * t1)) / (t2 - t1)
+    back_term = sigma2 * sigma2 * t2
+    front_term = sigma1 * sigma1 * t1
+    numerator = back_term - front_term
+    denominator = t2 - t1
+    forward_variance = numerator / denominator
     if forward_variance <= 0:
-        raise ValueError("INVALID_FORWARD_VARIANCE: implied forward variance must be positive.")
+        raise ValueError(
+            f"INVALID_FORWARD_VARIANCE: implied forward variance must be positive "
+            f"(back_term={back_term:.6f}, front_term={front_term:.6f}, "
+            f"numerator={numerator:.6f}, denominator={denominator:.6f}, "
+            f"front_iv={sigma1:.4f}, back_iv={sigma2:.4f}, front_dte={front_dte}, back_dte={back_dte})"
+        )
     forward_iv = sqrt(forward_variance)
     if forward_iv <= 0:
         raise ValueError("INVALID_FORWARD_VOLATILITY: implied forward volatility must be positive.")
@@ -443,7 +452,16 @@ def build_forward_factor_strategy(
                 blocker = "Source-correct ex-earnings IV is unavailable; raw-IV FF and structure are diagnostic only."
                 if structure and structure.get("structure_status") != "COMPLETE":
                     blocker += f" Structure: {structure.get('structure_reason')}"
-                row = _blocked(ticker, verdict, blocker, **base, **structure, ff_candidate_stage="incomplete")
+                row = _blocked(
+                    ticker, verdict, blocker, **base, **structure,
+                    ff_candidate_stage="incomplete",
+                    ff_rejection_code="SOURCE_IV_UNAVAILABLE",
+                    ff_front_iv_used=front_ex,
+                    ff_back_iv_used=back_ex,
+                    ff_front_dte_used=front_dte,
+                    ff_back_dte_used=back_dte,
+                    ff_calculation_status="source_iv_missing",
+                )
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — source input unavailable"))
                 continue
@@ -455,8 +473,18 @@ def build_forward_factor_strategy(
                     stage["ff_calculated"] += 1
                 log_print(f"FF {ticker} {front}/{back}: front_iv={front_ex:.4f} back_iv={back_ex:.4f} forward_variance={formula['forward_variance']:.6f} forward_iv={formula['forward_iv']:.4f} FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f}")
             except ValueError as exc:
-                verdict = "FAIL / INVALID EXPIRATION ORDER" if "INVALID_EXPIRATION_ORDER" in str(exc) else "FAIL / INVALID FORWARD VARIANCE"
-                row = _blocked(ticker, verdict, str(exc), **base, ff_candidate_stage="incomplete")
+                exc_str = str(exc)
+                verdict = "FAIL / INVALID EXPIRATION ORDER" if "INVALID_EXPIRATION_ORDER" in exc_str else "FAIL / INVALID FORWARD VARIANCE"
+                rejection_code = "INVALID_EXPIRATION_ORDER" if "INVALID_EXPIRATION_ORDER" in exc_str else "INVALID_FORWARD_VARIANCE"
+                row = _blocked(
+                    ticker, verdict, exc_str, **base, ff_candidate_stage="incomplete",
+                    ff_rejection_code=rejection_code,
+                    ff_front_iv_used=front_ex,
+                    ff_back_iv_used=back_ex,
+                    ff_front_dte_used=front_dte,
+                    ff_back_dte_used=back_dte,
+                    ff_calculation_status="failed",
+                )
                 ticker_rows.append(row)
                 pair_audit.append(_pair_audit(row, "not selected — invalid variance"))
                 continue
