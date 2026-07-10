@@ -297,6 +297,9 @@ class StrategyRowRepository:
             # Use the "none" sentinel (string) not Python None — downstream reads check truthiness.
             if str(semantics.get("action_type") or "") in {"calendar_entry", "vertical_entry", "stock_add", "entry", ""}:
                 semantics["action_type"] = "none"
+            # Force daily_opportunity_eligible=0 — the **semantics spread below overrides compact value.
+            semantics["daily_opportunity_eligible"] = 0
+            semantics["can_enter_daily_opportunity"] = 0
         return {
             "run_id": run_id,
             "strategy_id": strategy_id,
