@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.strategy_opportunity_normalizer import normalize_legacy_strategy_row
+from app.services.strategy_row_normalization_service import normalize_strategy_row
 from app.strategies.registry import enabled_strategies, normalize_strategy_results
 
 
@@ -50,6 +51,7 @@ def collect_strategy_results(context: Any, raw_results: dict[str, dict[str, Any]
 
 
 _SURVIVAL_FIELDS = (
+    "action", "final_verdict", "type", "primary_reason", "primary_rejection_reason", "reason",
     "expiration_pair", "stale_structure", "date_confidence", "source_mode",
     "side", "position_type", "provider_fetch_count", "pipeline_trace",
     "earnings_date_confidence", "earnings_source_count", "earnings_sources_seen",
@@ -84,6 +86,20 @@ def _attach_canonical_opportunities(results: dict[str, dict[str, Any]], context:
             for field in _SURVIVAL_FIELDS:
                 if field in row:
                     serialized[field] = row[field]
+            original_verdict = row.get("final_verdict") or row.get("verdict") or row.get("action")
+            if original_verdict and str(serialized.get("verdict") or "").upper() in {"", "UNKNOWN"}:
+                serialized["verdict"] = original_verdict
+            if row.get("entry_window_reason"):
+                serialized["primary_reason"] = row["entry_window_reason"]
+            elif not serialized.get("primary_reason"):
+                primary_reason = (
+                    row.get("primary_reason")
+                    or row.get("primary_rejection_reason")
+                    or row.get("reason")
+                )
+                if primary_reason:
+                    serialized["primary_reason"] = primary_reason
+            normalize_strategy_row(serialized, strategy_id)
             canonical.append(serialized)
             if opportunity.reason_code == "NORMALIZATION_ERROR":
                 errors.append({"row_index": index, "error": opportunity.reason_label})
@@ -91,6 +107,9 @@ def _attach_canonical_opportunities(results: dict[str, dict[str, Any]], context:
                 if row.get(field) is not None and field not in serialized and field not in serialized.get("raw", {}):
                     lost_fields[field] = lost_fields.get(field, 0) + 1
         result["canonical_opportunities"] = canonical
+        for active_row in result.get("active_rows") or []:
+            if isinstance(active_row, dict):
+                normalize_strategy_row(active_row, strategy_id)
         result["canonical_opportunity_count"] = len(canonical)
         result["canonical_normalizer_errors"] = errors
         result["canonical_normalizer_error_count"] = len(errors)
