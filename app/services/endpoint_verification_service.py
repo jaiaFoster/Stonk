@@ -142,8 +142,11 @@ def _check_daily(run_id: str | None) -> _Check:
         return _Check("daily_opportunity", "FAIL", fields, assertion="RUN_ID_MISMATCH")
     if int(data.get("inferred_semantics_count") or 0) != 0:
         return _Check("daily_opportunity", "FAIL", fields, assertion="SEMANTICS_INFERRED")
-    if dry.get("excluded_reason") != "dry_run":
-        return _Check("daily_opportunity", "FAIL", fields, assertion="FF_DRY_RUN_EXCLUSION_MISSING")
+    # 32C: FF PASS/WATCH appear as research signals (not exclusions); excluded rows must still have dry_run reason.
+    _ff_rows_seen = int(dry.get("rows_seen", 0))
+    _ff_excluded_reason = dry.get("excluded_reason")
+    if _ff_rows_seen > 0 and _ff_excluded_reason not in {None, "dry_run", "near_miss", "dry_run_excluded"}:
+        return _Check("daily_opportunity", "FAIL", fields, assertion="FF_DRY_RUN_EXCLUSION_INVALID")
     return _Check("daily_opportunity", "PASS", fields)
 
 
@@ -204,10 +207,19 @@ def _check_strategy_rows(strategy_id: str, run_id: str | None) -> _Check:
         if invalid:
             return _Check(strategy_id, "FAIL", fields, assertion="REJECTED_ROW_MARKED_ELIGIBLE")
     if strategy_id == "forward_factor_calendar":
-        bad = [row for row in rows if not row.get("dry_run") or row.get("eligibility_status") != "dry_run_excluded"]
+        # 32C: PASS/WATCH → "conditional", NEAR MISS → "near_miss", FAIL/diagnostic → "dry_run_excluded".
+        # All rows must have dry_run=True and can_trade_live != True.
+        _ff_valid_statuses = {"dry_run_excluded", "conditional", "near_miss"}
+        bad_status = [row for row in rows if row.get("eligibility_status") not in _ff_valid_statuses]
+        bad_live = [row for row in rows if not row.get("dry_run") or row.get("can_trade_live") is True]
         fields["dry_run"] = True
-        if bad:
-            return _Check(strategy_id, "FAIL", fields, assertion="FF_DRY_RUN_ROW_ELIGIBLE")
+        fields["ff_pass_watch"] = sum(1 for row in rows if row.get("eligibility_status") == "conditional")
+        fields["ff_near_miss"] = sum(1 for row in rows if row.get("eligibility_status") == "near_miss")
+        fields["ff_excluded"] = sum(1 for row in rows if row.get("eligibility_status") == "dry_run_excluded")
+        if bad_status:
+            return _Check(strategy_id, "FAIL", fields, assertion="FF_UNKNOWN_ELIGIBILITY_STATUS")
+        if bad_live:
+            return _Check(strategy_id, "FAIL", fields, assertion="FF_CAN_TRADE_LIVE_ACTIVE")
     if strategy_id == "stock_momentum":
         non_row = sum(1 for row in rows if row.get("semantic_source") != "row")
         fields["semantic_source_row"] = len(rows) - non_row

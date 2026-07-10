@@ -491,6 +491,7 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
             or "DRY RUN PASS" in _upper
             or bool(row.get("watch_zone_ff"))
         )
+        _is_ff_near_miss = _upper.startswith("NEAR MISS")
         if _is_ff_pass:
             return {
                 "decision_class": "dry_run_entry",
@@ -512,6 +513,18 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
                 "exclusion_reason": "dry_run",
                 "priority_tier": "low",
                 "review_status": "review_required",
+            }
+        if _is_ff_near_miss:
+            # 32C.3: NEAR MISS — visible in Strategy 3 section but excluded from Daily Opportunity main list.
+            return {
+                "decision_class": "near_miss",
+                "action_type": "forward_factor_near_miss",
+                "actionability": "dry_run_only",
+                "eligibility_status": "near_miss",
+                "eligibility_reason": "Forward Factor NEAR MISS — narrow miss of entry threshold; diagnostic only.",
+                "exclusion_reason": "near_miss",
+                "priority_tier": "diagnostic",
+                "review_status": "blocked",
             }
         return {
             "decision_class": "diagnostic",

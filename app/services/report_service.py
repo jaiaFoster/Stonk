@@ -2303,7 +2303,7 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
         f"Source benchmark context: threshold approximately 0.20; reported CAGR approximately 27%; reported Sharpe approximately 2.4; favorable pair approximately 60/90 DTE; structure approximately ±35-delta double calendar.",
         "Historical source claims are not expected returns or proof of implementation correctness.",
         f"Stages: universe {stage.get('universe', 0)}; supported {stage.get('prefilter_supported_equities', 0)}; unsupported {stage.get('unsupported', 0)}; cheap evaluated {stage.get('cheap_evaluated', 0)}; cheap pass {stage.get('cheap_pass', 0)}; chain sets {stage.get('chain_sets', 0)}; pairs {stage.get('expiration_pairs', 0)}; FF calculated {stage.get('ff_calculated', 0)} ({stage.get('source_ff_calculated', 0)} source-qualified / {stage.get('diagnostic_formula_calculated', 0)} diagnostic); structure attempts {stage.get('structure_attempts', 0)}; structures {stage.get('structures', 0)}; liquidity complete {stage.get('liquidity_complete', 0)}.",
-        f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
+        f"Rows: {result.get('pass_count', 0)} dry pass / {result.get('watch_count', 0)} watch / {summary.get('near_miss_count', 0)} near miss / {result.get('fail_count', 0)} fail / {result.get('skipped_count', 0)} skipped.",
         f"Signals: {summary.get('positive_signal_count', 0)} positive; {summary.get('source_qualified_positive_count', 0)} source-qualified; {summary.get('diagnostic_positive_count', 0)} diagnostic; {summary.get('near_positive_count', 0)} near-positive; {summary.get('failed_liquidity_count', 0)} failed liquidity.",
         f"Candidate selection: pool {stage.get('candidate_pool_size', 0)}; planner-approved {stage.get('planner_approved_candidates', 0)}; final selected {stage.get('final_selected', 0)}; pre-eval skipped {stage.get('pre_eval_skipped', 0)}; selected chain {stage.get('chain_approved', 0)}; repeat no-pair {stage.get('repeat_no_pair_candidates', 0)}; repeat liquidity-fail {stage.get('repeat_liquidity_fail_candidates', 0)}; best near-positive {summary.get('best_near_positive_ticker') or 'none'}.",
         f"Terminal count reconciliation: {summary.get('terminal_count', 0)} / {summary.get('universe_count', 0)}; reconciled={summary.get('counts_reconcile', False)}.",
@@ -2331,6 +2331,17 @@ def _forward_factor_report(result: dict[str, Any]) -> str:
             f"  What would make positive: {row.get('what_would_make_positive') or []}",
             f"  Blocker: {row.get('primary_blocker') or 'none'}",
         ]
+    near_miss_rows = [row for row in (result.get("rows", []) or []) if str(row.get("verdict") or "").upper().startswith("NEAR MISS")]
+    if near_miss_rows:
+        lines += ["", "=== NEAR MISS ROWS (missed threshold by narrow margin) ==="]
+        for row in near_miss_rows:
+            lines += [
+                f"{row.get('ticker', 'UNKNOWN')} — {row.get('verdict', 'UNKNOWN')}",
+                f"  Forward Factor: {number(row.get('forward_factor'), 4)} (threshold {config.FF_MIN_FORWARD_FACTOR:.2f}, miss distance {number(row.get('miss_distance'), 4)})",
+                f"  Miss reason: {row.get('miss_reason') or 'unknown'}",
+                f"  Structure: {row.get('structure_status') or 'not built'}; liquidity: {row.get('liquidity_status') or 'unknown'}",
+                f"  Near-miss details: {row.get('near_miss_details') or {}}",
+            ]
     audit = summary.get("candidate_selection_audit", []) or []
     lines += ["", "FF Candidate Selection Audit", "Selected for FF evaluation:"]
     selected_audit = [row for row in audit if row.get("selected_for_cheap_eval")]

@@ -49,8 +49,9 @@ class TestStrategySpecRegistry:
         assert spec.get("dry_run") is True
 
     def test_ff_daily_opportunity_not_allowed(self):
+        # 32C: FF promoted to daily_opportunity_allowed=True (research signals only; dry_run enforces read-only).
         spec = self._registry().get("forward_factor_calendar", {})
-        assert spec.get("daily_opportunity_allowed") is False
+        assert spec.get("daily_opportunity_allowed") is True
 
     def test_test_clone_is_dry_run(self):
         spec = self._registry().get("stock_momentum_unified_test", {})

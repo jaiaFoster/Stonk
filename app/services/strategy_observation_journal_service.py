@@ -326,6 +326,11 @@ def _build_structure_summary(row: dict[str, Any], strategy_id: str) -> dict[str,
             "daily_opportunity_eligible": False,
             "can_trade_live": False,
             "ff_candidate_stage": row.get("ff_candidate_stage"),
+            # 32C: Four-tier verdict fields
+            "near_miss_ff": bool(row.get("near_miss_ff")),
+            "watch_zone_ff": bool(row.get("watch_zone_ff")),
+            "near_miss_reason": row.get("miss_reason"),
+            "miss_distance": row.get("miss_distance"),
         }
 
     if strategy_id == "stock_momentum":

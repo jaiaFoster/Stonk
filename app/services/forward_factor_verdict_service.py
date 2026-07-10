@@ -20,7 +20,12 @@ def apply_forward_factor_verdict(row: dict) -> dict:
     elif float(row.get("debit_at_risk") or 0) > (getattr(config, "FF_WARN_DEBIT_DOLLARS", 250) or 250):
         _debit = float(row.get("debit_at_risk") or 0)
         if _debit > config.FF_MAX_DEBIT_DOLLARS:
-            verdict, blocker = "FAIL / DEBIT TOO LARGE", "Conservative package debit exceeds configured risk cap."
+            _tolerance_pct = float(getattr(config, "FF_NEAR_MISS_DEBIT_TOLERANCE_PCT", 20.0) or 20.0)
+            _near_miss_cap = config.FF_MAX_DEBIT_DOLLARS * (1.0 + _tolerance_pct / 100.0)
+            if _debit <= _near_miss_cap:
+                verdict, blocker = "NEAR MISS / DEBIT NEAR MAXIMUM", f"Debit ${_debit:.0f} exceeds max ${config.FF_MAX_DEBIT_DOLLARS:.0f} but within {_tolerance_pct:.0f}% near-miss tolerance."
+            else:
+                verdict, blocker = "FAIL / DEBIT TOO LARGE", "Conservative package debit exceeds configured risk cap."
         else:
             _warn = float(getattr(config, "FF_WARN_DEBIT_DOLLARS", 250))
             verdict, blocker = "WATCH / DEBIT ELEVATED", f"Debit ${_debit:.0f} exceeds warning threshold ${_warn:.0f}."

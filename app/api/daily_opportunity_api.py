@@ -132,16 +132,23 @@ def _daily_opportunity_from_row_store(limit: int = 12, include_exclusions: bool 
             actions.append(action)
             if sid in strategy_counts:
                 strategy_counts[sid]["eligible"] = int(strategy_counts[sid].get("eligible", 0)) + 1
+            if sid == "forward_factor_calendar":
+                # 32C: Track FF research signals (PASS/WATCH) alongside exclusions.
+                dry_run_exclusions[sid] = dry_run_exclusions.get(sid) or {"excluded_reason": "dry_run", "research_signals": 0}
+                dry_run_exclusions[sid]["research_signals"] = int(dry_run_exclusions[sid].get("research_signals", 0)) + 1
+                dry_run_exclusions[sid]["rows_seen"] = int(strategy_counts[sid].get("rows_seen", 0))
+                dry_run_exclusions[sid]["eligible"] = int(strategy_counts[sid].get("eligible", 0))
         elif exclusion:
             exclusions.append(exclusion)
             if sid in strategy_counts:
                 strategy_counts[sid]["excluded"] = int(strategy_counts[sid].get("excluded", 0)) + 1
             if sid == "forward_factor_calendar":
-                dry_run_exclusions[sid] = {
+                dry_run_exclusions[sid] = dry_run_exclusions.get(sid) or {}
+                dry_run_exclusions[sid].update({
                     "rows_seen": int(strategy_counts[sid].get("rows_seen", 0)),
                     "eligible": int(strategy_counts[sid].get("eligible", 0)),
-                    "excluded_reason": exclusion.get("exclusion_reason"),
-                }
+                    "excluded_reason": exclusion.get("exclusion_reason") or dry_run_exclusions[sid].get("excluded_reason"),
+                })
 
     actions, duplicate_exclusions = _dedupe_actions(sorted(actions, key=_daily_sort_key))
     exclusions.extend(duplicate_exclusions)
@@ -440,6 +447,8 @@ def _daily_sort_key(action: dict[str, Any]) -> tuple[int, float]:
         "tactical_stock_watch": 6,
         "risk": 7,
         "portfolio_risk": 7,
+        "forward_factor_entry": 8,
+        "forward_factor_watch": 9,
     }
     return (priority.get(str(action.get("type") or ""), 99), -float(action.get("priority_score") or 0))
 
