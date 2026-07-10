@@ -1196,6 +1196,16 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     )
     tradier_snapshot["_daily_opportunity_engine"] = daily_opportunity_engine
 
+    # TKT-STRATEGY-FAILURE-RUN-QUALITY (31B.1): degrade report_quality when an enabled strategy crashes.
+    _enabled_strategy_step_keys = ("unified_calendar_engine", "skew_momentum_vertical", "forward_factor_calendar", "stock_momentum")
+    for _failed_step_key in _enabled_strategy_step_keys:
+        _step_info = pipeline_status.get("step_map", {}).get(_failed_step_key)
+        if isinstance(_step_info, dict) and _step_info.get("status") == "error":
+            pipeline_status["report_quality"] = "SUCCESS_DEGRADED"
+            pipeline_status.setdefault("degraded_evidence", {})["failed_strategy"] = _failed_step_key
+            log_print(f"report_quality degraded to SUCCESS_DEGRADED: strategy step '{_failed_step_key}' failed.")
+            break
+
     normalized_strategy_results = collect_strategy_results(
         run_context,
         {

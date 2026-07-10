@@ -94,6 +94,22 @@ class StrategyRowRepository:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_rows_latest ON strategy_rows(strategy_id, run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_rows_run ON strategy_rows(run_id, strategy_id)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_run_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    run_id TEXT NOT NULL,
+                    strategy_id TEXT NOT NULL,
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    execution_status TEXT NOT NULL DEFAULT 'ok',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(run_id, strategy_id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_run_log_strategy ON strategy_run_log(strategy_id, created_at DESC, id DESC)"
+            )
             self._ensure_columns(conn)
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
@@ -151,6 +167,35 @@ class StrategyRowRepository:
         for row in rows:
             sid = row["strategy_id"]
             by_strategy[sid] = by_strategy.get(sid, 0) + 1
+        # Write per-strategy run log so read_latest() can detect empty/failed runs.
+        log_entries = []
+        for strategy_id, result in (strategy_results or {}).items():
+            if not isinstance(result, dict):
+                continue
+            count = by_strategy.get(strategy_id, 0)
+            has_errors = bool(result.get("errors") or result.get("execution_failed"))
+            if count == 0 and has_errors:
+                status = "failed"
+            elif count == 0:
+                status = "empty"
+            else:
+                status = "ok"
+            log_entries.append({
+                "run_id": run_id,
+                "strategy_id": strategy_id,
+                "row_count": count,
+                "execution_status": status,
+                "created_at": now,
+            })
+        if log_entries:
+            with self._connect() as conn:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO strategy_run_log (run_id, strategy_id, row_count, execution_status, created_at)
+                    VALUES (:run_id, :strategy_id, :row_count, :execution_status, :created_at)
+                    """,
+                    log_entries,
+                )
         return {"write_count": len(rows), "by_strategy": by_strategy}
 
     def latest_run_id(self, strategy_id: str | None = None) -> str | None:
@@ -164,6 +209,27 @@ class StrategyRowRepository:
         return str(row["run_id"]) if row else None
 
     def read_latest(self, strategy_id: str, *, limit: int = 50) -> dict[str, Any]:
+        # Prefer the run log for accurate current-run isolation (TKT-STRATEGY-ROW-CURRENT-RUN-ISOLATION).
+        with self._connect() as conn:
+            log_row = conn.execute(
+                "SELECT run_id, row_count, execution_status FROM strategy_run_log "
+                "WHERE strategy_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (strategy_id,),
+            ).fetchone()
+        if log_row:
+            run_id = str(log_row["run_id"])
+            row_count = int(log_row["row_count"])
+            execution_status = str(log_row["execution_status"])
+            if row_count == 0:
+                return {
+                    "run_id": run_id,
+                    "rows": [],
+                    "row_count": 0,
+                    "execution_status": execution_status,
+                    "fallback_used": False,
+                }
+            return self.read_run(run_id, strategy_id, limit=limit)
+        # No log entry yet (pre-migration data) — fall back to row-based lookup.
         run_id = self.latest_run_id(strategy_id)
         if not run_id:
             return {"run_id": None, "rows": [], "row_count": 0}
@@ -219,7 +285,18 @@ class StrategyRowRepository:
         normalization_status = "error" if error else ("missing_required_fields" if missing else "ok")
         normalization_errors = [error] if error else []
         details = compact.get("details") or _derived_details(strategy_id, compact)
+        row_type = compact.get("row_type") or compact.get("candidate_type") or _row_type(strategy_id, compact)
         semantics = _semantic_fields(strategy_id, compact, run_id)
+        # TKT-CALENDAR-REJECTED-ELIGIBILITY: persistence boundary invariant for rejected_candidate rows.
+        # Only override eligibility_status to "ineligible" if the row still carries an affirmative
+        # value ("eligible", "conditional") — preserve specific ineligible codes like "excluded".
+        if row_type == "rejected_candidate":
+            _current_elig = str(semantics.get("eligibility_status") or "")
+            if _current_elig not in {"excluded", "ineligible", "dry_run_excluded", "blocked"}:
+                semantics["eligibility_status"] = "ineligible"
+            # Use the "none" sentinel (string) not Python None — downstream reads check truthiness.
+            if str(semantics.get("action_type") or "") in {"calendar_entry", "vertical_entry", "stock_add", "entry", ""}:
+                semantics["action_type"] = "none"
         return {
             "run_id": run_id,
             "strategy_id": strategy_id,
@@ -229,7 +306,7 @@ class StrategyRowRepository:
             "symbol": compact.get("symbol") or ticker,
             "ticker": ticker,
             "asset_type": compact.get("asset_type") or ("equity" if strategy_id == "stock_momentum" else "option_strategy"),
-            "row_type": compact.get("row_type") or compact.get("candidate_type") or _row_type(strategy_id, compact),
+            "row_type": row_type,
             "verdict": compact.get("verdict") or compact.get("action") or "UNKNOWN",
             "friendly_verdict": compact.get("friendly_verdict") or _friendly_verdict(strategy_id, compact),
             "score": _float_or_none(compact.get("score") or compact.get("signal_score") or compact.get("priority_score")),
@@ -322,6 +399,8 @@ def _structure_summary(row: dict[str, Any]) -> dict[str, Any]:
         for key in (
             "structure_type", "structure_status", "front_expiration", "back_expiration",
             "front_dte", "back_dte", "put_strike", "call_strike", "strike",
+            # option_type required to distinguish call vs put calendars on the same ticker (TKT-OPEN-POSITIONS-LIFECYCLE-COMPLETENESS).
+            "option_type",
             "conservative_debit", "mid_debit", "package_slippage_pct",
         )
         if row.get(key) is not None
@@ -555,6 +634,8 @@ def _hash_row(strategy_id: str, row: dict[str, Any]) -> str:
         "verdict": row.get("verdict") or row.get("action"),
         "front": row.get("front_expiration"),
         "back": row.get("back_expiration"),
+        # option_type distinguishes call vs put calendars on the same ticker/strike/expiration.
+        "option_type": str(row.get("option_type") or "").lower() or None,
     }, default=str, sort_keys=True)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
 
