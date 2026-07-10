@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
 
 def test_rejected_calendar_rows_take_semantic_precedence():
     from app.services.strategy_row_normalization_service import normalize_strategy_row
@@ -207,3 +210,107 @@ def test_catalog_flask_endpoints_are_read_only():
     assert valid.status_code == 200
     assert valid.get_json()["valid"] is True
     assert valid.get_json()["provider_calls_triggered"] is False
+
+
+def _seed_verification_run(db_path: str, run_id: str, *, bad_calendar_semantics: bool = False) -> None:
+    from app.services.run_manifest_repository import RunManifestRepository
+    from app.services.strategy_row_normalization_service import normalize_strategy_row
+    from app.services.strategy_row_repository import StrategyRowRepository
+
+    RunManifestRepository(db_path).save({
+        "run_id": run_id,
+        "completed_at": "2026-07-10T00:00:00+00:00",
+        "mode": "dev",
+        "status": "complete",
+        "report_quality": "SUCCESS_COMPLETE",
+        "strategy_counts": {},
+        "daily_opportunity_count": 0,
+        "has_broker_data": True,
+        "has_market_data": True,
+        "has_options_data": True,
+        "has_errors": False,
+        "error_count": 0,
+    })
+    earnings_rows = [
+        normalize_strategy_row({"ticker": "SBUX", "type": "open_calendar", "verdict": "HOLD / MONITOR"}, "earnings_calendar"),
+        normalize_strategy_row({"ticker": "ABT", "row_type": "rejected_candidate", "verdict": "FAIL / ENTRY_WINDOW_CLOSED", "entry_window_status": "ENTRY_WINDOW_CLOSED"}, "earnings_calendar"),
+    ]
+    if bad_calendar_semantics:
+        earnings_rows.append({
+            "strategy_id": "earnings_calendar",
+            "ticker": "DPZ",
+            "row_id": "bad-dpz",
+            "row_type": "rejected_candidate",
+            "verdict": "FAIL / DEBIT TOO LARGE",
+            "decision_class": "entry",
+            "action_type": "calendar_entry",
+            "actionability": "review_only",
+            "eligibility_status": "eligible",
+            "semantic_source": "row",
+            "semantic_fields_version": "30J.v1",
+        })
+    stock_rows = [
+        normalize_strategy_row({"ticker": "GE", "action": "WATCH / CONFIRM TREND"}, "stock_momentum"),
+    ]
+    skew_rows = [
+        normalize_strategy_row({"ticker": "ALGN", "verdict": "FAIL / OPTIONS ILLIQUID"}, "skew_momentum_vertical"),
+    ]
+    ff_rows = [
+        normalize_strategy_row({"ticker": "ELF", "verdict": "WATCH / EX-EARNINGS IV UNAVAILABLE"}, "forward_factor_calendar"),
+    ]
+    StrategyRowRepository(db_path).write_run(run_id, {
+        "earnings_calendar": {"canonical_opportunities": earnings_rows},
+        "stock_momentum": {"canonical_opportunities": stock_rows},
+        "skew_momentum_vertical": {"canonical_opportunities": skew_rows},
+        "forward_factor_calendar": {"canonical_opportunities": ff_rows},
+    })
+
+
+def test_endpoint_verification_packet_passes_after_persistence(monkeypatch):
+    from app.services.endpoint_verification_service import run_endpoint_verification
+
+    with TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "verify.sqlite3")
+        monkeypatch.setattr("app.config.RUN_MANIFEST_DB_PATH", db)
+        monkeypatch.setattr("app.config.STRATEGY_ROW_DB_PATH", db)
+        _seed_verification_run(db, "run-verify")
+        logs: list[str] = []
+        result = run_endpoint_verification(
+            completed_run_id="run-verify",
+            report_quality="SUCCESS_COMPLETE",
+            log_print=logs.append,
+        )
+
+    assert result["failed_count"] == 0
+    assert result["passed_count"] >= 8
+    assert any("ENDPOINT VERIFICATION START run=run-verify" in line for line in logs)
+    assert any("[VERIFY][PASS] daily_opportunity" in line for line in logs)
+    assert any("inferred=0" in line for line in logs)
+    assert not any("FULL_RAW" in line or "account_number" in line for line in logs)
+
+
+def test_endpoint_verification_detects_rejected_row_marked_eligible(monkeypatch):
+    from app.services.endpoint_verification_service import run_endpoint_verification
+
+    with TemporaryDirectory() as tmp:
+        db = str(Path(tmp) / "verify.sqlite3")
+        monkeypatch.setattr("app.config.RUN_MANIFEST_DB_PATH", db)
+        monkeypatch.setattr("app.config.STRATEGY_ROW_DB_PATH", db)
+        _seed_verification_run(db, "run-bad", bad_calendar_semantics=True)
+        logs: list[str] = []
+        result = run_endpoint_verification(
+            completed_run_id="run-bad",
+            report_quality="SUCCESS_COMPLETE",
+            log_print=logs.append,
+        )
+
+    assert result["failed_count"] >= 1
+    assert any("REJECTED_ROW_MARKED_ELIGIBLE" in line for line in logs)
+    assert any("[VERIFY][FAIL] earnings_calendar" in line for line in logs)
+
+
+def test_endpoint_verification_respects_dev_mode_enablement(monkeypatch):
+    from app.services.endpoint_verification_service import maybe_run_endpoint_verification
+
+    monkeypatch.setattr("app.config.DEV_ENDPOINT_VERIFICATION_ENABLED", True)
+    assert maybe_run_endpoint_verification(completed_run_id="run", run_mode="prod", report_quality="SUCCESS_COMPLETE", log_print=lambda _msg: None) is None
