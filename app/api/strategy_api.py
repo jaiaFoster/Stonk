@@ -329,6 +329,128 @@ def get_strategy_rows(
         return {**_READ_ONLY_BASE, "strategy_id": strategy_id, "rows": [], "row_count": 0, "error": str(exc)}
 
 
+def get_strategy_rankings(
+    strategy_id: str | None = None,
+    ticker: str | None = None,
+    verdict: str | None = None,
+    tier: str | None = None,
+    actionable_only: bool = False,
+    include_diagnostic: bool = False,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Return universally ranked strategy rows from the current-run Strategy Row Store.
+
+    31B.15: Reads only from persisted current-run data — no provider calls.
+    Filters: strategy_id, ticker, verdict, tier, actionable_only, include_diagnostic.
+    """
+    from app import config as _cfg
+    cap = min(int(limit or 20), 100)
+    _STRATEGY_IDS = ["earnings_calendar", "skew_momentum_vertical", "forward_factor_calendar", "stock_momentum"]
+    target_ids = [strategy_id] if strategy_id else _STRATEGY_IDS
+
+    all_rows: list[dict[str, Any]] = []
+    run_ids: dict[str, str | None] = {}
+    try:
+        from app.services.strategy_row_repository import StrategyRowRepository
+        repo = StrategyRowRepository()
+        for sid in target_ids:
+            try:
+                stored = repo.read_latest(sid, limit=50)
+                run_ids[sid] = stored.get("run_id")
+                for row in (stored.get("rows") or []):
+                    if isinstance(row, dict):
+                        row.setdefault("strategy_id", sid)
+                        all_rows.append(row)
+            except Exception:
+                run_ids[sid] = None
+    except Exception as exc:
+        return {**_READ_ONLY_BASE, "rows": [], "count": 0, "error": str(exc)}
+
+    try:
+        from app.services.universal_ranking_service import rank_strategy_rows
+        ranked = rank_strategy_rows(all_rows)
+    except Exception:
+        ranked = all_rows
+
+    if ticker:
+        _t = str(ticker).upper().strip()
+        ranked = [r for r in ranked if str(r.get("ticker") or "").upper() == _t]
+    if verdict:
+        _v = str(verdict).upper()
+        ranked = [r for r in ranked if _v in str(r.get("verdict") or "").upper()]
+    if tier:
+        ranked = [r for r in ranked if str(r.get("opportunity_tier") or "") == str(tier).upper()]
+    if actionable_only:
+        ranked = [r for r in ranked if bool(r.get("strategy_actionable"))]
+    if not include_diagnostic:
+        ranked = [r for r in ranked if str(r.get("opportunity_tier") or "") != "DIAGNOSTIC"]
+
+    returned = ranked[:cap]
+    score_versions = list({str(r.get("score_version") or "") for r in returned if r.get("score_version")})
+    ranking_versions = list({str(r.get("ranking_version") or "") for r in returned if r.get("ranking_version")})
+    completeness_avg = (
+        round(sum(float(r.get("score_completeness_pct") or 0) for r in returned) / len(returned), 1)
+        if returned else None
+    )
+    dry_run_sids = [sid for sid in target_ids if sid == "forward_factor_calendar"]
+
+    return {
+        **_READ_ONLY_BASE,
+        "rows": returned,
+        "count": len(returned),
+        "total_before_filter": len(ranked),
+        "latest_run_ids": run_ids,
+        "score_version": score_versions[0] if len(score_versions) == 1 else score_versions,
+        "ranking_version": ranking_versions[0] if len(ranking_versions) == 1 else ranking_versions,
+        "source": "strategy_row_store",
+        "score_completeness_summary": {"average_pct": completeness_avg},
+        "dry_run_strategy_ids": dry_run_sids,
+        "filters_applied": {
+            "strategy_id": strategy_id,
+            "ticker": ticker,
+            "verdict": verdict,
+            "tier": tier,
+            "actionable_only": actionable_only,
+            "include_diagnostic": include_diagnostic,
+        },
+    }
+
+
+def get_ticker_comparison(ticker: str) -> dict[str, Any]:
+    """Return all strategies evaluated for a single ticker with comparative ranking.
+
+    31B.15: Optional compare endpoint — GET /api/strategies/compare?ticker=XYZ
+    """
+    ticker = str(ticker or "").upper().strip()
+    if not ticker:
+        return {**_READ_ONLY_BASE, "error": "ticker parameter required", "rows": [], "count": 0}
+    result = get_strategy_rankings(ticker=ticker, include_diagnostic=True, limit=50)
+    rows = result.get("rows") or []
+    rows.sort(key=lambda r: (-(int(r.get("universal_score") or 0)), str(r.get("strategy_id") or "")))
+    best = rows[0] if rows else None
+    why_ranked = None
+    if best and len(rows) > 1:
+        second = rows[1]
+        why_ranked = (
+            f"{best.get('strategy_id')} ranked above {second.get('strategy_id')} "
+            f"because score {best.get('universal_score', '?')} > {second.get('universal_score', '?')}"
+            + (f" and tier {best.get('opportunity_tier')} vs {second.get('opportunity_tier')}" if best.get("opportunity_tier") != second.get("opportunity_tier") else "")
+            + "."
+        )
+    return {
+        **_READ_ONLY_BASE,
+        "ticker": ticker,
+        "rows": rows,
+        "count": len(rows),
+        "best_strategy": best.get("strategy_id") if best else None,
+        "best_score": best.get("universal_score") if best else None,
+        "best_tier": best.get("opportunity_tier") if best else None,
+        "why_ranked": why_ranked,
+        "latest_run_ids": result.get("latest_run_ids"),
+        "source": "strategy_row_store",
+    }
+
+
 def validate_draft(draft: Any) -> dict[str, Any]:
     """Validate a draft strategy DSL object.
 

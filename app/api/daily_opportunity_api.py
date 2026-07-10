@@ -216,10 +216,18 @@ def _action_from_strategy_row(row: dict[str, Any], run_id: str | None) -> tuple[
     eligibility_status = str(semantics.get("eligibility_status") or "excluded")
     if eligibility_status not in {"eligible", "conditional"} or action_type in {"none", "diagnostic"}:
         return None, _exclusion(row, run_id, str(semantics.get("exclusion_reason") or "not_daily_opportunity_eligible"), semantics)
-    if sid == "forward_factor_calendar" or bool(row.get("dry_run")) and action_type == "diagnostic":
+    # 31B.8/31B.14: FF PASS/WATCH rows surface as research signals, not hard exclusions.
+    # action_type="forward_factor_entry" or "forward_factor_watch" + eligibility="conditional" reach here.
+    is_ff_research = sid == "forward_factor_calendar" and action_type in {"forward_factor_entry", "forward_factor_watch"}
+    if sid == "forward_factor_calendar" and not is_ff_research:
+        return None, _exclusion(row, run_id, "dry_run", semantics)
+    if bool(row.get("dry_run")) and action_type == "diagnostic" and not is_ff_research:
         return None, _exclusion(row, run_id, "dry_run", semantics)
     trace = _trace_fields(row)
     display = _display_block(row, semantics)
+    dry_run_labels: list[str] = []
+    if is_ff_research or bool(row.get("dry_run")):
+        dry_run_labels = ["DRY RUN", "RESEARCH SIGNAL", "NO EXECUTION"]
     return {
         "type": action_type,
         "action_type": action_type,
@@ -247,6 +255,11 @@ def _action_from_strategy_row(row: dict[str, Any], run_id: str | None) -> tuple[
         "priority_tier": semantics.get("priority_tier"),
         "review_status": semantics.get("review_status"),
         "display": display,
+        "dry_run": is_ff_research or bool(row.get("dry_run")),
+        "dry_run_labels": dry_run_labels,
+        "execution_enabled": False if (is_ff_research or bool(row.get("dry_run"))) else None,
+        "universal_score": row.get("universal_score"),
+        "opportunity_tier": row.get("opportunity_tier"),
         **trace,
     }, None
 
@@ -288,6 +301,11 @@ def _semantic_from_row(row: dict[str, Any]) -> dict[str, Any]:
     verdict_upper = str(row.get("verdict") or "").upper()
     row_type = str(row.get("row_type") or "")
     if sid == "forward_factor_calendar":
+        _at = str(row.get("action_type") or "")
+        if _at == "forward_factor_entry":
+            return _semantic("dry_run_entry", "forward_factor_entry", "dry_run_only", "conditional", "Forward Factor PASS signal — dry-run only, no execution.", "dry_run", "normal", "review_required", "legacy_verdict_inference")
+        if _at == "forward_factor_watch":
+            return _semantic("dry_run_watch", "forward_factor_watch", "dry_run_only", "conditional", "Forward Factor WATCH signal — dry-run only, no execution.", "dry_run", "low", "review_required", "legacy_verdict_inference")
         return _semantic("diagnostic", "diagnostic", "dry_run_only", "dry_run_excluded", "Forward Factor remains dry-run.", "dry_run", "diagnostic", "blocked", "legacy_verdict_inference")
     if sid == "stock_momentum" and _stock_row_daily_eligible(verdict_upper, str(row.get("friendly_verdict") or "")):
         return _semantic("watch", _stock_action_type(verdict_upper), "monitor_only", "eligible", "Legacy stock row inferred as Daily Opportunity watch.", "", "low", "needs_confirmation", "legacy_verdict_inference")
