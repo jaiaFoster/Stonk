@@ -423,7 +423,6 @@ def build_forward_factor_strategy(
                 "source_qualification": source_qualification,
             }
             raw_formula, raw_result_code = _try_formula(iv.get("front_raw_iv"), iv.get("back_raw_iv"), front_dte, back_dte)
-            base["ff_pair_result_code"] = raw_result_code
             if raw_formula and is_contaminated:
                 haircut_front_iv = (iv.get("front_raw_iv") or 0) * (1.0 - config.FF_EARNINGS_IV_HAIRCUT_PCT)
                 haircut_ff, _haircut_code = _try_formula(haircut_front_iv, iv.get("back_raw_iv"), front_dte, back_dte)

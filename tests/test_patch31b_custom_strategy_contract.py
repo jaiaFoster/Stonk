@@ -434,7 +434,9 @@ class CanonicalRejectedRowInvariantTests(unittest.TestCase):
         result = normalize_strategy_row(row, "earnings_calendar")
         self.assertFalse(result["daily_opportunity_eligible"])
         self.assertEqual(result.get("decision_class"), "rejected")
-        self.assertFalse(result.get("journal_eligible", True))
+        # TKT-CALENDAR-REJECTED-ELIGIBILITY (31B.1 Ticket 3): rejected rows with a verdict
+        # are now journal-eligible so we can learn from rejections.
+        self.assertTrue(result.get("journal_eligible"))
 
     def test_action_type_cleared_for_rejected_entry_action(self):
         from app.services.strategy_row_normalization_service import normalize_strategy_row

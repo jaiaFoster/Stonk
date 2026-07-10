@@ -142,10 +142,13 @@ def normalize_strategy_row(
         or _decision_class == "rejected"
         or _pre_semantics_decision_class == "rejected"
     ):
-        # Force all boolean eligibility flags to False — rejected rows must not leak.
+        # Force trading eligibility flags to False — rejected rows must not leak into daily opportunity.
         row["daily_opportunity_eligible"] = False
         row["can_enter_daily_opportunity"] = False
-        row["journal_eligible"] = False
+        # TKT-CALENDAR-REJECTED-ELIGIBILITY: rejected rows ARE valid journal entries (learn from rejections).
+        # Only mark journal-eligible when the row has explicit verdict identity; empty rows lack that identity.
+        if str(row.get("verdict") or row.get("action") or "").strip():
+            row["journal_eligible"] = True
         row["decision_class"] = "rejected"
         # Only override eligibility_status if semantics did not already set a non-eligible value.
         _current_elig = str(row.get("eligibility_status") or "")
@@ -763,6 +766,10 @@ def _observation_key(row: dict[str, Any], strategy_id: str) -> str:
         candidate_type = "calendar_candidate"
         structure_type = str(row.get("structure_type") or "calendar_spread")
         expiration = str(row.get("front_expiration") or row.get("front_expiry") or "")
+        # Include option_type so call vs put calendars on the same ticker get distinct observation keys.
+        _opt_type = str(row.get("option_type") or "").lower().strip()
+        if _opt_type:
+            structure_type = f"{structure_type}.{_opt_type}"
     elif strategy_id == "skew_momentum_vertical":
         candidate_type = "vertical_spread"
         structure_type = str(row.get("structure_type") or "vertical")

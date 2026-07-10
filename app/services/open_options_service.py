@@ -21,7 +21,7 @@ from datetime import datetime, date
 from typing import Any, Callable
 
 from app import config
-from app.providers.tradier_provider import TradierAuthError, TradierProvider
+from app.providers.tradier_provider import TradierAuthError, TradierProvider, _mask_account_id_for_log
 from app.providers.robinhood_provider import get_open_option_positions as get_robinhood_open_option_positions
 from app.utils.log_safety import sanitize_for_log
 
@@ -72,11 +72,11 @@ def detect_open_options_positions(log_print: LogFn | None = None) -> dict[str, A
         for account_id in tradier_account_ids[: max(1, int(config.OPEN_OPTIONS_MAX_ACCOUNTS or 1))]:
             try:
                 account_positions = provider.get_account_positions(account_id)
-                logger(f"Tradier account {account_id}: fetched {len(account_positions)} open position(s).")
+                logger(f"Tradier account {_mask_account_id_for_log(account_id)}: fetched {len(account_positions)} open position(s).")
             except Exception as e:
                 safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
-                logger(f"Tradier account {account_id}: positions unavailable: {safe_error}")
-                result["errors"].append(f"Tradier {account_id}: {safe_error}")
+                logger(f"Tradier account {_mask_account_id_for_log(account_id)}: positions unavailable: {safe_error}")
+                result["errors"].append(f"Tradier {_mask_account_id_for_log(account_id)}: {safe_error}")
                 continue
 
             for raw in account_positions:
