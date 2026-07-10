@@ -20,6 +20,7 @@ from typing import Any
 
 from app.services.strategy_row_schema import (
     STRATEGY_ROW_SCHEMA_VERSION,
+    SEMANTIC_FIELDS_VERSION,
     NORMALIZED_ROW_EXCLUDE,
 )
 from app.services.strategy_gate_service import make_gate, normalize_gate_status
@@ -119,6 +120,12 @@ def normalize_strategy_row(
         # Enforce FF policy regardless of spec lookups.
         row["can_trade_live"] = False
         row["dry_run"] = True
+
+    semantics = _decision_semantics(row, strategy_id)
+    for key, value in semantics.items():
+        row.setdefault(key, value)
+    row.setdefault("semantic_source", "row")
+    row.setdefault("semantic_fields_version", SEMANTIC_FIELDS_VERSION)
 
     # Gates — canonical gate list using make_gate() shape.
     if "gates" not in row:
@@ -417,6 +424,120 @@ def _daily_opportunity_eligible(
         return action in _STOCK_DO_ACTIONS
 
     return False
+
+
+def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
+    verdict = str(row.get("verdict") or row.get("action") or "")
+    upper = verdict.upper()
+    row_type = str(row.get("row_type") or row.get("type") or "")
+    status = str(row.get("entry_window_status") or "")
+
+    if strategy_id == "forward_factor_calendar":
+        return {
+            "decision_class": "diagnostic",
+            "action_type": "diagnostic",
+            "actionability": "dry_run_only",
+            "eligibility_status": "dry_run_excluded",
+            "eligibility_reason": "Forward Factor remains dry-run.",
+            "exclusion_reason": "dry_run",
+            "priority_tier": "diagnostic",
+            "review_status": "blocked",
+        }
+
+    if strategy_id == "stock_momentum":
+        if upper.startswith(("CONSIDER ADDING", "ADD ON")):
+            return _eligible_semantics("add", "stock_add", "review_only", "normal", "ready", "Stock momentum add candidate.")
+        if upper.startswith("WATCH / CONFIRM TREND"):
+            return _eligible_semantics("watch", "stock_watch", "monitor_only", "low", "needs_confirmation", "Positive momentum, but confirmation is still required.")
+        if upper.startswith(("TACTICAL ONLY", "STARTER ONLY", "HOLD / DO NOT ADD")):
+            return _eligible_semantics("watch", "tactical_stock_watch", "monitor_only", "low", "needs_confirmation", "Tactical/watchlist signal only; do not chase.")
+        return _rejected_semantics("hard_fail", "Stock momentum row did not qualify.")
+
+    if strategy_id == "earnings_calendar":
+        if row_type in {"open_calendar", "lifecycle_check"} or upper.startswith(("HOLD", "EXIT", "CUT", "TAKE PROFIT", "RECHECK")):
+            return _eligible_semantics("lifecycle", "active_calendar", "actionable", "high", "monitor", "Active calendar lifecycle row.")
+        if status == "MONITOR_PRE_WINDOW":
+            return _excluded_semantics("monitor", "monitor", "monitor_only", "pre_window", "monitor", "Calendar candidate is before the entry window.")
+        if status in {"ENTRY_WINDOW_CLOSED", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED", "NO_PRE_EARNINGS_SHORT_EXPIRY"}:
+            return _rejected_semantics("entry_window_closed", "No valid pre-earnings short expiration with sufficient DTE/time value.")
+        if status == "SHORT_LEG_SPANS_EARNINGS":
+            return _rejected_semantics("short_leg_spans_earnings", "Short leg spans or follows earnings.")
+        if status in {"DATA_NEEDED", "DATE_CONFLICT_REVIEW"}:
+            return _excluded_semantics("monitor", "monitor", "monitor_only", status.lower(), "needs_data" if status == "DATA_NEEDED" else "needs_confirmation", "Calendar row needs more data or date confirmation.")
+        if bool(row.get("calendar_entry_allowed")) or upper.startswith("PASS"):
+            return _eligible_semantics("entry", "calendar_entry", "review_only", "normal", "ready", "Calendar entry candidate passed row gates.")
+        return _rejected_semantics("hard_fail", "Earnings calendar row did not qualify.")
+
+    if strategy_id == "skew_momentum_vertical":
+        if upper.startswith("PASS"):
+            return _eligible_semantics("entry", "vertical_entry", "review_only", "normal", "ready", "Skew vertical candidate passed row gates.")
+        if upper.startswith("WATCH"):
+            return {
+                "decision_class": "watch",
+                "action_type": "monitor",
+                "actionability": "monitor_only",
+                "eligibility_status": "conditional",
+                "eligibility_reason": "Skew row is watch-only.",
+                "exclusion_reason": "not_daily_opportunity_eligible",
+                "priority_tier": "low",
+                "review_status": "monitor",
+            }
+        return _rejected_semantics("hard_fail", "Skew row did not qualify.")
+
+    return _rejected_semantics("not_daily_opportunity_eligible", "No canonical semantics available.")
+
+
+def _eligible_semantics(
+    decision_class: str,
+    action_type: str,
+    actionability: str,
+    priority_tier: str,
+    review_status: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "decision_class": decision_class,
+        "action_type": action_type,
+        "actionability": actionability,
+        "eligibility_status": "eligible",
+        "eligibility_reason": reason,
+        "exclusion_reason": "",
+        "priority_tier": priority_tier,
+        "review_status": review_status,
+    }
+
+
+def _excluded_semantics(
+    decision_class: str,
+    action_type: str,
+    actionability: str,
+    code: str,
+    review_status: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "decision_class": decision_class,
+        "action_type": action_type,
+        "actionability": actionability,
+        "eligibility_status": "excluded",
+        "eligibility_reason": reason,
+        "exclusion_reason": code,
+        "priority_tier": "low",
+        "review_status": review_status,
+    }
+
+
+def _rejected_semantics(code: str, reason: str) -> dict[str, Any]:
+    return {
+        "decision_class": "rejected",
+        "action_type": "none",
+        "actionability": "non_actionable",
+        "eligibility_status": "excluded",
+        "eligibility_reason": "",
+        "exclusion_reason": code,
+        "priority_tier": "diagnostic",
+        "review_status": "blocked",
+    }
 
 
 # ─── gates ────────────────────────────────────────────────────────────────────

@@ -14,7 +14,9 @@ from __future__ import annotations
 from typing import Final
 
 # Schema version — bump when the normalized field contract changes.
-STRATEGY_ROW_SCHEMA_VERSION: Final[str] = "30A.v1"
+STRATEGY_ROW_SCHEMA_VERSION: Final[str] = "30J.v1"
+MINIMUM_SUPPORTED_STRATEGY_ROW_SCHEMA_VERSION: Final[str] = "30A.v1"
+SEMANTIC_FIELDS_VERSION: Final[str] = "30J.v1"
 
 # Canonical top-level field names all normalized rows carry.
 # These fields are guaranteed present after normalization.
@@ -32,6 +34,16 @@ CANONICAL_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
     "data_quality",
     "daily_opportunity_eligible",
     "daily_opportunity_reason",
+    "decision_class",
+    "action_type",
+    "actionability",
+    "eligibility_status",
+    "eligibility_reason",
+    "exclusion_reason",
+    "priority_tier",
+    "review_status",
+    "semantic_source",
+    "semantic_fields_version",
     "can_trade_live",
     "dry_run",
     "journal_eligible",

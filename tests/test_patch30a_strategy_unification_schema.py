@@ -46,9 +46,13 @@ class TestCompile:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestStrategyRowSchema:
-    def test_schema_version_is_30a(self):
-        from app.services.strategy_row_schema import STRATEGY_ROW_SCHEMA_VERSION
-        assert STRATEGY_ROW_SCHEMA_VERSION == "30A.v1"
+    def test_schema_version_tracks_current_and_minimum_supported(self):
+        from app.services.strategy_row_schema import (
+            MINIMUM_SUPPORTED_STRATEGY_ROW_SCHEMA_VERSION,
+            STRATEGY_ROW_SCHEMA_VERSION,
+        )
+        assert STRATEGY_ROW_SCHEMA_VERSION == "30J.v1"
+        assert MINIMUM_SUPPORTED_STRATEGY_ROW_SCHEMA_VERSION == "30A.v1"
 
     def test_normalized_row_exclude_contains_large_fields(self):
         from app.services.strategy_row_schema import NORMALIZED_ROW_EXCLUDE
@@ -304,7 +308,7 @@ class TestRowNormalizationShared:
     def test_schema_version_added(self):
         row: dict[str, Any] = {}
         self._normalize(row, "stock_momentum")
-        assert row.get("strategy_row_schema_version") == "30A.v1"
+        assert row.get("strategy_row_schema_version") == "30J.v1"
 
     def test_schema_version_not_overwritten(self):
         row: dict[str, Any] = {"strategy_row_schema_version": "old_version"}
@@ -750,7 +754,7 @@ class TestNormalizeStrategyRows:
         rows = [{"ticker": "AAPL"}, {"ticker": "GOOG"}]
         result = normalize_strategy_rows(rows, "stock_momentum")
         assert len(result) == 2
-        assert all(r.get("strategy_row_schema_version") == "30A.v1" for r in result)
+        assert all(r.get("strategy_row_schema_version") == "30J.v1" for r in result)
 
     def test_does_not_mutate_originals(self):
         from app.services.strategy_row_normalization_service import normalize_strategy_rows

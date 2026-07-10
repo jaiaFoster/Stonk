@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from app import config
-from app.services.strategy_row_schema import NORMALIZED_ROW_EXCLUDE, STRATEGY_ROW_SCHEMA_VERSION
+from app.services.strategy_row_schema import NORMALIZED_ROW_EXCLUDE, STRATEGY_ROW_SCHEMA_VERSION, SEMANTIC_FIELDS_VERSION
 
 
 class StrategyRowRepository:
@@ -60,6 +60,20 @@ class StrategyRowRepository:
                     confidence TEXT,
                     primary_reason TEXT,
                     daily_opportunity_eligible INTEGER,
+                    decision_class TEXT,
+                    action_type TEXT,
+                    actionability TEXT,
+                    eligibility_status TEXT,
+                    eligibility_reason TEXT,
+                    exclusion_reason TEXT,
+                    priority_tier TEXT,
+                    review_status TEXT,
+                    dry_run INTEGER,
+                    source_strategy_id TEXT,
+                    source_row_id TEXT,
+                    source_run_id TEXT,
+                    semantic_source TEXT,
+                    semantic_fields_version TEXT,
                     details_json TEXT,
                     gates_json TEXT,
                     gate_groups_json TEXT,
@@ -80,6 +94,29 @@ class StrategyRowRepository:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_rows_latest ON strategy_rows(strategy_id, run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_strategy_rows_run ON strategy_rows(run_id, strategy_id)")
+            self._ensure_columns(conn)
+
+    def _ensure_columns(self, conn: sqlite3.Connection) -> None:
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(strategy_rows)").fetchall()}
+        columns = {
+            "decision_class": "TEXT",
+            "action_type": "TEXT",
+            "actionability": "TEXT",
+            "eligibility_status": "TEXT",
+            "eligibility_reason": "TEXT",
+            "exclusion_reason": "TEXT",
+            "priority_tier": "TEXT",
+            "review_status": "TEXT",
+            "dry_run": "INTEGER",
+            "source_strategy_id": "TEXT",
+            "source_row_id": "TEXT",
+            "source_run_id": "TEXT",
+            "semantic_source": "TEXT",
+            "semantic_fields_version": "TEXT",
+        }
+        for name, sql_type in columns.items():
+            if name not in existing:
+                conn.execute(f"ALTER TABLE strategy_rows ADD COLUMN {name} {sql_type}")
 
     def write_run(self, run_id: str, strategy_results: dict[str, Any]) -> dict[str, Any]:
         rows = self._rows_from_results(run_id, strategy_results)
@@ -91,12 +128,18 @@ class StrategyRowRepository:
                 INSERT OR REPLACE INTO strategy_rows (
                     run_id,strategy_id,strategy_name,strategy_version,row_id,symbol,ticker,asset_type,row_type,
                     verdict,friendly_verdict,score,confidence,primary_reason,daily_opportunity_eligible,
+                    decision_class,action_type,actionability,eligibility_status,eligibility_reason,exclusion_reason,
+                    priority_tier,review_status,dry_run,source_strategy_id,source_row_id,source_run_id,
+                    semantic_source,semantic_fields_version,
                     details_json,gates_json,gate_groups_json,metrics_json,display_json,data_quality_json,risk_json,
                     structure_summary_json,raw_refs_json,normalization_status,normalization_errors_json,
                     missing_required_fields_json,created_at,schema_version
                 ) VALUES (
                     :run_id,:strategy_id,:strategy_name,:strategy_version,:row_id,:symbol,:ticker,:asset_type,:row_type,
                     :verdict,:friendly_verdict,:score,:confidence,:primary_reason,:daily_opportunity_eligible,
+                    :decision_class,:action_type,:actionability,:eligibility_status,:eligibility_reason,:exclusion_reason,
+                    :priority_tier,:review_status,:dry_run,:source_strategy_id,:source_row_id,:source_run_id,
+                    :semantic_source,:semantic_fields_version,
                     :details_json,:gates_json,:gate_groups_json,:metrics_json,:display_json,:data_quality_json,:risk_json,
                     :structure_summary_json,:raw_refs_json,:normalization_status,:normalization_errors_json,
                     :missing_required_fields_json,:created_at,:schema_version
@@ -176,6 +219,7 @@ class StrategyRowRepository:
         normalization_status = "error" if error else ("missing_required_fields" if missing else "ok")
         normalization_errors = [error] if error else []
         details = compact.get("details") or _derived_details(strategy_id, compact)
+        semantics = _semantic_fields(strategy_id, compact, run_id)
         return {
             "run_id": run_id,
             "strategy_id": strategy_id,
@@ -192,6 +236,7 @@ class StrategyRowRepository:
             "confidence": compact.get("confidence") or compact.get("data_quality_status") or "",
             "primary_reason": compact.get("primary_reason") or compact.get("primary_blocker") or compact.get("reason_label") or compact.get("reason") or "",
             "daily_opportunity_eligible": 1 if (compact.get("daily_opportunity_eligible") or compact.get("can_enter_daily_opportunity")) else 0,
+            **semantics,
             "details_json": _json(details),
             "gates_json": _json(compact.get("gates") or []),
             "gate_groups_json": _json(compact.get("gate_groups") or {}),
@@ -226,6 +271,21 @@ class StrategyRowRepository:
             "confidence": row.get("confidence"),
             "primary_reason": row.get("primary_reason"),
             "daily_opportunity_eligible": bool(row.get("daily_opportunity_eligible")),
+            "decision_class": row.get("decision_class"),
+            "action_type": row.get("action_type"),
+            "actionability": row.get("actionability"),
+            "eligibility_status": row.get("eligibility_status"),
+            "eligibility_reason": row.get("eligibility_reason"),
+            "exclusion_reason": row.get("exclusion_reason"),
+            "priority_tier": row.get("priority_tier"),
+            "review_status": row.get("review_status"),
+            "dry_run": bool(row.get("dry_run")),
+            "source_strategy_id": row.get("source_strategy_id"),
+            "source_row_id": row.get("source_row_id"),
+            "source_run_id": row.get("source_run_id"),
+            "source_table": "strategy_rows",
+            "semantic_source": row.get("semantic_source"),
+            "semantic_fields_version": row.get("semantic_fields_version"),
             "details": _loads(row.get("details_json"), {}),
             "gates": _loads(row.get("gates_json"), []),
             "gate_groups": _loads(row.get("gate_groups_json"), {}),
@@ -345,6 +405,100 @@ def _derived_details(strategy_id: str, row: dict[str, Any]) -> dict[str, Any]:
             }
         }
     return {}
+
+
+def _semantic_fields(strategy_id: str, row: dict[str, Any], run_id: str | None = None) -> dict[str, Any]:
+    row_id = str(row.get("row_id") or row.get("observation_key") or _hash_row(strategy_id, row))
+    if row.get("decision_class") and row.get("action_type"):
+        semantics = {
+            "decision_class": row.get("decision_class"),
+            "action_type": row.get("action_type"),
+            "actionability": row.get("actionability"),
+            "eligibility_status": row.get("eligibility_status"),
+            "eligibility_reason": row.get("eligibility_reason"),
+            "exclusion_reason": row.get("exclusion_reason"),
+            "priority_tier": row.get("priority_tier"),
+            "review_status": row.get("review_status"),
+            "semantic_source": row.get("semantic_source") or "row",
+            "semantic_fields_version": row.get("semantic_fields_version") or SEMANTIC_FIELDS_VERSION,
+        }
+    else:
+        semantics = _infer_semantics(strategy_id, row)
+        semantics["semantic_source"] = "legacy_verdict_inference"
+        semantics["semantic_fields_version"] = SEMANTIC_FIELDS_VERSION
+    semantics.setdefault("actionability", "non_actionable")
+    semantics.setdefault("eligibility_status", "excluded")
+    semantics.setdefault("eligibility_reason", "")
+    semantics.setdefault("exclusion_reason", "")
+    semantics.setdefault("priority_tier", "diagnostic")
+    semantics.setdefault("review_status", "blocked")
+    semantics.update({
+        "dry_run": 1 if bool(row.get("dry_run")) or strategy_id == "forward_factor_calendar" else 0,
+        "source_strategy_id": strategy_id,
+        "source_row_id": row_id,
+        "source_run_id": run_id,
+    })
+    return semantics
+
+
+def _infer_semantics(strategy_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    verdict = str(row.get("verdict") or row.get("action") or "")
+    upper = verdict.upper()
+    row_type = str(row.get("row_type") or row.get("type") or "")
+    status = str(row.get("entry_window_status") or "")
+    if strategy_id == "forward_factor_calendar":
+        return _semantic("diagnostic", "diagnostic", "dry_run_only", "dry_run_excluded", "Forward Factor remains dry-run.", "dry_run", "diagnostic", "blocked")
+    if strategy_id == "stock_momentum":
+        if upper.startswith(("CONSIDER ADDING", "ADD ON")):
+            return _semantic("add", "stock_add", "review_only", "eligible", "Stock momentum add candidate.", "", "normal", "ready")
+        if upper.startswith("WATCH / CONFIRM TREND"):
+            return _semantic("watch", "stock_watch", "monitor_only", "eligible", "Positive momentum, but confirmation is still required.", "", "low", "needs_confirmation")
+        if upper.startswith(("TACTICAL ONLY", "STARTER ONLY", "HOLD / DO NOT ADD")):
+            return _semantic("watch", "tactical_stock_watch", "monitor_only", "eligible", "Tactical/watchlist signal only; do not chase.", "", "low", "needs_confirmation")
+        return _semantic("rejected", "none", "non_actionable", "excluded", "", "hard_fail", "diagnostic", "blocked")
+    if strategy_id == "earnings_calendar":
+        if row_type in {"open_calendar", "lifecycle_check"} or upper.startswith(("HOLD", "EXIT", "CUT", "TAKE PROFIT", "RECHECK")):
+            return _semantic("lifecycle", "active_calendar", "actionable", "eligible", "Active calendar lifecycle row.", "", "high", "monitor")
+        if status == "MONITOR_PRE_WINDOW":
+            return _semantic("monitor", "monitor", "monitor_only", "excluded", "Calendar candidate is before the entry window.", "pre_window", "low", "monitor")
+        if status in {"ENTRY_WINDOW_CLOSED", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED", "NO_PRE_EARNINGS_SHORT_EXPIRY"}:
+            return _semantic("rejected", "none", "non_actionable", "excluded", "", "entry_window_closed", "diagnostic", "blocked")
+        if status == "SHORT_LEG_SPANS_EARNINGS":
+            return _semantic("rejected", "none", "non_actionable", "excluded", "", "short_leg_spans_earnings", "diagnostic", "blocked")
+        if status in {"DATA_NEEDED", "DATE_CONFLICT_REVIEW"}:
+            return _semantic("monitor", "monitor", "monitor_only", "excluded", "Calendar row needs more data or date confirmation.", status.lower(), "low", "needs_data")
+        if bool(row.get("calendar_entry_allowed")) or upper.startswith("PASS"):
+            return _semantic("entry", "calendar_entry", "review_only", "eligible", "Calendar entry candidate passed row gates.", "", "normal", "ready")
+        return _semantic("rejected", "none", "non_actionable", "excluded", "", "hard_fail", "diagnostic", "blocked")
+    if strategy_id == "skew_momentum_vertical":
+        if upper.startswith("PASS"):
+            return _semantic("entry", "vertical_entry", "review_only", "eligible", "Skew vertical candidate passed row gates.", "", "normal", "ready")
+        if upper.startswith("WATCH"):
+            return _semantic("watch", "monitor", "monitor_only", "conditional", "Skew row is watch-only.", "not_daily_opportunity_eligible", "low", "monitor")
+        return _semantic("rejected", "none", "non_actionable", "excluded", "", "hard_fail", "diagnostic", "blocked")
+    return _semantic("rejected", "none", "non_actionable", "excluded", "", "not_daily_opportunity_eligible", "diagnostic", "blocked")
+
+
+def _semantic(
+    decision_class: str,
+    action_type: str,
+    actionability: str,
+    eligibility_status: str,
+    eligibility_reason: str,
+    exclusion_reason: str,
+    priority_tier: str,
+    review_status: str,
+) -> dict[str, Any]:
+    return {
+        "decision_class": decision_class,
+        "action_type": action_type,
+        "actionability": actionability,
+        "eligibility_status": eligibility_status,
+        "eligibility_reason": eligibility_reason,
+        "exclusion_reason": exclusion_reason,
+        "priority_tier": priority_tier,
+        "review_status": review_status,
+    }
 
 
 def _hash_row(strategy_id: str, row: dict[str, Any]) -> str:
