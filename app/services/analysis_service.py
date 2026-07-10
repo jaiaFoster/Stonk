@@ -1267,6 +1267,19 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             log_print(compact_payload_log(payload_profile))
         else:
             payload_profile = {}
+        # CalendarTaskBarrier (31B.F): join background scan thread before finalization so
+        # the current run can use its results if the scan completed in time.
+        _calendar_barrier_timeout = float(getattr(config, "CALENDAR_SCAN_BARRIER_TIMEOUT_SECONDS", 5.0))
+        try:
+            _bg.join(timeout=_calendar_barrier_timeout)
+            if _bg.is_alive():
+                log_print(f"CalendarTaskBarrier: scan still running after {_calendar_barrier_timeout}s timeout — current run uses prior results.")
+            else:
+                log_print("CalendarTaskBarrier: scan thread joined successfully before finalization.")
+        except NameError:
+            pass
+        except Exception as _barrier_exc:
+            log_print(f"CalendarTaskBarrier: join error (non-fatal): {_barrier_exc}")
         attach_status()
         try:
             report_repository = ReportSnapshotRepository(log_print=log_print)

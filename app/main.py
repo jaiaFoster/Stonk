@@ -56,6 +56,9 @@ app.register_blueprint(auth_bp)
 from app.api.telemetry import telemetry_bp
 app.register_blueprint(telemetry_bp)
 
+from app.api.custom_strategy_api import custom_strategy_bp
+app.register_blueprint(custom_strategy_bp)
+
 # 28A: set secret key for signed cookies and seed admin user on first boot
 app.secret_key = config.SESSION_SECRET_KEY or os.urandom(32)
 try:

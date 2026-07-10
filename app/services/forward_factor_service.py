@@ -422,12 +422,13 @@ def build_forward_factor_strategy(
                 "earnings_contamination_reason": contamination_reason,
                 "source_qualification": source_qualification,
             }
-            raw_formula = _try_formula(iv.get("front_raw_iv"), iv.get("back_raw_iv"), front_dte, back_dte)
+            raw_formula, raw_result_code = _try_formula(iv.get("front_raw_iv"), iv.get("back_raw_iv"), front_dte, back_dte)
+            base["ff_pair_result_code"] = raw_result_code
             if raw_formula and is_contaminated:
                 haircut_front_iv = (iv.get("front_raw_iv") or 0) * (1.0 - config.FF_EARNINGS_IV_HAIRCUT_PCT)
-                haircut_ff = _try_formula(haircut_front_iv, iv.get("back_raw_iv"), front_dte, back_dte)
+                haircut_ff, _haircut_code = _try_formula(haircut_front_iv, iv.get("back_raw_iv"), front_dte, back_dte)
                 if haircut_ff and haircut_ff["forward_factor"] + 1e-12 < config.FF_MIN_FORWARD_FACTOR * config.FF_HAIRCUT_GATE_MULTIPLIER:
-                    row = _blocked(ticker, "FAIL / HAIRCUT GATE", f"Even with {config.FF_EARNINGS_IV_HAIRCUT_PCT:.0%} IV haircut, FF {haircut_ff['forward_factor']:.4f} < gate {config.FF_MIN_FORWARD_FACTOR * config.FF_HAIRCUT_GATE_MULTIPLIER:.4f}.", **base, haircut_forward_factor=haircut_ff["forward_factor"], ff_candidate_stage="haircut_gate_fail")
+                    row = _blocked(ticker, "FAIL / HAIRCUT GATE", f"Even with {config.FF_EARNINGS_IV_HAIRCUT_PCT:.0%} IV haircut, FF {haircut_ff['forward_factor']:.4f} < gate {config.FF_MIN_FORWARD_FACTOR * config.FF_HAIRCUT_GATE_MULTIPLIER:.4f}.", **base, haircut_forward_factor=haircut_ff["forward_factor"], ff_candidate_stage="haircut_gate_fail", ff_pair_result_code="HAIRCUT_GATE_FAIL")
                     ticker_rows.append(row)
                     pair_audit.append(_pair_audit(row, "not selected — haircut gate fail"))
                     continue
@@ -435,11 +436,15 @@ def build_forward_factor_strategy(
                 base["diagnostic_raw_iv_forward_factor"] = raw_formula["forward_factor"]
                 base["diagnostic_raw_iv_formula"] = raw_formula
                 base.update({key: raw_formula[key] for key in ("T1", "T2", "forward_variance", "forward_iv")})
+                base["front_total_variance"] = raw_formula.get("front_total_variance")
+                base["back_total_variance"] = raw_formula.get("back_total_variance")
+                base["forward_variance_numerator"] = raw_formula.get("forward_variance_numerator")
                 base["diagnostic_only"] = True
                 stage["diagnostic_formula_calculated"] += 1
                 stage["ff_calculated"] += 1
             front_ex, back_ex = iv.get("front_ex_earnings_iv"), iv.get("back_ex_earnings_iv")
             if front_ex is None or back_ex is None:
+                _source_iv_code = "MISSING_FRONT_IV" if front_ex is None else "MISSING_BACK_IV"
                 structure = {}
                 if raw_formula and config.FF_ALLOW_DIAGNOSTIC_STRUCTURE_WITHOUT_SOURCE_IV:
                     stage["structure_attempts"] += 1
@@ -456,6 +461,7 @@ def build_forward_factor_strategy(
                     ticker, verdict, blocker, **base, **structure,
                     ff_candidate_stage="incomplete",
                     ff_rejection_code="SOURCE_IV_UNAVAILABLE",
+                    ff_pair_result_code=_source_iv_code,
                     ff_front_iv_used=front_ex,
                     ff_back_iv_used=back_ex,
                     ff_front_dte_used=front_dte,
@@ -467,6 +473,12 @@ def build_forward_factor_strategy(
                 continue
             try:
                 formula = calculate_forward_factor(front_ex, back_ex, front_dte, back_dte)
+                t1 = formula.get("T1", float(front_dte) / 365.0)
+                t2 = formula.get("T2", float(back_dte) / 365.0)
+                formula["front_total_variance"] = float(front_ex) ** 2 * t1
+                formula["back_total_variance"] = float(back_ex) ** 2 * t2
+                formula["forward_variance_numerator"] = formula["back_total_variance"] - formula["front_total_variance"]
+                formula["ff_pair_result_code"] = "CALCULATED"
                 stage["valid_forward_variance"] += 1
                 stage["source_ff_calculated"] += 1
                 if not raw_formula:
@@ -474,11 +486,18 @@ def build_forward_factor_strategy(
                 log_print(f"FF {ticker} {front}/{back}: front_iv={front_ex:.4f} back_iv={back_ex:.4f} forward_variance={formula['forward_variance']:.6f} forward_iv={formula['forward_iv']:.4f} FF={formula['forward_factor']:.4f} threshold={config.FF_MIN_FORWARD_FACTOR:.2f}")
             except ValueError as exc:
                 exc_str = str(exc)
-                verdict = "FAIL / INVALID EXPIRATION ORDER" if "INVALID_EXPIRATION_ORDER" in exc_str else "FAIL / INVALID FORWARD VARIANCE"
-                rejection_code = "INVALID_EXPIRATION_ORDER" if "INVALID_EXPIRATION_ORDER" in exc_str else "INVALID_FORWARD_VARIANCE"
+                if "INVALID_EXPIRATION_ORDER" in exc_str:
+                    verdict = "FAIL / INVALID EXPIRATION ORDER"
+                    rejection_code = "INVALID_EXPIRATION_ORDER"
+                    pair_result_code = "INVALID_TIME_ORDER"
+                else:
+                    verdict = "FAIL / INVALID FORWARD VARIANCE"
+                    rejection_code = "INVALID_FORWARD_VARIANCE"
+                    pair_result_code = "NON_POSITIVE_FORWARD_VARIANCE"
                 row = _blocked(
                     ticker, verdict, exc_str, **base, ff_candidate_stage="incomplete",
                     ff_rejection_code=rejection_code,
+                    ff_pair_result_code=pair_result_code,
                     ff_front_iv_used=front_ex,
                     ff_back_iv_used=back_ex,
                     ff_front_dte_used=front_dte,
@@ -838,10 +857,37 @@ def _ff_gates(row: dict[str, Any]) -> dict[str, Any]:
         "source_qualification": row.get("source_qualification"),
         "contamination_reason": row.get("earnings_contamination_reason"),
     }
-def _pair_audit(row, disposition): return {"ticker": row.get("ticker"), "front_expiration": row.get("front_expiration"), "back_expiration": row.get("back_expiration"), "forward_factor": row.get("forward_factor"), "diagnostic_raw_iv_forward_factor": row.get("diagnostic_raw_iv_forward_factor"), "verdict": row.get("verdict"), "disposition": disposition}
+def _pair_audit(row, disposition): return {"ticker": row.get("ticker"), "front_expiration": row.get("front_expiration"), "back_expiration": row.get("back_expiration"), "forward_factor": row.get("forward_factor"), "diagnostic_raw_iv_forward_factor": row.get("diagnostic_raw_iv_forward_factor"), "verdict": row.get("verdict"), "disposition": disposition, "ff_pair_result_code": row.get("ff_pair_result_code")}
+
+
 def _try_formula(front, back, front_dte, back_dte):
-    try: return calculate_forward_factor(front, back, front_dte, back_dte) if front is not None and back is not None else None
-    except ValueError: return None
+    """Attempt calculate_forward_factor; return (result_dict, result_code) tuple.
+
+    result_code is a terminal string from FF_PAIR_RESULT_CODES.
+    Returns (None, rejection_code) on failure, (formula_dict, 'CALCULATED') on success.
+    """
+    if front is None:
+        return None, "MISSING_FRONT_IV"
+    if back is None:
+        return None, "MISSING_BACK_IV"
+    try:
+        result = calculate_forward_factor(front, back, front_dte, back_dte)
+        t1 = result.get("T1", float(front_dte) / 365.0)
+        t2 = result.get("T2", float(back_dte) / 365.0)
+        result["front_total_variance"] = float(front) ** 2 * t1
+        result["back_total_variance"] = float(back) ** 2 * t2
+        result["forward_variance_numerator"] = result["back_total_variance"] - result["front_total_variance"]
+        result["ff_pair_result_code"] = "CALCULATED"
+        return result, "CALCULATED"
+    except ValueError as exc:
+        msg = str(exc)
+        if "INVALID_EXPIRATION_ORDER" in msg:
+            return None, "INVALID_TIME_ORDER"
+        if "INVALID_FORWARD_VARIANCE" in msg:
+            return None, "NON_POSITIVE_FORWARD_VARIANCE"
+        if "INVALID_FORWARD_VOLATILITY" in msg:
+            return None, "NON_POSITIVE_FORWARD_VARIANCE"
+        return None, "CALCULATION_ERROR"
 def _dte(value): return (date.fromisoformat(str(value)[:10]) - date.today()).days
 def _earnings_context(record, front, back):
     payload = _payload(record)

@@ -347,3 +347,13 @@ def _midpoint(bid: float | None, ask: float | None) -> float | None:
     if bid is None or ask is None or bid <= 0 or ask <= 0:
         return None
     return (bid + ask) / 2.0
+
+
+def _mask_account_id_for_log(account_id: Any) -> str:
+    """Return a masked representation of an account ID safe for log output."""
+    if account_id in (None, ""):
+        return "***"
+    text = str(account_id)
+    if len(text) <= 4:
+        return "***"
+    return f"***{text[-4:]}"
