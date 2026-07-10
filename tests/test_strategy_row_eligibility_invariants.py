@@ -148,6 +148,21 @@ class TestPersistenceBoundaryRejectedInvariant:
         stored = self._write_and_read(row, tmp_path=tmp_path)
         assert stored.get("daily_opportunity_eligible") is False
 
+    def test_rejected_candidate_daily_opportunity_overridden_when_true_in_input(self, tmp_path):
+        """Persistence boundary must override daily_opportunity_eligible=True for rejected rows.
+
+        This is the exact failure mode from VERIFY[FAIL] invalid_eligible_rejected_rows=3:
+        the input row carries daily_opportunity_eligible=True but the boundary must force 0.
+        """
+        row = _make_rejected_row()
+        row["daily_opportunity_eligible"] = True  # adversarial input — boundary must override
+        stored = self._write_and_read(row, tmp_path=tmp_path)
+        actual = stored.get("daily_opportunity_eligible")
+        assert actual is False or actual == 0, (
+            f"Persistence boundary must force daily_opportunity_eligible=False/0 for rejected_candidate; "
+            f"got {actual!r} (input had True)"
+        )
+
     def test_non_rejected_row_eligibility_preserved(self, tmp_path):
         """Active lifecycle rows must NOT have eligibility overridden to ineligible."""
         from app.services.strategy_row_repository import StrategyRowRepository
