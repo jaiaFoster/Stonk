@@ -123,7 +123,11 @@ def normalize_strategy_row(
 
     semantics = _decision_semantics(row, strategy_id)
     for key, value in semantics.items():
-        row.setdefault(key, value)
+        row[key] = value
+    if semantics.get("eligibility_status") not in {"eligible", "conditional"} or semantics.get("action_type") in {"none", "diagnostic"}:
+        row["daily_opportunity_eligible"] = False
+        row["can_enter_daily_opportunity"] = False
+        row["daily_opportunity_reason"] = f"Excluded from Daily Opportunity: {semantics.get('exclusion_reason') or 'not eligible'}."
     row.setdefault("semantic_source", "row")
     row.setdefault("semantic_fields_version", SEMANTIC_FIELDS_VERSION)
 
@@ -454,6 +458,8 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
         return _rejected_semantics("hard_fail", "Stock momentum row did not qualify.")
 
     if strategy_id == "earnings_calendar":
+        if row_type == "rejected_candidate" or upper.startswith("FAIL") or _has_hard_blocker(row):
+            return _rejected_semantics(_calendar_exclusion_reason(row, upper, status), "Earnings calendar row is blocked by a hard rejection gate.")
         if row_type in {"open_calendar", "lifecycle_check"} or upper.startswith(("HOLD", "EXIT", "CUT", "TAKE PROFIT", "RECHECK")):
             return _eligible_semantics("lifecycle", "active_calendar", "actionable", "high", "monitor", "Active calendar lifecycle row.")
         if status == "MONITOR_PRE_WINDOW":
@@ -485,6 +491,51 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
         return _rejected_semantics("hard_fail", "Skew row did not qualify.")
 
     return _rejected_semantics("not_daily_opportunity_eligible", "No canonical semantics available.")
+
+
+def _has_hard_blocker(row: dict[str, Any]) -> bool:
+    if bool(row.get("hard_blocker") or row.get("has_hard_blocker")):
+        return True
+    for gate in row.get("gates") or row.get("checks") or row.get("requirements") or []:
+        if not isinstance(gate, dict):
+            continue
+        status = str(gate.get("status") or gate.get("result") or "").upper()
+        if bool(gate.get("is_hard_block") or gate.get("hard_blocker") or gate.get("blocks")) and status in {"FAIL", "FAILED", "BLOCKED"}:
+            return True
+    return False
+
+
+def _calendar_exclusion_reason(row: dict[str, Any], upper_verdict: str, status: str) -> str:
+    code = str(row.get("blocker_code") or row.get("primary_blocker") or row.get("reason_code") or status or "")
+    normalized = code.strip().lower().replace(" ", "_").replace("/", "_")
+    mapping = {
+        "debit_too_large": "debit_too_large",
+        "entry_window_closed": "entry_window_closed",
+        "short_leg_spans_earnings": "short_leg_spans_earnings",
+        "short_dte_too_low": "short_dte_too_low",
+        "front_leg_too_decayed": "front_leg_too_decayed",
+        "no_pre_earnings_short_expiry": "no_pre_earnings_short_expiry",
+        "date_conflict_review": "date_conflict",
+        "date_conflict": "date_conflict",
+        "data_quality": "data_quality_fail",
+        "data_quality_fail": "data_quality_fail",
+    }
+    for key, value in mapping.items():
+        if key in normalized:
+            return value
+    if "DEBIT TOO LARGE" in upper_verdict:
+        return "debit_too_large"
+    if "ENTRY_WINDOW_CLOSED" in upper_verdict:
+        return "entry_window_closed"
+    if "SHORT_LEG_SPANS_EARNINGS" in upper_verdict:
+        return "short_leg_spans_earnings"
+    if "SHORT_DTE_TOO_LOW" in upper_verdict:
+        return "short_dte_too_low"
+    if "NO_PRE_EARNINGS_SHORT_EXPIRY" in upper_verdict:
+        return "no_pre_earnings_short_expiry"
+    if "DATA QUALITY" in upper_verdict:
+        return "data_quality_fail"
+    return "hard_fail"
 
 
 def _eligible_semantics(

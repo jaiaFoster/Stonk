@@ -2394,6 +2394,56 @@ def api_strategies_get(strategy_id: str):
     return jsonify({**spec, "provider_calls_triggered": False, "read_only": True}), 200
 
 
+# ─── 31A: Custom Strategy Builder catalog endpoints ───────────────────────────
+
+def _catalog_filters() -> dict[str, Any]:
+    allowed = {
+        "category", "value_type", "allowed_use", "strategy_type", "asset_type",
+        "requires_options_data", "requires_market_data", "requires_earnings_data", "requires_broker_data",
+    }
+    return {key: request.args.get(key) for key in allowed if request.args.get(key) is not None}
+
+
+@app.route("/api/strategy-builder/catalog")
+def api_strategy_builder_catalog():
+    from app.api.strategy_builder_api import catalog
+    return jsonify(catalog(_catalog_filters())), 200
+
+
+@app.route("/api/strategy-builder/catalog/fields")
+def api_strategy_builder_catalog_fields():
+    from app.api.strategy_builder_api import fields
+    return jsonify(fields(_catalog_filters())), 200
+
+
+@app.route("/api/strategy-builder/catalog/fields/<path:field_id>")
+def api_strategy_builder_catalog_field(field_id: str):
+    from app.api.strategy_builder_api import field
+    body, status = field(field_id)
+    return jsonify(body), status
+
+
+@app.route("/api/strategy-builder/catalog/operators")
+def api_strategy_builder_catalog_operators():
+    from app.api.strategy_builder_api import operators
+    return jsonify(operators()), 200
+
+
+@app.route("/api/strategy-builder/catalog/requirements")
+def api_strategy_builder_catalog_requirements():
+    from app.api.strategy_builder_api import requirements
+    field_ids = request.args.getlist("field_id")
+    if not field_ids and request.args.get("fields"):
+        field_ids = [field.strip() for field in str(request.args.get("fields") or "").split(",") if field.strip()]
+    return jsonify(requirements(field_ids)), 200
+
+
+@app.route("/api/strategy-builder/validate-rule", methods=["POST"])
+def api_strategy_builder_validate_rule():
+    from app.api.strategy_builder_api import validate_rule
+    return jsonify(validate_rule(request.get_json(silent=True) or {})), 200
+
+
 # ─── 30D.1: Refresh + Run Status + Manifest endpoints ────────────────────────
 
 @app.route("/api/run/refresh", methods=["POST"])
