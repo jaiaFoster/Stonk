@@ -635,6 +635,7 @@ def build_forward_factor_strategy(
             ticker_rows.append(_blocked(ticker, "FAIL / CHAIN DATA QUALITY", "No terminal result was produced from the evaluated chain set.", data_eligibility=eligibility, ff_candidate_stage="incomplete"))
         ticker_rows.sort(key=_terminal_rank)
         rows.append(ticker_rows[0])
+    _ff_live_mode = bool(getattr(config, "FF_RECOMMENDATIONS_ENABLED", False)) and not bool(getattr(config, "FF_EXECUTION_ENABLED", False))
     gated_rows = []
     for row in rows:
         ticker = str(row.get("ticker") or "")
@@ -674,9 +675,15 @@ def build_forward_factor_strategy(
         gated.setdefault("front_iv", gated.get("front_ex_earnings_iv") or gated.get("front_raw_iv"))
         gated.setdefault("back_iv", gated.get("back_ex_earnings_iv") or gated.get("back_raw_iv"))
         gated.setdefault("ex_earnings_iv", gated.get("front_ex_earnings_iv"))
-        gated.setdefault("dry_run", bool(config.FORWARD_FACTOR_DRY_RUN))
+        gated.setdefault("dry_run", not _ff_live_mode)
+        gated.setdefault("recommendation_mode", "live_recommendation" if _ff_live_mode else "research")
         gated.setdefault("can_enter_daily_opportunity", False)
         gated.setdefault("can_trade_live", False)
+        # Only promote if row passes eligibility gates
+        _verdict = str(gated.get("final_verdict") or gated.get("verdict") or "").upper()
+        if _ff_live_mode and (_verdict.startswith("PASS") or _verdict.startswith("DRY RUN PASS")):
+            gated["can_enter_daily_opportunity"] = True
+            gated["daily_opportunity_eligible"] = True
         normalize_strategy_row(gated, "forward_factor_calendar")
         gated_rows.append(gated)
     if config.FF_JOURNAL_ENABLED:
@@ -705,6 +712,11 @@ def build_forward_factor_strategy(
         for row in gated_rows:
             row["iv_percentile"] = None
             row["iv_percentile_note"] = "Journal disabled"
+    _legacy_dry_run = bool(config.FORWARD_FACTOR_DRY_RUN)
+    _recs_enabled = bool(getattr(config, "FF_RECOMMENDATIONS_ENABLED", False))
+    _exec_enabled = bool(getattr(config, "FF_EXECUTION_ENABLED", False))
+    _effective_mode = "live_recommendation" if _recs_enabled and not _exec_enabled else "research"
+    log_print(f"ForwardFactorMode: recommendations_enabled={_recs_enabled} execution_enabled={_exec_enabled} legacy_dry_run_env={_legacy_dry_run} effective_mode={_effective_mode}")
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']} earnings_clean={stage['earnings_clean']} earnings_contaminated={stage['earnings_contaminated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']} near_miss_ff={stage['near_miss_ff']} discovery_overrides={stage['discovery_overrides']}")
@@ -885,7 +897,8 @@ def _finalize(rows, scanned, stage, pair_audit, enabled, candidate_audit=None):
     summary["best_near_positive_ticker"] = _best_near_positive(rows)
     calibration = _calibration_report(rows, stage, summary)
     summary["calibration_report"] = calibration
-    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": bool(config.FORWARD_FACTOR_DRY_RUN), "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness, "calibration_report": calibration}
+    _ff_result_live = bool(getattr(config, "FF_RECOMMENDATIONS_ENABLED", False)) and not bool(getattr(config, "FF_EXECUTION_ENABLED", False))
+    return {"strategy_id": "forward_factor_calendar", "strategy_label": "Forward Factor Calendar", "version": "v1", "enabled": enabled, "dry_run": not _ff_result_live, "items": rows, "rows": rows, "scanned_tickers": scanned, "stage_counts": stage, "pair_audit": pair_audit, "candidate_selection_audit": candidate_audit or [], "summary": summary, "readiness": readiness, "calibration_report": calibration}
 
 
 def _readiness(stage, summary):

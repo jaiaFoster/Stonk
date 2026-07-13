@@ -2879,6 +2879,64 @@ def dev_calendar_pipeline_trace():
         return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
 
 
+# ─── 33A: Developer Roadmap endpoint ─────────────────────────────────────────
+
+@app.route("/api/dev/roadmap")
+def dev_roadmap():
+    """Return the machine-readable roadmap from config/roadmap.json.
+
+    Reads a static JSON file from the repo root — no provider calls, no DB writes.
+    Always read-only. Falls back gracefully if the file is missing.
+    """
+    _require_dev_diagnostics_token()
+    roadmap_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "roadmap.json")
+    source_file = "config/roadmap.json"
+    try:
+        with open(roadmap_path, "r", encoding="utf-8") as _f:
+            roadmap = json.load(_f)
+    except FileNotFoundError:
+        return jsonify({
+            "status": "ok",
+            "source_file": source_file,
+            "warning": "config/roadmap.json not found — returning stub",
+            "current_patch": None,
+            "current_sprint": None,
+            "sprint_status": None,
+            "active_tickets": [],
+            "deferred_tickets": [],
+            "feature_flags": [],
+            "architecture_decisions": {},
+            "validation_status": {},
+            "last_updated": None,
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 200
+    except Exception as exc:
+        return jsonify({
+            "status": "error",
+            "source_file": source_file,
+            "error": str(exc),
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 500
+
+    return jsonify({
+        "status": "ok",
+        "source_file": source_file,
+        "current_patch": roadmap.get("patch"),
+        "current_sprint": roadmap.get("current_sprint"),
+        "sprint_status": roadmap.get("sprint_status"),
+        "active_tickets": roadmap.get("active_tickets", []),
+        "deferred_tickets": roadmap.get("deferred_tickets", []),
+        "feature_flags": roadmap.get("feature_flags", []),
+        "architecture_decisions": roadmap.get("architecture", {}),
+        "validation_status": roadmap.get("validation_status", {}),
+        "last_updated": roadmap.get("last_updated"),
+        "provider_calls_triggered": False,
+        "read_only": True,
+    }), 200
+
+
 def _reconstruct_calendar_lifecycle(ticker: str, engine_row: dict, quality_row: dict) -> dict:
     """Reconstruct per-ticker pipeline stages from stored snapshot data."""
     qp = quality_row or {}

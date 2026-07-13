@@ -305,15 +305,18 @@ class TestDryRunEnforcement(unittest.TestCase):
         self.assertTrue(config.FORWARD_FACTOR_DRY_RUN)
 
     def test_all_ff_rows_carry_dry_run_true(self):
+        """When FF_RECOMMENDATIONS_ENABLED=False rows carry dry_run=True."""
+        from app import config
         tickers = ["AAPL"]
         hub = _make_hub()
-        result = build_forward_factor_strategy(
-            tickers,
-            {"AAPL": {"current_price": 100, "average_volume_30d": 5_000_000}},
-            hub,
-            run_mode="dev",
-            requirement_plan=_plan(tickers),
-        )
+        with patch.object(config, "FF_RECOMMENDATIONS_ENABLED", False):
+            result = build_forward_factor_strategy(
+                tickers,
+                {"AAPL": {"current_price": 100, "average_volume_30d": 5_000_000}},
+                hub,
+                run_mode="dev",
+                requirement_plan=_plan(tickers),
+            )
         self.assertTrue(result.get("dry_run"))
         for row in result["items"]:
             self.assertTrue(row.get("dry_run"), msg=f"Row {row.get('ticker')} missing dry_run=True")

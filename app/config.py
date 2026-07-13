@@ -365,6 +365,10 @@ SKEW_UNIVERSE_MAX_CANDIDATES = _int_env("SKEW_UNIVERSE_MAX_CANDIDATES", 50)
 # --- Strategy 3: Forward Factor Calendar ---
 FORWARD_FACTOR_STRATEGY_ENABLED = _bool_env("FORWARD_FACTOR_STRATEGY_ENABLED", True)
 FORWARD_FACTOR_DRY_RUN = _bool_env("FORWARD_FACTOR_DRY_RUN", True)
+# 33A: FF promotion — recommendations enabled without execution
+FF_RECOMMENDATIONS_ENABLED = _bool_env("FF_RECOMMENDATIONS_ENABLED", True)
+FF_EXECUTION_ENABLED = _bool_env("FF_EXECUTION_ENABLED", False)
+# Backward compat: if FORWARD_FACTOR_DRY_RUN is explicitly set to False, treat as FF_RECOMMENDATIONS_ENABLED=True
 FF_EARNINGS_CONTAMINATION_WINDOW_DAYS = _int_env("FF_EARNINGS_CONTAMINATION_WINDOW_DAYS", 4)
 FF_EARNINGS_IV_HAIRCUT_PCT = _float_env("FF_EARNINGS_IV_HAIRCUT_PCT", 0.20)
 FF_HAIRCUT_GATE_MULTIPLIER = _float_env("FF_HAIRCUT_GATE_MULTIPLIER", 0.85)
@@ -477,6 +481,23 @@ FF_EXCLUDED_TICKERS = set(
     if ticker.strip()
 )
 FF_SCAN_MODE = os.environ.get("FF_SCAN_MODE", "balanced").strip().lower()
+
+# --- 33A: Opportunity Evolution History ---
+# Master switch for Patch 33A cross-run opportunity evolution tracking.
+OPPORTUNITY_HISTORY_ENABLED = _bool_env("OPPORTUNITY_HISTORY_ENABLED", True)
+OPPORTUNITY_HISTORY_DB_PATH = os.environ.get(
+    "OPPORTUNITY_HISTORY_DB_PATH",
+    "/app/data/strategy_opportunity_history.db" if os.path.isdir("/app/data") else "data/strategy_opportunity_history.db",
+)
+# Retention: keep observations for this many days.
+OPPORTUNITY_HISTORY_RETENTION_DAYS = _int_env("OPPORTUNITY_HISTORY_RETENTION_DAYS", 180)
+# Max observations to write per run (guard against runaway).
+OPPORTUNITY_HISTORY_MAX_ROWS_PER_RUN = _int_env("OPPORTUNITY_HISTORY_MAX_ROWS_PER_RUN", 500)
+
+# --- 33A: Legacy Report Summary Deprecation ---
+# When False (default), the full legacy report summary blob is NOT generated,
+# serialized, or stored. Normal routes use compact manifest + StrategyRowRepository.
+LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED = _bool_env("LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED", False)
 
 # --- 32A: Data Confidence & Provenance Persistence ---
 # Master switch for Patch 32A data confidence enrichment and provenance persistence.

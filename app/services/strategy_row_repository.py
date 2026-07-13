@@ -515,7 +515,7 @@ def _semantic_fields(strategy_id: str, row: dict[str, Any], run_id: str | None =
     semantics.setdefault("priority_tier", "diagnostic")
     semantics.setdefault("review_status", "blocked")
     semantics.update({
-        "dry_run": 1 if bool(row.get("dry_run")) or strategy_id == "forward_factor_calendar" else 0,
+        "dry_run": 1 if bool(row.get("dry_run")) else 0,
         "source_strategy_id": strategy_id,
         "source_row_id": row_id,
         "source_run_id": run_id,

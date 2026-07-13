@@ -122,11 +122,26 @@ def _open_positions_from_row_store() -> dict[str, Any]:
         }
 
     structures = [_calendar_structure_from_row(row) for row in lifecycle_rows]
-    warnings = []
+    # 33A: Build parent double-calendar structures (e.g. SBUX call+put calendar → one parent)
+    double_calendar_parents, unmatched_child_calendars = _build_double_calendar_parents(structures)
+    all_child_calendars = structures  # keep original list for counting
+    warnings: list[str] = []
     dedup = _structure_dedup_summary(structures)
     if dedup.get("duplicate_group_count"):
         warnings.append("Potential duplicate option structures detected; preserved separately pending account-alias confirmation.")
     lifecycle_reconciliation = _lifecycle_row_reconciliation(lifecycle_rows, structures, dedup)
+    # Compute leg count across all structures
+    leg_count = sum(len(s.get("legs") or []) for s in structures)
+    # Counts: double calendars count as 1 parent with 2 child calendars
+    active_double_calendar_count = len(double_calendar_parents)
+    active_calendar_count = len(all_child_calendars)
+    # Verification: warn if lifecycle completeness is deferred
+    if not warnings and lifecycle_reconciliation.get("cardinality_ok") and not dedup.get("duplicate_group_count"):
+        lifecycle_reconciliation["completeness_status"] = "PASS"
+    else:
+        lifecycle_reconciliation["completeness_status"] = "WARN"
+        if not warnings:
+            warnings.append("Lifecycle completeness: count mismatch between rows and structures.")
     return _mask_account_fields({
         **_READ_ONLY_BASE,
         "source": "strategy_row_store",
@@ -135,13 +150,16 @@ def _open_positions_from_row_store() -> dict[str, Any]:
         "latest_run_id": result.get("run_id"),
         "options_positions": [],
         "options_count": 0,
-        "open_option_leg_count": sum(len(s.get("legs") or []) for s in structures),
+        "open_option_leg_count": leg_count,
         "has_open_verticals": False,
         "has_open_calendars": bool(structures),
-        "active_calendar_count": len(structures),
+        "active_calendar_count": active_calendar_count,
+        "active_double_calendar_count": active_double_calendar_count,
         "active_vertical_count": 0,
-        "unmatched_single_count": 0,
-        "calendar_structures": structures,
+        "unmatched_leg_count": len(unmatched_child_calendars),
+        "calendar_structures": all_child_calendars,
+        "double_calendar_structures": double_calendar_parents,
+        "unmatched_calendars": unmatched_child_calendars,
         "lifecycle_rows": lifecycle_rows,
         "lifecycle_summary": {"checked_count": len(lifecycle_rows), "status": "row_store"},
         "lifecycle_reconciliation": lifecycle_reconciliation,
@@ -276,6 +294,113 @@ def _lifecycle_row_reconciliation(
         "cardinality_ok": len(lifecycle_rows) == len(structures),
         "key_fields": ["underlying", "structure_type", "option_type", "strike", "front_expiration", "back_expiration"],
     }
+
+
+def _build_double_calendar_parents(
+    structures: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Group call and put calendars on the same ticker/front/back into parent double-calendar structures.
+
+    Returns: (parent_double_calendars, unmatched_child_calendars)
+    Each parent has child_structure_ids, lower_strike, upper_strike, combined_pnl, etc.
+    Children that cannot be paired remain in unmatched_child_calendars.
+    """
+    import hashlib as _hashlib
+
+    # Group by (ticker, front_expiration, back_expiration) — the double-calendar identity
+    groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    non_calendars: list[dict[str, Any]] = []
+
+    for s in structures:
+        stype = str(s.get("structure_type") or "calendar").lower()
+        if "calendar" not in stype or stype == "double_calendar":
+            non_calendars.append(s)
+            continue
+        key = (
+            str(s.get("underlying") or s.get("ticker") or "").upper(),
+            str(s.get("front_expiration") or ""),
+            str(s.get("back_expiration") or ""),
+        )
+        groups.setdefault(key, []).append(s)
+
+    parents: list[dict[str, Any]] = []
+    unmatched: list[dict[str, Any]] = []
+
+    for (ticker, front, back), children in groups.items():
+        calls = [c for c in children if str(c.get("option_type") or "").lower() == "call"]
+        puts = [c for c in children if str(c.get("option_type") or "").lower() == "put"]
+
+        if calls and puts:
+            # Pair greedily: first call with first put
+            call_leg = calls[0]
+            put_leg = puts[0]
+            child_ids = [
+                str(call_leg.get("structure_id") or ""),
+                str(put_leg.get("structure_id") or ""),
+            ]
+            call_strike = call_leg.get("strike")
+            put_strike = put_leg.get("strike")
+            strikes_sorted = sorted(
+                [v for v in [call_strike, put_strike] if v is not None],
+                key=lambda x: float(x) if x is not None else 0,
+            )
+            lower_strike = strikes_sorted[0] if strikes_sorted else None
+            upper_strike = strikes_sorted[-1] if len(strikes_sorted) > 1 else None
+
+            call_debit = call_leg.get("current_debit")
+            put_debit = put_leg.get("current_debit")
+            combined_debit: float | None = None
+            if call_debit is not None and put_debit is not None:
+                try:
+                    combined_debit = round(float(call_debit) + float(put_debit), 2)
+                except (TypeError, ValueError):
+                    combined_debit = None
+
+            parent_id_raw = f"dc:{ticker}:{front}:{back}"
+            parent_id = _hashlib.sha256(parent_id_raw.encode()).hexdigest()[:16]
+
+            lifecycle_action = call_leg.get("lifecycle_action") or put_leg.get("lifecycle_action")
+            assignment_risk = _assignment_risk_summary(call_leg, put_leg)
+
+            parent: dict[str, Any] = {
+                "parent_structure_id": parent_id,
+                "structure_type": "double_calendar",
+                "ticker": ticker,
+                "front_expiration": front,
+                "back_expiration": back,
+                "lower_strike": lower_strike,
+                "upper_strike": upper_strike,
+                "current_total_debit": combined_debit,
+                "combined_pnl": None,
+                "child_structure_ids": child_ids,
+                "call_calendar": call_leg,
+                "put_calendar": put_leg,
+                "lifecycle_action": lifecycle_action,
+                "assignment_risk_summary": assignment_risk,
+                "source_table": "strategy_rows",
+            }
+            # Tag children with parent reference
+            call_leg["parent_structure_id"] = parent_id
+            put_leg["parent_structure_id"] = parent_id
+            parents.append(parent)
+            # Any extra legs beyond the matched pair are unmatched
+            unmatched.extend(calls[1:])
+            unmatched.extend(puts[1:])
+        else:
+            unmatched.extend(children)
+
+    unmatched.extend(non_calendars)
+    return parents, unmatched
+
+
+def _assignment_risk_summary(call_leg: dict[str, Any], put_leg: dict[str, Any]) -> str:
+    """Build a brief assignment-risk summary for a double-calendar parent."""
+    parts: list[str] = []
+    for leg, side in ((call_leg, "call"), (put_leg, "put")):
+        action = str(leg.get("lifecycle_action") or "").upper()
+        if "ASSIGNMENT" in action or "URGENT" in action:
+            parts.append(f"{side.upper()} leg: {action}")
+    return "; ".join(parts) if parts else "No assignment risk flagged."
 
 
 def _structure_dedup_summary(structures: list[dict[str, Any]]) -> dict[str, Any]:
