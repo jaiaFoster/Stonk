@@ -463,6 +463,14 @@ FF_NEAR_MISS_OI_TOLERANCE_PCT = _float_env("FF_NEAR_MISS_OI_TOLERANCE_PCT", 50.0
 FF_MAX_TICKERS_PER_RUN = _int_env("FF_MAX_TICKERS_PER_RUN", 20)
 FF_MAX_CHAIN_TICKERS_PER_RUN = _int_env("FF_MAX_CHAIN_TICKERS_PER_RUN", 8)
 FF_CALIBRATION_VERSION = os.environ.get("FF_CALIBRATION_VERSION", "32C.ff.v1")
+# Sprint 28 Epic I: Production promotion feature flag.
+# Set FF_PRODUCTION_PROMOTION_ENABLED=true to allow FF rows to appear in the
+# daily opportunity feed. FORWARD_FACTOR_DRY_RUN still overrides execution.
+FF_PRODUCTION_PROMOTION_ENABLED = _bool_env("FF_PRODUCTION_PROMOTION_ENABLED", False)
+# Minimum calibration runs before promotion is considered valid.
+FF_PROMOTION_MIN_CALIBRATION_RUNS = _int_env("FF_PROMOTION_MIN_CALIBRATION_RUNS", 20)
+# Provenance schema version for FF rows.
+FF_PROVENANCE_VERSION = os.environ.get("FF_PROVENANCE_VERSION", "28.I.v1")
 FF_EXCLUDED_TICKERS = set(
     ticker.strip().upper()
     for ticker in os.environ.get("FF_EXCLUDED_TICKERS", "BTC,ETH,SOL,DOGE,LTC,BCH,AVAX,LINK,SHIB,SOXL,TQQQ,UVXY,SPXL").split(",")

@@ -2435,6 +2435,55 @@ def api_strategies_catalog():
     return jsonify(get_strategy_catalog()), 200
 
 
+# ─── Sprint 28 Epic L: Provenance & Data Version endpoints ───────────────────
+
+@app.route("/api/data/version")
+def api_data_version():
+    """Sprint 28 Epic L: Data version info and provenance schema metadata."""
+    from app.api.provenance_api import build_data_version_info, add_provenance_headers
+    resp = jsonify(build_data_version_info())
+    return add_provenance_headers(resp), 200
+
+
+@app.route("/api/data/provenance/<ticker>")
+def api_data_provenance(ticker: str):
+    """Sprint 28 Epic L: Full provenance summary for one ticker."""
+    from app.api.provenance_api import build_provenance_summary, add_provenance_headers
+    ticker = str(ticker or "").upper().strip()[:20]
+    if not ticker:
+        return jsonify({"error": "ticker required"}), 400
+
+    # Optionally include earnings event from latest cached run
+    earnings_event: dict | None = None
+    try:
+        from app.services.report_snapshot_service import ReportSnapshotRepository
+        snap = ReportSnapshotRepository().latest_complete() or {}
+        report_data = (snap.get("report_data") or {})
+        earnings_map = report_data.get("earnings") or {}
+        earnings_event = earnings_map.get(ticker)
+    except Exception:
+        pass
+
+    result = build_provenance_summary(ticker, earnings_event=earnings_event)
+    resp = jsonify(result)
+    return add_provenance_headers(resp), 200
+
+
+@app.route("/api/data/provider-health")
+def api_provider_health():
+    """Sprint 28 Epic M: Provider health derived from latest run manifest."""
+    from app.api.provenance_api import add_provenance_headers
+    from app.services.provider_health_service import (
+        build_provider_health_from_manifest, build_health_summary,
+    )
+    from app.services.run_manifest_repository import RunManifestRepository
+    manifest = RunManifestRepository().latest() or {}
+    records = build_provider_health_from_manifest(manifest)
+    summary = build_health_summary(records)
+    resp = jsonify(summary)
+    return add_provenance_headers(resp), 200
+
+
 # ─── 31A: Custom Strategy Builder catalog endpoints ───────────────────────────
 
 def _catalog_filters() -> dict[str, Any]:

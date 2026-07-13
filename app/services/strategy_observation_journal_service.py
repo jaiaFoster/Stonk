@@ -106,6 +106,9 @@ def build_strategy_observation(
         ),
         "observation_refs_json": _compact_json(obs_refs[:10]),
         "source_summary_json": _compact_json(source_summary),
+        # Sprint 28 Epic J: provenance and confidence evidence fields
+        "provenance_json": _compact_json(_build_provenance_evidence(row, sid)),
+        "confidence_evidence_json": _compact_json(_build_confidence_evidence(row, sid)),
     }
 
 
@@ -367,6 +370,96 @@ def _build_source_summary(row: dict[str, Any], strategy_id: str) -> dict[str, An
             "is_diagnostic_only": row.get("is_diagnostic_only"),
         }
     return {}
+
+
+# ─── Sprint 28 Epic J: Historical Evidence Builders ───────────────────────────
+
+def _build_provenance_evidence(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
+    """Extract compact provenance evidence for journal persistence.
+
+    Only includes provenance metadata that is useful for historical analysis.
+    Never embeds raw payloads or full chain data.
+    """
+    evidence: dict[str, Any] = {
+        "schema_version": "28.J.v1",
+    }
+    # Universal: attach _ff_provenance if present (FF strategy)
+    ff_prov = row.get("_ff_provenance")
+    if isinstance(ff_prov, dict):
+        evidence["ff_provenance"] = {
+            k: v for k, v in ff_prov.items()
+            if k in ("calibration_version", "provenance_version", "promotion_active",
+                     "dry_run", "can_trade_live")
+        }
+
+    # Universal: data diagnostics presence
+    diag = row.get("_data_diagnostics")
+    if isinstance(diag, dict):
+        evidence["data_diagnostics_present"] = True
+        evidence["data_complete"] = bool(diag.get("data_complete"))
+        evidence["missing_required_fields"] = list(
+            (diag.get("missing_required_fields") or [])[:5]
+        )
+        evidence["overall_confidence"] = diag.get("overall_confidence")
+
+    # Earnings-specific provenance
+    if strategy_id == "earnings_calendar":
+        conf = row.get("_confidence") or {}
+        if conf:
+            evidence["earnings_confidence"] = {
+                "date_confidence": conf.get("date_confidence"),
+                "conflict_detected": conf.get("conflict_detected"),
+                "sources_returned_data": list(
+                    (conf.get("sources_returned_data") or [])[:4]
+                ),
+                "trade_allowed": conf.get("trade_allowed"),
+            }
+
+    return evidence
+
+
+def _build_confidence_evidence(row: dict[str, Any], strategy_id: str) -> dict[str, Any]:
+    """Extract normalized confidence metadata for the confidence_evidence_json column.
+
+    Captures the snapshot of confidence state at evaluation time for
+    historical analysis and trust-over-time tracking.
+    """
+    ev: dict[str, Any] = {"schema_version": "28.J.v1"}
+
+    # Date confidence (all strategies that track earnings)
+    date_conf = row.get("earnings_date_confidence") or row.get("date_confidence")
+    if date_conf:
+        ev["date_confidence"] = date_conf
+
+    # Provider conflict flag
+    conflict = row.get("earnings_source_conflict") or row.get("date_conflict")
+    if conflict is not None:
+        ev["date_conflict"] = bool(conflict)
+
+    # Source count
+    sources = row.get("earnings_sources_seen") or row.get("date_sources") or []
+    if sources:
+        ev["source_count"] = len(sources)
+        ev["sources"] = list(sources[:4])
+
+    # Trust label from earnings trust service
+    trust_label = row.get("earnings_trust_label")
+    if trust_label:
+        ev["trust_label"] = trust_label
+
+    # FF-specific confidence
+    if strategy_id == "forward_factor_calendar":
+        ev["ff_confidence"] = {
+            "forward_factor": _float(row.get("forward_factor")),
+            "calibration_version": str(
+                getattr(__import__("app.config", fromlist=["config"]), "FF_CALIBRATION_VERSION", "")
+            ),
+            "near_miss_ff": bool(row.get("near_miss_ff")),
+            "watch_zone_ff": bool(row.get("watch_zone_ff")),
+            "miss_distance": _float(row.get("miss_distance")),
+        }
+
+    return ev
 
 
 # ─── risk_flags ───────────────────────────────────────────────────────────────
