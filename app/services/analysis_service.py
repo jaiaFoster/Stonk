@@ -78,6 +78,9 @@ from app.services.watchlist_service import get_watchlist_candidates, merge_watch
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
 from app.strategies.registry import collect_requirements
 from app.utils.log_safety import sanitize_for_log
+from app.services.earnings_reconciliation_service import run_earnings_reconciliation
+from app.services.calendar_audit_service import run_calendar_audit
+from app.services.pipeline_provenance_service import wire_pipeline_provenance
 
 
 PipelineResult = tuple[
@@ -848,6 +851,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     }
     tradier_snapshot["_earnings_trade_discovery"] = earnings_trade_discovery
     tradier_snapshot["_earnings_discovery_quality"] = earnings_discovery_quality
+
+    # Patch 32B: EARNINGS_PROVIDER_RECONCILIATION log block
+    try:
+        from app.providers.earnings_provider import configured_provider_names as _cpn
+        _earnings_recon = run_earnings_reconciliation(
+            earnings_trade_discovery=earnings_trade_discovery,
+            configured_provider_names=_cpn(),
+            log_print=log_print,
+        )
+        tradier_snapshot["_earnings_provider_reconciliation"] = _earnings_recon
+    except Exception as _recon_exc:
+        log_print(f"EarningsReconciliation: non-fatal error: {_recon_exc}")
     for ticker, event in earnings_events.items():
         hub.seed("earnings_event", ticker, event, provider=str(event.get("provider") or "legacy_pipeline"))
     for ticker, snapshot_row in list(tradier_snapshot.items()):
@@ -1055,6 +1070,21 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Earnings mini-backtest produced history for {((result or {}).get('summary', {}) or {}).get('with_history_count', 0)} candidate(s).",
     )
     tradier_snapshot["_earnings_mini_backtest"] = earnings_mini_backtest
+
+    # Patch 32B: CALENDAR_DISCOVERY_AUDIT log block
+    try:
+        _calendar_audit = run_calendar_audit(
+            earnings_trade_discovery=earnings_trade_discovery,
+            earnings_discovery_quality=earnings_discovery_quality,
+            calendar_candidates=calendar_candidates,
+            calendar_ranking=calendar_ranking,
+            earnings_calendar_strategy=earnings_calendar_strategy,
+            run_mode=clean_mode,
+            log_print=log_print,
+        )
+        tradier_snapshot["_calendar_discovery_audit"] = _calendar_audit
+    except Exception as _audit_exc:
+        log_print(f"CalendarAudit: non-fatal error: {_audit_exc}")
 
     begin_step(pipeline_status, "portfolio_scoring", "Running Portfolio Scoring v2 inputs...")
     log_print("Running Portfolio Scoring v2 inputs...")
@@ -1379,6 +1409,41 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                 )
             except Exception as exc:
                 log_print(f"StrategyRowRepository warning: {exc}")
+            # Patch 32B: Pipeline provenance wiring — non-blocking.
+            try:
+                from app.providers.earnings_provider import configured_provider_names as _cpn32b
+                _prov_summary = wire_pipeline_provenance(
+                    run_id=run_context.run_id,
+                    strategy_id="earnings_calendar",
+                    tradier_snapshot=tradier_snapshot,
+                    earnings_events=earnings_events,
+                    positions=positions,
+                    configured_providers=_cpn32b(),
+                    log_print=log_print,
+                    db_enabled=getattr(config, "DATA_CONFIDENCE_ENABLED", True),
+                )
+                tradier_snapshot["_pipeline_provenance_summary"] = _prov_summary
+            except Exception as _prov_exc:
+                log_print(f"PipelineProvenance: write failed (non-fatal): {_prov_exc}")
+
+            # Patch 32B: Data confidence run report — non-blocking.
+            try:
+                from app.services.automated_data_validation_service import run_data_confidence_validation
+                from app.db.data_confidence_run_reports import write_run_report as _write_run_report
+                _all_rows = []
+                for _sid, _sresult in (normalized_strategy_results or {}).items():
+                    _all_rows.extend(list((_sresult or {}).get("rows") or (_sresult or {}).get("items") or []))
+                if getattr(config, "DATA_CONFIDENCE_VALIDATION_LOG_ENABLED", True):
+                    _suite_result = run_data_confidence_validation(
+                        strategy_rows=_all_rows[:200],
+                        strategy_id="pipeline",
+                        earnings_events={t: (e.get("event") or e) for t, e in earnings_events.items()},
+                        log_print=log_print,
+                    )
+                    _write_run_report(run_context.run_id, "pipeline", _suite_result)
+            except Exception as _val_exc:
+                log_print(f"DataConfidenceRunReport: write failed (non-fatal): {_val_exc}")
+
             # 30B: Universal strategy observation journal write — non-blocking.
             try:
                 from app.db.strategy_observations import write_run as _write_obs_run

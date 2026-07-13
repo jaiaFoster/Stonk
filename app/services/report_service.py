@@ -2199,8 +2199,19 @@ def _monitor_debug_section_html(
     skew_vertical_summary_html: str,
     data_coverage_html: str,
     strategy_registry_html: str,
+    calendar_audit_html: str = "",
 ) -> str:
+    _calendar_audit_block = (
+        f"""
+        <details class="debug-details">
+            <summary>Calendar Discovery Audit (32B)</summary>
+            {calendar_audit_html}
+        </details>"""
+        if calendar_audit_html
+        else ""
+    )
     body = f"""
+        {_calendar_audit_block}
         <details class="debug-details">
             <summary>Strategy Registry</summary>
             {strategy_registry_html}
@@ -2740,6 +2751,7 @@ def format_html(
     opportunity_cache = _snapshot_dict(parsed_tradier_snapshot, "_calendar_opportunity_cache")
     skew_vertical_cache = _snapshot_dict(parsed_tradier_snapshot, "_skew_momentum_vertical_cache")
     data_coverage = _snapshot_dict(parsed_tradier_snapshot, "_data_coverage")
+    calendar_discovery_audit = _snapshot_dict(parsed_tradier_snapshot, "_calendar_discovery_audit")
     strategy_results = _snapshot_dict(parsed_tradier_snapshot, "_strategy_results")
     strategy_opportunities = _snapshot_dict(parsed_tradier_snapshot, "_strategy_opportunity_registry")
     earnings_quality = _snapshot_dict(parsed_tradier_snapshot, "_earnings_discovery_quality")
@@ -2878,6 +2890,7 @@ def format_html(
         skew_vertical_summary_html=_skew_vertical_monitor_summary_html(skew_vertical, skew_vertical_cache, daily_opportunity),
         data_coverage_html=_data_coverage_html(data_coverage),
         strategy_registry_html=_strategy_registry_html(strategy_results, strategy_opportunities),
+        calendar_audit_html=_calendar_audit_panel_html(calendar_discovery_audit),
     )
     max_shell_rows = max(1, int(getattr(config, "REPORT_DEFAULT_MAX_ROWS_PER_SECTION", 3) or 3))
     shell_risk_items, shell_risk_counts = _hot_shell_risk_state(potential_groups, display_recommendations)
@@ -4546,3 +4559,138 @@ def _calendar_verdict_class(verdict: str) -> str:
     if "URGENT" in text:
         return "urgent"
     return "action-watch"
+
+
+# ─── Patch 32B: DataConfidencePopover ─────────────────────────────────────────
+
+_CONFIDENCE_COLOR_CSS = {
+    "HIGH": "#83b88f",
+    "MEDIUM": "#a3b877",
+    "LOW": "#c6a15b",
+    "CONFLICT": "#c56f75",
+    "UNKNOWN": "#7f8a99",
+}
+
+_CONFIDENCE_LABEL_SHORT = {
+    "HIGH": "HIGH ✓",
+    "MEDIUM": "MED",
+    "LOW": "LOW",
+    "CONFLICT": "CONFLICT ⚠",
+    "UNKNOWN": "—",
+}
+
+
+def data_confidence_popover(
+    value: Any,
+    confidence_level: str = "UNKNOWN",
+    field_id: str = "",
+    selected_provider: str = "",
+    observed_at: str = "",
+    has_conflict: bool = False,
+    fallback: str = "—",
+) -> str:
+    """Return an inline HTML span wrapping a value with a confidence badge and hover popover.
+
+    Designed to be embedded inside f-strings in report_service.py templates.
+    Uses only inline CSS + title attribute for compatibility — no external JS needed.
+
+    Example:
+        data_confidence_popover("2025-01-15", "HIGH", "earnings.date", "finnhub")
+    """
+    level = str(confidence_level or "UNKNOWN").upper()
+    color = _CONFIDENCE_COLOR_CSS.get(level, "#7f8a99")
+    badge = _CONFIDENCE_LABEL_SHORT.get(level, level)
+    display_val = escape(str(value) if value not in (None, "") else fallback)
+
+    parts = []
+    if field_id:
+        parts.append(f"Field: {field_id}")
+    if selected_provider:
+        parts.append(f"Source: {selected_provider}")
+    if observed_at:
+        parts.append(f"As of: {observed_at[:19].replace('T', ' ')}")
+    if has_conflict:
+        parts.append("⚠ Provider conflict detected")
+    tooltip = " | ".join(parts) if parts else f"Confidence: {level}"
+
+    badge_html = (
+        f'<span style="'
+        f"display:inline-block;font-size:0.65em;padding:1px 4px;border-radius:3px;"
+        f"background:{color}22;color:{color};border:1px solid {color}66;"
+        f'vertical-align:middle;margin-left:3px;cursor:help;" title="{escape(tooltip, quote=True)}">'
+        f"{badge}</span>"
+    )
+    return f'<span class="dc-value">{display_val}{badge_html}</span>'
+
+
+# ─── Patch 32B: Calendar Audit Panel ──────────────────────────────────────────
+
+def _calendar_audit_panel_html(calendar_audit: dict[str, Any]) -> str:
+    """Render the calendar discovery audit panel for the developer monitor section."""
+    if not isinstance(calendar_audit, dict) or not calendar_audit:
+        return ""
+    funnel = calendar_audit.get("funnel") or {}
+    ticker_audit = calendar_audit.get("ticker_audit") or {}
+    run_mode = str(calendar_audit.get("run_mode") or "prod")
+
+    funnel_rows = ""
+    stages = [
+        ("Raw events discovered", "raw_events"),
+        ("Constituent-checked", "constituent_checked"),
+        ("Quality filter passed", "quality_passed"),
+        ("Scanner candidates", "scanner_candidates"),
+        ("Strategy evaluated", "strategy_evaluated"),
+        ("Final ranked", "ranked"),
+    ]
+    for label, key in stages:
+        n = int(funnel.get(key) or 0)
+        bar_pct = 0
+        if key != "raw_events" and funnel.get("raw_events"):
+            bar_pct = min(100, round(n / funnel["raw_events"] * 100))
+        bar_html = (
+            f'<span style="display:inline-block;width:{bar_pct}%;min-width:2px;height:8px;'
+            f'background:var(--accent);border-radius:2px;vertical-align:middle;margin-left:6px;"></span>'
+            if funnel.get("raw_events") else ""
+        )
+        funnel_rows += f'<tr><td>{escape(label)}</td><td><strong>{n}</strong>{bar_html}</td></tr>'
+
+    ticker_rows = ""
+    for ticker, entry in sorted((ticker_audit or {}).items()):
+        stages_done = [s for s, v in (entry.get("stages") or {}).items() if v]
+        exit_stage = escape(str(entry.get("exit_stage") or "—"))
+        exit_reason = escape(str(entry.get("exit_reason") or ""))
+        score = entry.get("precheck_score") or entry.get("ranking_score")
+        score_str = f"{score:.1f}" if isinstance(score, (int, float)) else "—"
+        verdict = escape(str(entry.get("final_verdict") or entry.get("scanner_verdict") or "—"))
+        ticker_rows += (
+            f"<tr>"
+            f"<td><strong>{escape(ticker)}</strong></td>"
+            f"<td>{escape(', '.join(stages_done))}</td>"
+            f"<td>{exit_stage}{(' — ' + exit_reason) if exit_reason else ''}</td>"
+            f"<td>{score_str}</td>"
+            f"<td>{verdict}</td>"
+            f"</tr>"
+        )
+
+    body = f"""
+    <div class="detail-block">
+        <strong>Discovery Funnel</strong> <span class="muted">({run_mode} mode)</span>
+        <table style="width:auto;margin:0.5rem 0;">
+            <thead><tr><th>Stage</th><th>Count</th></tr></thead>
+            <tbody>{funnel_rows}</tbody>
+        </table>
+    </div>
+    """
+    if ticker_rows:
+        body += f"""
+    <div class="detail-block">
+        <strong>Per-Ticker Audit Trail</strong>
+        <div style="overflow-x:auto;">
+        <table>
+            <thead><tr><th>Ticker</th><th>Stages Reached</th><th>Exit Stage / Reason</th><th>Score</th><th>Verdict</th></tr></thead>
+            <tbody>{ticker_rows}</tbody>
+        </table>
+        </div>
+    </div>
+    """
+    return body

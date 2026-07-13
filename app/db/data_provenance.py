@@ -268,3 +268,111 @@ def cleanup_old_provenance(retention_days: int, db_path: str | None = None) -> i
             return result.rowcount or 0
     except Exception:
         return 0
+
+
+def write_provenance_batch_list(
+    rows: list[dict[str, Any]],
+    db_path: str | None = None,
+) -> int:
+    """Persist a flat list of provenance record dicts. Returns count written.
+
+    Each dict must have: run_id, strategy_id, row_id, field_id.
+    Optional: ticker, selected_value, selected_provider, confidence_level, provenance_json.
+    """
+    if not getattr(config, "DATA_CONFIDENCE_ENABLED", True):
+        return 0
+    if not rows:
+        return 0
+    path = db_path or _db_path()
+    try:
+        _ensure_schema(path)
+        with _connect(path) as conn:
+            conn.executemany(
+                """
+                INSERT INTO data_provenance
+                    (run_id, strategy_id, row_id, ticker, field_id,
+                     selected_value, selected_provider, confidence_level, provenance_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        str(r.get("run_id") or ""),
+                        str(r.get("strategy_id") or ""),
+                        str(r.get("row_id") or ""),
+                        str(r["ticker"]).upper().strip() if r.get("ticker") else None,
+                        str(r.get("field_id") or ""),
+                        str(r["selected_value"]) if r.get("selected_value") is not None else None,
+                        str(r["selected_provider"]) if r.get("selected_provider") else None,
+                        str(r["confidence_level"]) if r.get("confidence_level") else None,
+                        str(r["provenance_json"]) if r.get("provenance_json") else None,
+                    )
+                    for r in rows
+                ],
+            )
+        return len(rows)
+    except Exception:
+        return 0
+
+
+def get_field_provenance_batch(
+    *,
+    run_id: str | None = None,
+    strategy_id: str | None = None,
+    field_ids: list[str] | None = None,
+    limit: int = 51,
+    cursor: int | None = None,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Query multiple provenance records with optional cursor-based pagination.
+
+    field_ids: list of field_id values to filter on (OR semantics).
+    cursor: integer row ID; returns rows with id > cursor.
+    """
+    path = db_path or _db_path()
+    try:
+        if not Path(path).exists():
+            return []
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if run_id:
+            clauses.append("run_id = ?")
+            params.append(run_id)
+        if strategy_id:
+            clauses.append("strategy_id = ?")
+            params.append(strategy_id)
+        if field_ids:
+            placeholders = ", ".join("?" for _ in field_ids)
+            clauses.append(f"field_id IN ({placeholders})")
+            params.extend(field_ids)
+        if cursor:
+            clauses.append("id > ?")
+            params.append(int(cursor))
+
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        clamped = max(1, min(int(limit or 51), 101))
+        params.append(clamped)
+
+        with _connect(path) as conn:
+            db_rows = conn.execute(
+                f"""
+                SELECT id, run_id, strategy_id, row_id, ticker, field_id,
+                       selected_value, selected_provider, confidence_level,
+                       provenance_json, created_at
+                FROM data_provenance {where}
+                ORDER BY id ASC LIMIT ?
+                """,
+                params,
+            ).fetchall()
+
+        results = []
+        for row in db_rows:
+            d = dict(row)
+            try:
+                d["provenance"] = json.loads(d.pop("provenance_json") or "{}")
+            except Exception:
+                d["provenance"] = {}
+            results.append(d)
+        return results
+    except Exception:
+        return []
