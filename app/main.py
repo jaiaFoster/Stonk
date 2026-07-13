@@ -2512,6 +2512,36 @@ def api_data_confidence_reference():
     return add_provenance_headers(resp), 200
 
 
+@app.route("/api/data-confidence/batch")
+def api_data_confidence_batch():
+    """Patch 32B: Batch field provenance lookup — paginated, bounded, read-only.
+
+    Query params:
+      run_id        (optional)
+      strategy_id   (optional)
+      field_ids     comma-separated list of field IDs to filter (optional)
+      limit         1–100, default 50
+      cursor        integer row ID for next-page pagination
+    """
+    from app.api.data_confidence_api import get_batch_field_provenance_response
+    from app.api.provenance_api import add_provenance_headers
+    run_id = request.args.get("run_id") or None
+    strategy_id = request.args.get("strategy_id") or None
+    field_ids_raw = request.args.get("field_ids") or ""
+    field_ids = [f.strip() for f in field_ids_raw.split(",") if f.strip()] or None
+    try:
+        limit = int(request.args.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    try:
+        cursor = int(request.args.get("cursor") or 0) or None
+    except (TypeError, ValueError):
+        cursor = None
+    result, status = get_batch_field_provenance_response(run_id, strategy_id, field_ids, limit, cursor)
+    resp = jsonify(result)
+    return add_provenance_headers(resp), status
+
+
 # ─── 31A: Custom Strategy Builder catalog endpoints ───────────────────────────
 
 def _catalog_filters() -> dict[str, Any]:

@@ -1,13 +1,22 @@
 """
-ASA Patch 32A — Data Confidence API
+ASA Patch 32A/32B — Data Confidence API
 
-Provides the generic field-level provenance endpoint:
+Provides the generic field-level provenance endpoints:
 
   GET /api/data-confidence/field
       ?run_id=<run_id>
       &strategy_id=<strategy_id>
       &row_id=<row_id>
       &field_id=<field_id>
+
+  GET /api/data-confidence/batch
+      ?run_id=<run_id>
+      &strategy_id=<strategy_id>
+      &field_ids=earnings.date,market.last_price,...  (comma-separated, optional)
+      &limit=<1-100>         (default 50)
+      &cursor=<id>           (integer cursor for pagination)
+
+  GET /api/data-confidence/reference
 
 All endpoints are read-only (provider_calls_triggered=False, read_only=True).
 
@@ -148,6 +157,82 @@ def _enrich_provenance(prov: dict[str, Any]) -> dict[str, Any]:
     out["confidence_label"] = CONFIDENCE_LABEL.get(level, level)
     out["confidence_color"] = CONFIDENCE_COLOR.get(level, "gray")
     return out
+
+
+def get_batch_field_provenance_response(
+    run_id: str | None,
+    strategy_id: str | None,
+    field_ids: list[str] | None,
+    limit: int = 50,
+    cursor: int | None = None,
+) -> tuple[dict[str, Any], int]:
+    """Handle GET /api/data-confidence/batch.
+
+    Returns a paginated list of compact FieldProvenanceRecord dicts.
+    Bounded at max 100 records per page. No provider calls triggered.
+
+    Cursor is the integer row ID of the last item returned; pass it as
+    ?cursor=<id> to fetch the next page.
+    """
+    clamped_limit = max(1, min(int(limit or 50), 100))
+
+    import json as _json
+
+    try:
+        rows = _dp_db.get_field_provenance_batch(
+            run_id=run_id or None,
+            strategy_id=strategy_id or None,
+            field_ids=[f for f in (field_ids or []) if f] or None,
+            limit=clamped_limit + 1,  # fetch one extra to detect next page
+            cursor=int(cursor) if cursor else None,
+        )
+    except Exception:
+        rows = []
+
+    has_next = len(rows) > clamped_limit
+    page_rows = rows[:clamped_limit]
+    next_cursor = page_rows[-1].get("id") if has_next and page_rows else None
+
+    items = []
+    for r in page_rows:
+        prov_raw = r.get("provenance") or {}
+        # Build compact representation from stored provenance JSON
+        item: dict[str, Any] = {
+            "id": r.get("id"),
+            "run_id": r.get("run_id"),
+            "strategy_id": r.get("strategy_id"),
+            "row_id": r.get("row_id"),
+            "ticker": r.get("ticker"),
+            "field_id": r.get("field_id"),
+            "confidence_level": r.get("confidence_level"),
+            "confidence_color": CONFIDENCE_COLOR.get(str(r.get("confidence_level") or "UNKNOWN"), "gray"),
+            "selected_value": r.get("selected_value"),
+            "selected_provider": r.get("selected_provider"),
+            "created_at": r.get("created_at"),
+        }
+        # Include confidence reason and other lightweight fields if available in provenance
+        if isinstance(prov_raw, dict):
+            for key in ("confidence_reason", "selection_reason", "is_calculated", "has_conflict"):
+                if prov_raw.get(key) is not None:
+                    item[key] = prov_raw[key]
+        items.append(item)
+
+    return {
+        "items": items,
+        "count": len(items),
+        "has_next_page": has_next,
+        "next_cursor": next_cursor,
+        "limit": clamped_limit,
+        "filters": {
+            "run_id": run_id,
+            "strategy_id": strategy_id,
+            "field_ids": field_ids,
+        },
+        "api_version": _API_VERSION,
+        "schema_version": PATCH32A_SCHEMA_VERSION,
+        "checked_at": _utcnow(),
+        **_READ_ONLY,
+    }, 200
 
 
 def _confidence_reference() -> list[dict[str, Any]]:
