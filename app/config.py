@@ -478,6 +478,18 @@ FF_EXCLUDED_TICKERS = set(
 )
 FF_SCAN_MODE = os.environ.get("FF_SCAN_MODE", "balanced").strip().lower()
 
+# --- 32A: Data Confidence & Provenance Persistence ---
+# Master switch for Patch 32A data confidence enrichment and provenance persistence.
+DATA_CONFIDENCE_ENABLED = _bool_env("DATA_CONFIDENCE_ENABLED", True)
+# SQLite DB path for the data_provenance table.
+DATA_PROVENANCE_DB_PATH = os.environ.get("DATA_PROVENANCE_DB_PATH", "")
+# Log DATA_CONFIDENCE_VALIDATION entries after each run.
+DATA_CONFIDENCE_VALIDATION_LOG_ENABLED = _bool_env("DATA_CONFIDENCE_VALIDATION_LOG_ENABLED", True)
+# Freshness warn threshold in seconds (default 6 hours).
+DATA_FRESHNESS_WARN_SECONDS = _int_env("DATA_FRESHNESS_WARN_SECONDS", 21600)
+# Freshness stale threshold in seconds (default 24 hours).
+DATA_FRESHNESS_STALE_SECONDS = _int_env("DATA_FRESHNESS_STALE_SECONDS", 86400)
+
 # --- 31B: Universal Strategy Scoring + Ranking ---
 UNIVERSAL_SCORE_VERSION = os.environ.get("UNIVERSAL_SCORE_VERSION", "31B.score.v1")
 UNIVERSAL_RANKING_VERSION = os.environ.get("UNIVERSAL_RANKING_VERSION", "31B.rank.v1")
