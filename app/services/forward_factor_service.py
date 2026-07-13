@@ -712,11 +712,14 @@ def build_forward_factor_strategy(
         for row in gated_rows:
             row["iv_percentile"] = None
             row["iv_percentile_note"] = "Journal disabled"
-    _legacy_dry_run = bool(config.FORWARD_FACTOR_DRY_RUN)
+    _ff_dry_run_env = bool(config.FORWARD_FACTOR_DRY_RUN)
     _recs_enabled = bool(getattr(config, "FF_RECOMMENDATIONS_ENABLED", False))
     _exec_enabled = bool(getattr(config, "FF_EXECUTION_ENABLED", False))
-    _effective_mode = "live_recommendation" if _recs_enabled and not _exec_enabled else "research"
-    log_print(f"ForwardFactorMode: recommendations_enabled={_recs_enabled} execution_enabled={_exec_enabled} legacy_dry_run_env={_legacy_dry_run} effective_mode={_effective_mode}")
+    _effective_mode = "live_recommendation" if _recs_enabled and not _exec_enabled else "dry_run"
+    _source_of_effective_mode = "FF_RECOMMENDATIONS_ENABLED" if _recs_enabled else "FORWARD_FACTOR_DRY_RUN"
+    if _ff_dry_run_env and _recs_enabled:
+        log_print("[WARNING] ForwardFactorMode: FF_DRY_RUN=True but FF_RECOMMENDATIONS_ENABLED=True — legacy flag overridden by new flag; effective_mode follows FF_RECOMMENDATIONS_ENABLED")
+    log_print(f"ForwardFactorMode: ff_dry_run_env={_ff_dry_run_env} recommendations_enabled={_recs_enabled} execution_enabled={_exec_enabled} effective_mode={_effective_mode} source={_source_of_effective_mode}")
     result = _finalize(gated_rows, ordered, stage, pair_audit, True, candidate_audit)
     log_print(f"FF: expiration_pairs={stage['expiration_pairs']} valid_forward_variance={stage['valid_forward_variance']} FF calculated={stage['ff_calculated']} source-qualified={stage['source_ff_calculated']} diagnostic={stage['diagnostic_formula_calculated']} earnings_clean={stage['earnings_clean']} earnings_contaminated={stage['earnings_contaminated']}")
     log_print(f"FF: structure_attempts={stage['structure_attempts']} structures={stage['structures']} liquidity_complete={stage['liquidity_complete']} pass/watch/fail/skipped={result['summary']['pass_count']}/{result['summary']['watch_count']}/{result['summary']['fail_count']}/{result['summary']['skipped_count']} near_miss_ff={stage['near_miss_ff']} discovery_overrides={stage['discovery_overrides']}")

@@ -28,6 +28,26 @@ LogFn = Callable[[str], None]
 CalendarCandidates = list[dict[str, Any]]
 
 
+# ── Calendar Stage Taxonomy ──────────────────────────────────────────────────
+
+class CalendarStage:
+    """Stable lifecycle stage constants for calendar spread candidates.
+
+    Describes where a ticker sits in the calendar entry lifecycle so that
+    rows persisted before, during, and after the entry window can be
+    distinguished without changing any scoring or gate logic.
+    """
+    DISCOVERED = "DISCOVERED"
+    PRE_WINDOW = "PRE_WINDOW"
+    APPROACHING_WINDOW = "APPROACHING_WINDOW"
+    ENTRY_WINDOW_OPEN = "ENTRY_WINDOW_OPEN"
+    ENTRY_WINDOW_CLOSING = "ENTRY_WINDOW_CLOSING"
+    ENTRY_WINDOW_CLOSED = "ENTRY_WINDOW_CLOSED"
+    POST_EVENT = "POST_EVENT"
+    DATA_INCOMPLETE = "DATA_INCOMPLETE"
+    STRUCTURE_UNAVAILABLE = "STRUCTURE_UNAVAILABLE"
+
+
 def scan_calendar_spreads_for_positions(
     positions: list[dict[str, Any]],
     log_print: LogFn | None = None,
@@ -63,6 +83,7 @@ def scan_calendar_spreads_for_positions(
     )
 
     candidates: CalendarCandidates = []
+    _usb_ticker_stats: list[dict] = []
 
     try:
         quotes = provider.get_quotes(selected, greeks=False)
@@ -83,8 +104,69 @@ def scan_calendar_spreads_for_positions(
             earnings_event = _event_for_ticker(positions, ticker)
             pair_diagnostics: dict[str, Any] = {}
             pairs = _select_expiration_pairs(expirations, earnings_event=earnings_event, diagnostics=pair_diagnostics)
-            if not pairs:
+
+            if getattr(config, "UNIVERSAL_STRUCTURE_BUILDER_ENABLED", False):
+                from app.services.options_structure_builder import enumerate_expiration_pairs, PairStatus  # noqa: PLC0415
+                from app.models.options_structure_spec import OptionsStructureSpec  # noqa: PLC0415
+                _usb_spec = OptionsStructureSpec(
+                    strategy_id="calendar_spread",
+                    structure_type=f"{str(config.CALENDAR_OPTION_TYPE or 'call').lower().strip()}_calendar",
+                    option_types=[str(config.CALENDAR_OPTION_TYPE or "call")],
+                    front_dte_min=int(getattr(config, "CALENDAR_EARNINGS_FRONT_MIN_DTE", 7) or 7),
+                    front_dte_max=int(getattr(config, "CALENDAR_EARNINGS_FRONT_MAX_DTE", 14) or 14),
+                    min_expiration_gap_days=14,
+                    max_expiration_gap_days=49,
+                )
+                _event_date_str: str | None = None
                 if earnings_event:
+                    _raw_ed = earnings_event.get("earnings_date") or earnings_event.get("date") or ""
+                    _event_date_str = str(_raw_ed).strip() or None
+                _usb_pair_records = enumerate_expiration_pairs(
+                    expirations=expirations,
+                    spec=_usb_spec,
+                    event_date=_event_date_str,
+                )
+                _usb_valid_statuses = {PairStatus.VALID, PairStatus.VALID_BUT_LOW_DTE, PairStatus.VALID_BUT_WIDE_GAP}
+                _usb_n_valid = sum(1 for r in _usb_pair_records if r.pair_status in _usb_valid_statuses)
+                _usb_n_considered = len(_usb_pair_records)
+                _usb_n_rejected = _usb_n_considered - _usb_n_valid
+                _usb_missing = 1 if not expirations else 0
+                logger(
+                    f"UNIVERSAL_STRUCTURE_BUILDER ticker={ticker} "
+                    f"pairs_considered={_usb_n_considered} pairs_valid={_usb_n_valid} "
+                    f"pairs_rejected={_usb_n_rejected} strategy_id=calendar_spread"
+                )
+                _usb_ticker_stats.append({
+                    "ticker": ticker,
+                    "pairs_considered": _usb_n_considered,
+                    "pairs_valid": _usb_n_valid,
+                    "pairs_rejected": _usb_n_rejected,
+                    "missing_chain": _usb_missing,
+                })
+
+            if not pairs:
+                # Persist a low-DTE rejection row instead of silently discarding the ticker.
+                # Only applies when there is an earnings event and the best available front
+                # expiration is below the approved minimum DTE threshold.
+                if earnings_event:
+                    _front_min = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MIN_DTE", 7) or 7)
+                    _best_front_dte = pair_diagnostics.get("best_available_front_dte")
+                    if _best_front_dte is not None and _best_front_dte < _front_min:
+                        _rejection = _build_low_dte_rejection_row(
+                            ticker=ticker,
+                            underlying_price=underlying_price,
+                            front_dte=_best_front_dte,
+                            front_exp=pair_diagnostics.get("best_available_front_exp"),
+                            earnings_event=earnings_event,
+                            pair_diagnostics=pair_diagnostics,
+                        )
+                        candidates.append(_rejection)
+                        logger(
+                            f"Calendar {ticker}: persisting low-DTE rejection row "
+                            f"(best_front_dte={_best_front_dte} < approved_min={_front_min}); "
+                            f"daily_opportunity_eligible=False."
+                        )
+
                     tried = pair_diagnostics.get("tried_front_expirations", [])
                     reason = pair_diagnostics.get("no_valid_pair_reason", "NO_VALID_EXPIRATION_PAIR")
                     near_miss = pair_diagnostics.get("near_miss_gap")
@@ -133,6 +215,16 @@ def scan_calendar_spreads_for_positions(
             logger(f"Calendar Spread Screener unavailable for {ticker}: {safe_error}")
 
     candidates.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    if getattr(config, "UNIVERSAL_STRUCTURE_BUILDER_ENABLED", False) and _usb_ticker_stats:
+        _usb_audit_considered = sum(s["pairs_considered"] for s in _usb_ticker_stats)
+        _usb_audit_valid = sum(s["pairs_valid"] for s in _usb_ticker_stats)
+        _usb_audit_rejected = sum(s["pairs_rejected"] for s in _usb_ticker_stats)
+        _usb_audit_missing = sum(s["missing_chain"] for s in _usb_ticker_stats)
+        logger(
+            f"CALENDAR_DISCOVERY_AUDIT tickers_scanned={len(_usb_ticker_stats)} "
+            f"pairs_considered_total={_usb_audit_considered} valid_pairs={_usb_audit_valid} "
+            f"rejected_pairs={_usb_audit_rejected} missing_chain={_usb_audit_missing}"
+        )
     logger(f"Calendar Spread Screener v1 generated {len(candidates)} candidate(s).")
     return candidates
 
@@ -247,6 +339,26 @@ def _score_candidate(
     if strike is not None and underlying_price > 0:
         atm_distance_pct = abs(strike - underlying_price) / underlying_price * 100.0
 
+    # Evolutionary calendar fields — stage taxonomy and entry-window metrics.
+    _entry_min_dte = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MIN_DTE", 7) or 7)
+    _entry_max_dte = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MAX_DTE", 14) or 14)
+    days_until_earnings = _days_until_earnings_from_event(earnings_event)
+    if front_dte is None:
+        days_until_entry_window: int | None = None
+    elif front_dte > _entry_max_dte:
+        days_until_entry_window = front_dte - _entry_max_dte
+    elif front_dte >= _entry_min_dte:
+        days_until_entry_window = 0
+    else:
+        days_until_entry_window = front_dte - _entry_min_dte  # negative — past window
+    calendar_stage = _determine_calendar_stage(
+        front_dte=front_dte,
+        back_dte=back_dte,
+        days_until_earnings=days_until_earnings,
+        min_dte=_entry_min_dte,
+        max_dte=_entry_max_dte,
+    )
+
     # TKT-012: tiered debit cap (sizing gate, does not affect signal score).
     tiered_cap_pct = _tiered_debit_cap_pct(underlying_price)
     tiered_debit_cap_result: dict[str, Any] | None = None
@@ -314,6 +426,13 @@ def _score_candidate(
         "earnings_event": earnings_event or {},
         "earnings_timing": _earnings_timing_payload(earnings_event, front_expiration, back_expiration),
         "next_check": _next_check(action),
+        # Evolutionary calendar evidence fields (stage taxonomy + entry-window context).
+        "calendar_stage": calendar_stage,
+        "days_until_earnings": days_until_earnings,
+        "days_until_entry_window": days_until_entry_window,
+        "approved_entry_window_min_dte": _entry_min_dte,
+        "approved_entry_window_max_dte": _entry_max_dte,
+        "distance_from_entry_window": (front_dte - _entry_min_dte) if front_dte is not None else None,
     }
 
 
@@ -525,6 +644,15 @@ def _select_earnings_expiration_pairs(
         scored_pairs = _score_fronts(wider_candidates)
         widened = True
 
+    # Best available front expiration — used by caller to detect low-DTE rejection.
+    if all_before_event:
+        _best_front_pair = max(all_before_event, key=lambda x: x[0])
+        _best_available_front_dte: int | None = _best_front_pair[0]
+        _best_available_front_exp: str | None = _best_front_pair[1]
+    else:
+        _best_available_front_dte = None
+        _best_available_front_exp = None
+
     diagnostics: dict[str, Any] = {
         "tried_front_expirations": [exp for _, exp in all_before_event],
         "front_candidates_in_dte_window": [exp for _, exp in front_candidates],
@@ -533,6 +661,8 @@ def _select_earnings_expiration_pairs(
         "event_date": event_date.isoformat(),
         "event_dte": event_dte,
         "front_max_dte_config": front_max,
+        "best_available_front_dte": _best_available_front_dte,
+        "best_available_front_exp": _best_available_front_exp,
     }
 
     if not scored_pairs:
@@ -632,6 +762,91 @@ def _earnings_timing_payload(earnings_event: dict[str, Any] | None, front_expira
         "short_expires_before_event": short_before,
         "long_expires_after_event": long_after,
         "captures_event": bool(short_before and long_after),
+    }
+
+
+def _determine_calendar_stage(
+    front_dte: int | None,
+    back_dte: int | None,
+    days_until_earnings: int | None,
+    min_dte: int,
+    max_dte: int,
+) -> str:
+    """Determine the calendar lifecycle stage based on DTE and earnings proximity."""
+    if days_until_earnings is not None and days_until_earnings < 0:
+        return CalendarStage.POST_EVENT
+    if front_dte is None or back_dte is None:
+        return CalendarStage.DATA_INCOMPLETE
+    if front_dte > max_dte:
+        days_until_window = front_dte - max_dte
+        if days_until_window > 14:
+            return CalendarStage.PRE_WINDOW
+        else:
+            return CalendarStage.APPROACHING_WINDOW
+    if front_dte >= min_dte:
+        if front_dte <= min_dte + 3:
+            return CalendarStage.ENTRY_WINDOW_CLOSING
+        return CalendarStage.ENTRY_WINDOW_OPEN
+    return CalendarStage.ENTRY_WINDOW_CLOSED
+
+
+def _days_until_earnings_from_event(earnings_event: dict[str, Any] | None) -> int | None:
+    """Return days until earnings from an earnings event dict, or None if unavailable."""
+    if not earnings_event:
+        return None
+    cached = earnings_event.get("days_until_earnings")
+    if cached is not None:
+        try:
+            return int(cached)
+        except (TypeError, ValueError):
+            pass
+    event_date = _parse_date(earnings_event.get("earnings_date") or earnings_event.get("date"))
+    if event_date is None:
+        return None
+    return (event_date - date.today()).days
+
+
+def _build_low_dte_rejection_row(
+    ticker: str,
+    underlying_price: float,
+    front_dte: int,
+    front_exp: str | None,
+    earnings_event: dict[str, Any] | None,
+    pair_diagnostics: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a persisted rejection row for a ticker whose best front DTE is below
+    the approved minimum. The approved scoring gate is NOT changed — this row is
+    stored so the ticker is visible in the row store, observation journal, and
+    opportunity history with daily_opportunity_eligible=False.
+    """
+    min_dte = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MIN_DTE", 7) or 7)
+    max_dte = int(getattr(config, "CALENDAR_EARNINGS_FRONT_MAX_DTE", 14) or 14)
+    days_until_earnings = _days_until_earnings_from_event(earnings_event)
+    return {
+        "ticker": ticker,
+        "strategy": "Long Call Calendar",
+        "calendar_stage": CalendarStage.ENTRY_WINDOW_CLOSED,
+        "verdict": "FAIL",
+        "action": "FAIL / FRONT DTE BELOW APPROVED MINIMUM",
+        "daily_opportunity_eligible": False,
+        "rejection_code": "FRONT_DTE_BELOW_APPROVED_MINIMUM",
+        "rejection_reason": (
+            f"Front leg has {front_dte} DTE, below approved minimum of {min_dte}"
+        ),
+        "front_dte": front_dte,
+        "front_expiration": front_exp,
+        "back_dte": None,
+        "back_expiration": None,
+        "score": 0.0,
+        "underlying_price": underlying_price,
+        "option_type": str(config.CALENDAR_OPTION_TYPE or "call").lower().strip(),
+        "days_until_earnings": days_until_earnings,
+        "approved_entry_window_min_dte": min_dte,
+        "approved_entry_window_max_dte": max_dte,
+        "distance_from_entry_window": front_dte - min_dte,  # negative — below minimum
+        "days_until_entry_window": front_dte - min_dte,     # negative — past window
+        "earnings_event": earnings_event or {},
+        "expiration_pair_diagnostics": pair_diagnostics,
     }
 
 

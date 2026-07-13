@@ -235,20 +235,143 @@ def cross_validate_iv(
 
 # ─── Regression validation ─────────────────────────────────────────────────────
 
-def validate_strategy_row_schema(row: dict[str, Any], strategy_id: str) -> ValidationReport:
-    """Check that a strategy output row meets the minimum schema contract."""
-    report = ValidationReport(category="regression", subject=f"{strategy_id}:{row.get('ticker', 'UNKNOWN')}")
+def _row_profile(row: dict[str, Any], strategy_id: str) -> str:
+    """Determine the validation profile for a strategy row.
+
+    Returns one of:
+        "ranked_opportunity"  — scored, ranked, eligible for DO
+        "rejected_discovery"  — rejected during discovery (has rejection_code or exit_stage)
+        "skipped"             — skipped row (dev-mode cap, budget, quality filter)
+        "lifecycle"           — open-position lifecycle update
+        "candidate"           — evaluation candidate (may lack score/action)
+        "generic"             — fallback when profile cannot be determined
+    """
     r = row or {}
+    exit_stage = str(r.get("exit_stage") or "")
+    rejection_code = str(r.get("rejection_code") or "")
+    row_type = str(r.get("row_type") or "")
+    ff_stage = str(r.get("ff_candidate_stage") or "")
+    calendar_stage = str(r.get("calendar_stage") or "")
 
-    for fld in ("ticker", "action", "score"):
-        _check(report, f"row.{fld}_present", bool(r.get(fld) is not None), LEVEL_ERROR,
-               f"Required field {fld!r} missing from strategy row.", field=fld)
+    # Skipped rows: dev-mode budget caps, quality filter exclusions
+    skip_codes = {"DEV_MODE_BUDGET_NOT_SELECTED", "QUALITY_FILTER_BUDGET_NOT_SELECTED",
+                  "cap_skip", "budget_skipped", "recent_fail_skip"}
+    if (rejection_code in skip_codes or exit_stage in skip_codes
+            or ff_stage in {"cap_skip", "budget_skipped", "recent_fail_skip"}):
+        return "skipped"
 
-    score = _f(r.get("score"))
-    if score is not None:
-        _check(report, "row.score_range", 0 <= score <= 100, LEVEL_WARNING,
-               f"Score {score} outside expected range [0, 100].", field="score", actual=score)
+    # Rejected discovery rows have an exit_stage or rejection_code
+    if rejection_code or (exit_stage and exit_stage not in ("COMPLETE", "RANKING")):
+        return "rejected_discovery"
 
+    # Open-position lifecycle rows
+    if "lifecycle" in row_type or "position" in row_type:
+        return "lifecycle"
+
+    # Ranked opportunities: have score and rank
+    if r.get("score") is not None and r.get("rank") is not None:
+        return "ranked_opportunity"
+
+    # FF candidate rows: labelled by stage
+    if ff_stage and ff_stage not in {"selected", "fetched"}:
+        return "candidate"
+
+    # Calendar candidates at a known stage
+    if calendar_stage:
+        return "candidate"
+
+    return "generic"
+
+
+def validate_strategy_row_schema(
+    row: dict[str, Any],
+    strategy_id: str,
+    profile: str | None = None,
+) -> ValidationReport:
+    """Check that a strategy output row meets the schema contract for its row type.
+
+    Patch 33A: Row-aware validation profiles replace the flat
+    (ticker+action+score) check. Different row types have different
+    required fields; missing score on a rejected-discovery row is
+    expected, not a failure.
+
+    Profile is auto-detected from row fields if not supplied.
+    """
+    r = row or {}
+    detected_profile = profile or _row_profile(r, strategy_id)
+    subject = f"{strategy_id}:{r.get('ticker', 'UNKNOWN')}:{detected_profile}"
+    report = ValidationReport(category="regression", subject=subject)
+    report.profile = detected_profile  # type: ignore[attr-defined]
+
+    # ticker is required for all profiles
+    _check(report, "row.ticker_present", bool(r.get("ticker")), LEVEL_ERROR,
+           "Required field 'ticker' missing from strategy row.", field="ticker")
+
+    if detected_profile == "skipped":
+        # Skipped rows: need skip/exit reason, no action/score required
+        has_reason = bool(
+            r.get("exit_reason") or r.get("rejection_code") or r.get("exit_stage")
+            or r.get("ff_candidate_stage") or r.get("skip_reason")
+        )
+        _check(report, "row.skip_reason_present", has_reason, LEVEL_WARNING,
+               "Skipped row missing skip_reason, rejection_code, or exit_stage.",
+               field="skip_reason")
+        # action and score are NOT required — mark as not_applicable
+        report.not_applicable_fields = ["action", "score"]  # type: ignore[attr-defined]
+
+    elif detected_profile == "rejected_discovery":
+        # Rejected rows: need rejection code and exit stage — action/score NOT required
+        has_rejection = bool(r.get("rejection_code") or r.get("exit_reason") or r.get("primary_reason"))
+        _check(report, "row.rejection_code_present", has_rejection, LEVEL_WARNING,
+               "Rejected discovery row missing rejection_code or exit_reason.", field="rejection_code")
+        has_exit = bool(r.get("exit_stage") or r.get("calendar_stage") or r.get("verdict"))
+        _check(report, "row.exit_stage_present", has_exit, LEVEL_WARNING,
+               "Rejected discovery row missing exit_stage or verdict.", field="exit_stage")
+        # action and score expected-missing on rejected rows
+        report.expected_missing_fields = ["action", "score"]  # type: ignore[attr-defined]
+
+    elif detected_profile == "lifecycle":
+        # Open-position lifecycle rows: need action and position identifier — score optional
+        _check(report, "row.action_present", bool(r.get("action")), LEVEL_ERROR,
+               "Open-position lifecycle row missing 'action'.", field="action")
+        has_position_id = bool(
+            r.get("position_id") or r.get("order_id") or r.get("ticker")
+        )
+        _check(report, "row.position_id_present", has_position_id, LEVEL_WARNING,
+               "Lifecycle row missing position identifier.", field="position_id")
+        report.expected_missing_fields = ["score"]  # type: ignore[attr-defined]
+
+    elif detected_profile == "ranked_opportunity":
+        # Ranked rows: require score, rank, verdict, and action
+        for fld in ("score", "rank", "action"):
+            _check(report, f"row.{fld}_present", r.get(fld) is not None, LEVEL_ERROR,
+                   f"Ranked opportunity row missing required field '{fld}'.", field=fld)
+        _check(report, "row.verdict_present",
+               bool(r.get("verdict") or r.get("final_verdict")), LEVEL_WARNING,
+               "Ranked opportunity row missing verdict.", field="verdict")
+        score = _f(r.get("score"))
+        if score is not None:
+            _check(report, "row.score_range", 0 <= score <= 100, LEVEL_WARNING,
+                   f"Score {score} outside expected range [0, 100].", field="score", actual=score)
+
+    elif detected_profile == "candidate":
+        # Candidate rows: require ticker + verdict; score/action optional
+        _check(report, "row.verdict_present",
+               bool(r.get("verdict") or r.get("final_verdict") or r.get("action")),
+               LEVEL_WARNING, "Candidate row missing verdict or action.", field="verdict")
+        report.expected_missing_fields = ["score", "action"]  # type: ignore[attr-defined]
+
+    else:
+        # Generic fallback: the pre-33A flat check
+        for fld in ("action", "score"):
+            _check(report, f"row.{fld}_present", r.get(fld) is not None, LEVEL_ERROR,
+                   f"Required field {fld!r} missing from strategy row.", field=fld)
+        score = _f(r.get("score"))
+        if score is not None:
+            _check(report, "row.score_range", 0 <= score <= 100, LEVEL_WARNING,
+                   f"Score {score} outside expected range [0, 100].", field="score", actual=score)
+
+    # daily_opportunity integrity check — applies to all profiles
     if r.get("daily_opportunity"):
         do = r["daily_opportunity"]
         _check(report, "row.do_eligible_bool",
@@ -267,8 +390,8 @@ def log_data_confidence_validation(
 ) -> str:
     """Emit a DATA_CONFIDENCE_VALIDATION log line from a run_validation_suite result.
 
-    Format:
-      DATA_CONFIDENCE_VALIDATION passed=N warned=N failed=N sample_size=N failure_codes=[...]
+    Format (Patch 33A):
+      DATA_CONFIDENCE_VALIDATION passed=N warned=N failed=N not_applicable=N expected_missing=N sample_size=N failure_codes=[...]
 
     Returns the formatted log line. Safe on any error.
     """
@@ -276,9 +399,10 @@ def log_data_confidence_validation(
         log = log_print or print
         total = int(suite_result.get("total_reports") or 0)
         passed = int(suite_result.get("passed_reports") or 0)
-        failed = int(suite_result.get("failed_reports") or 0)
-        errors = int(suite_result.get("total_errors") or 0)
+        failed = int(suite_result.get("true_failures") or suite_result.get("failed_reports") or 0)
         warnings = int(suite_result.get("total_warnings") or 0)
+        not_applicable = int(suite_result.get("not_applicable") or 0)
+        expected_missing = int(suite_result.get("expected_missing") or 0)
 
         failure_codes: list[str] = []
         for report in (suite_result.get("reports") or [])[:50]:
@@ -293,6 +417,8 @@ def log_data_confidence_validation(
             f"passed={passed} "
             f"warned={warnings} "
             f"failed={failed} "
+            f"not_applicable={not_applicable} "
+            f"expected_missing={expected_missing} "
             f"sample_size={total} "
             f"failure_codes={failure_codes!r}"
         )
@@ -329,12 +455,27 @@ def run_validation_suite(
 ) -> dict[str, Any]:
     """Run the full validation suite on a batch of strategy rows.
 
-    Returns a summary dict with pass/fail counts and all validation reports.
+    Patch 33A: Returns profile-aware summary separating true_failures,
+    expected_missing, warnings, and not_applicable counts.
     """
     reports: list[ValidationReport] = []
+    expected_missing_count = 0
+    not_applicable_count = 0
+    true_failure_count = 0
 
     for row in strategy_rows:
-        reports.append(validate_strategy_row_schema(row, strategy_id))
+        r = validate_strategy_row_schema(row, strategy_id)
+        reports.append(r)
+        expected_missing_count += len(getattr(r, "expected_missing_fields", []))
+        not_applicable_count += len(getattr(r, "not_applicable_fields", []))
+        # Count true failures: error-level failures on non-expected fields
+        expected_missing = set(getattr(r, "expected_missing_fields", []))
+        not_applicable = set(getattr(r, "not_applicable_fields", []))
+        for result in r.results:
+            if not result.passed and result.level == LEVEL_ERROR:
+                fld = result.field or ""
+                if fld not in expected_missing and fld not in not_applicable:
+                    true_failure_count += 1
 
     for ticker, event in (earnings_events or {}).items():
         reports.append(validate_earnings_event(event))
@@ -346,12 +487,15 @@ def run_validation_suite(
 
     return {
         "strategy_id": strategy_id,
-        "validation_passed": errors == 0,
+        "validation_passed": true_failure_count == 0,
         "total_reports": total,
         "passed_reports": passed,
         "failed_reports": total - passed,
         "total_errors": errors,
         "total_warnings": warnings,
+        "true_failures": true_failure_count,
+        "expected_missing": expected_missing_count,
+        "not_applicable": not_applicable_count,
         "reports": [r.to_dict() for r in reports[:50]],
         "schema_version": PROVENANCE_SCHEMA_VERSION,
         "provider_calls_triggered": False,

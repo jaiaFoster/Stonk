@@ -33,6 +33,8 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/main.py` | Flask routes — web layer only, no pipeline logic |
 | `app/config.py` | All environment-driven configuration |
 | `app/services/` | Pipeline and diagnostic services |
+| `app/services/options_structure_builder.py` | Universal Options Structure Builder (Patch 33A) |
+| `app/models/options_structure_spec.py` | Declarative spec model for structure construction (Patch 33A) |
 | `app/api/` | Blueprints for advisor, admin, user, knowledge, plaid, auth, telemetry, custom strategy |
 
 Provider call isolation: no `/api/dev/*` endpoint may trigger a live provider call unless
@@ -54,12 +56,17 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 ## Current Sprint — Patch 33A
 
 **Focus areas:**
-- Calendar PRE_WINDOW stage and early discovery repair
-- Persistent opportunity evolution history (`strategy_opportunity_history` DB)
-- Open-positions double-calendar parent structure
-- Forward Factor promotion to live ranked recommendations
-- Legacy report summary removal from hot path
-- Option chain provenance fields
+- Universal Options Structure Builder (one shared engine for all option strategies)
+- Evolutionary calendar-entry evidence model (CalendarStage taxonomy, low-DTE persistence)
+- Row-aware data-confidence validation profiles (skipped/rejected/lifecycle/ranked/candidate)
+- Persistent opportunity evolution history with 5-day and 14-day score changes
+- Calendar discovery audit trail — every expiration pair recorded with disposition
+- Forward Factor config reporting (no contradictions between flags)
+- PipelineStage enum eliminating `exit_stage=unknown`
+
+**Patch governance rule:** Every patch MUST update AGENTS.md before merging. A PR without
+an AGENTS.md commit is incomplete by definition — update sprint focus, feature flags, and
+architecture table to reflect changes actually made.
 
 ---
 
@@ -140,6 +147,38 @@ All threshold changes require user approval before merging.
 | `CALENDAR_SCANNER_ENABLED` | true | Enable earnings calendar scanning |
 | `DATA_CONFIDENCE_ENABLED` | true | Enable data confidence provenance tracking |
 | `OPPORTUNITY_HISTORY_ENABLED` | true | Enable cross-run opportunity history tracking |
+| `UNIVERSAL_STRUCTURE_BUILDER_ENABLED` | true | Use universal builder for expiration pair audit logging (Patch 33A) |
+
+---
+
+## Universal Options Structure Builder
+
+`app/services/options_structure_builder.py` is the single shared engine for all option
+strategies. Strategies declare requirements via `OptionsStructureSpec`; the builder:
+
+1. Enumerates **all** valid expiration pairs — no silent discards.
+2. Records a `PairStatus` disposition for **every** pair considered.
+3. Matches legs per spec (delta-target, ATM, same-strike).
+4. Computes conservative and mid debit.
+5. Checks liquidity thresholds.
+6. Returns a `StructureBuildResult` with full audit trail.
+
+**Rules:**
+- The builder does NOT call any provider. It operates on pre-fetched chain data.
+- The legacy strategy-specific pair selection remains until parity tests pass.
+- Integration is behind `UNIVERSAL_STRUCTURE_BUILDER_ENABLED=True`.
+- Every expiration pair must receive a disposition — `NO_SILENT_DISCARDS` is a hard rule.
+- Log token: `UNIVERSAL_STRUCTURE_BUILDER` for per-ticker output, `CALENDAR_DISCOVERY_AUDIT` for per-run summary.
+
+---
+
+## Strategy Threshold Governance
+
+**Hard rule:** No agent, PR, or patch may change a strategy threshold without explicit user approval.
+
+Approving a threshold change requires the user to say (in chat) "I approve changing X from Y to Z" before the change is committed. A general "fix the bug" or "clean up the code" instruction is NOT approval to adjust thresholds.
+
+The approved seven-DTE threshold (`CALENDAR_EARNINGS_FRONT_MIN_DTE` = 7) is a trading rule — do not change it as part of any code cleanup, refactor, or patch unless the user explicitly directs you to.
 
 ---
 
@@ -157,6 +196,18 @@ curl $BASE/api/dev/roadmap?token=$DEV
 
 # Check feature health
 curl $BASE/api/dev/feature-health?token=$DEV
+
+# Check universal builder spec for a strategy (Patch 33A)
+curl $BASE/api/options-structures/calendar_spread?token=$DEV
+
+# Check calendar discovery audit (Patch 33A)
+curl $BASE/api/calendar/discovery-audit?token=$DEV
+
+# Check calendar history for a ticker (Patch 33A)
+curl $BASE/api/calendar/history/NVDA?token=$DEV
+
+# Check opportunity evolution history (Patch 33A)
+curl $BASE/api/opportunities/calendar_spread/NVDA/history?token=$DEV
 
 # Syntax check app/main.py
 python -m py_compile app/main.py

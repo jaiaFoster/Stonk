@@ -347,12 +347,14 @@ def compute_evolution(
 
     if not all_prior:
         return {
+            "comparison_available": False,
             "first_seen_at": None,
             "last_seen_at": None,
             "observation_count": 0,
             "previous_score": None,
             "score_change_1_run": None,
             "score_change_1_day": None,
+            "score_change_5_day": None,
             "score_change_2_weeks": None,
             "percent_change_1_day": None,
             "percent_change_2_weeks": None,
@@ -402,8 +404,9 @@ def compute_evolution(
     if current_score_f is not None and prev_score_f is not None:
         score_change_1_run = round(current_score_f - prev_score_f, 2)
 
-    # 1-day and 2-week changes (find closest prior by trading_date)
+    # 1-day, 5-day, and 2-week changes (find closest prior by trading_date)
     score_change_1_day = _score_change_by_days(current_score_f, all_prior, current_trading_date, 1)
+    score_change_5_day = _score_change_by_days(current_score_f, all_prior, current_trading_date, 5)
     score_change_2_weeks = _score_change_by_days(current_score_f, all_prior, current_trading_date, 14)
 
     pct_1d = None
@@ -474,12 +477,14 @@ def compute_evolution(
     trend_summary = " ".join(trend_summary_parts)
 
     return {
+        "comparison_available": True,
         "first_seen_at": first_seen,
         "last_seen_at": last_seen,
         "observation_count": obs_count,
         "previous_score": prev_score_f,
         "score_change_1_run": score_change_1_run,
         "score_change_1_day": score_change_1_day,
+        "score_change_5_day": score_change_5_day,
         "score_change_2_weeks": score_change_2_weeks,
         "percent_change_1_day": pct_1d,
         "percent_change_2_weeks": pct_2w,
