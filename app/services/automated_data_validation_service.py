@@ -259,6 +259,67 @@ def validate_strategy_row_schema(row: dict[str, Any], strategy_id: str) -> Valid
     return report
 
 
+# ─── Patch 32A: DATA_CONFIDENCE_VALIDATION log ────────────────────────────────
+
+def log_data_confidence_validation(
+    suite_result: dict[str, Any],
+    log_print: Any = None,
+) -> str:
+    """Emit a DATA_CONFIDENCE_VALIDATION log line from a run_validation_suite result.
+
+    Format:
+      DATA_CONFIDENCE_VALIDATION passed=N warned=N failed=N sample_size=N failure_codes=[...]
+
+    Returns the formatted log line. Safe on any error.
+    """
+    try:
+        log = log_print or print
+        total = int(suite_result.get("total_reports") or 0)
+        passed = int(suite_result.get("passed_reports") or 0)
+        failed = int(suite_result.get("failed_reports") or 0)
+        errors = int(suite_result.get("total_errors") or 0)
+        warnings = int(suite_result.get("total_warnings") or 0)
+
+        failure_codes: list[str] = []
+        for report in (suite_result.get("reports") or [])[:50]:
+            for result in (report.get("results") or []):
+                if not result.get("passed"):
+                    code = str(result.get("rule_id") or "unknown")
+                    if code not in failure_codes:
+                        failure_codes.append(code)
+
+        line = (
+            f"DATA_CONFIDENCE_VALIDATION "
+            f"passed={passed} "
+            f"warned={warnings} "
+            f"failed={failed} "
+            f"sample_size={total} "
+            f"failure_codes={failure_codes!r}"
+        )
+        try:
+            log(line, flush=True)
+        except TypeError:
+            log(line)
+        return line
+    except Exception:
+        return "DATA_CONFIDENCE_VALIDATION error=log_failed"
+
+
+def run_data_confidence_validation(
+    strategy_rows: list[dict[str, Any]],
+    strategy_id: str,
+    earnings_events: dict[str, dict[str, Any]] | None = None,
+    log_print: Any = None,
+) -> dict[str, Any]:
+    """Run the validation suite and emit the DATA_CONFIDENCE_VALIDATION log line.
+
+    Combines run_validation_suite + log_data_confidence_validation for convenience.
+    """
+    result = run_validation_suite(strategy_rows, strategy_id, earnings_events)
+    log_data_confidence_validation(result, log_print=log_print)
+    return result
+
+
 # ─── Validation suite runner ───────────────────────────────────────────────────
 
 def run_validation_suite(

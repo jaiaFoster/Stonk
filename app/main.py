@@ -2484,6 +2484,34 @@ def api_provider_health():
     return add_provenance_headers(resp), 200
 
 
+# ─── Patch 32A: Data Confidence endpoints ────────────────────────────────────
+
+@app.route("/api/data-confidence/field")
+def api_data_confidence_field():
+    """Patch 32A: Per-field provenance lookup.
+
+    Query params: run_id, strategy_id, row_id, field_id (required)
+    """
+    from app.api.data_confidence_api import get_field_provenance_response
+    from app.api.provenance_api import add_provenance_headers
+    run_id = request.args.get("run_id") or None
+    strategy_id = request.args.get("strategy_id") or None
+    row_id = request.args.get("row_id") or None
+    field_id = request.args.get("field_id") or None
+    result, status = get_field_provenance_response(run_id, strategy_id, row_id, field_id)
+    resp = jsonify(result)
+    return add_provenance_headers(resp), status
+
+
+@app.route("/api/data-confidence/reference")
+def api_data_confidence_reference():
+    """Patch 32A: Data confidence reference — confidence levels, colors, selection rules."""
+    from app.api.data_confidence_api import build_data_confidence_reference
+    from app.api.provenance_api import add_provenance_headers
+    resp = jsonify(build_data_confidence_reference())
+    return add_provenance_headers(resp), 200
+
+
 # ─── 31A: Custom Strategy Builder catalog endpoints ───────────────────────────
 
 def _catalog_filters() -> dict[str, Any]:

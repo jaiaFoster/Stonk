@@ -74,6 +74,10 @@ def run_endpoint_verification(
         checks.append(_check_catalog())
         checks.append(_check_catalog_operators())
         checks.append(_check_catalog_field())
+        # 32A: Data Confidence checks
+        checks.append(_check_data_version())
+        checks.append(_check_data_confidence_reference())
+        checks.append(_check_data_confidence_field_missing_param())
         for check in checks:
             _log_check(log, check)
         passed = sum(1 for check in checks if check.status == "PASS")
@@ -269,6 +273,50 @@ def _check_catalog_field() -> _Check:
     if status != 200 or fields["field_id"] != "options.delta" or fields["provider_calls_triggered"] is not False:
         return _Check("strategy_catalog_field", "FAIL", fields, assertion="FIELD_LOOKUP_FAILED")
     return _Check("strategy_catalog_field", "PASS", fields)
+
+
+def _check_data_version() -> _Check:
+    from app.api.provenance_api import build_data_version_info
+    data = build_data_version_info()
+    fields = {
+        "api_data_version": data.get("api_data_version"),
+        "schema_version": data.get("provenance_schema_version"),
+        "provider_calls_triggered": data.get("provider_calls_triggered"),
+    }
+    if data.get("provider_calls_triggered") is not False or data.get("read_only") is not True:
+        return _Check("data_version", "FAIL", fields, assertion="DATA_VERSION_NOT_READ_ONLY")
+    if not data.get("api_data_version") or not data.get("provenance_schema_version"):
+        return _Check("data_version", "FAIL", fields, assertion="DATA_VERSION_MISSING_FIELDS")
+    return _Check("data_version", "PASS", fields)
+
+
+def _check_data_confidence_reference() -> _Check:
+    from app.api.data_confidence_api import build_data_confidence_reference
+    data = build_data_confidence_reference()
+    fields = {
+        "confidence_levels": len(data.get("confidence_levels") or []),
+        "provider_statuses": len(data.get("provider_statuses") or []),
+        "provider_calls_triggered": data.get("provider_calls_triggered"),
+    }
+    if data.get("provider_calls_triggered") is not False or data.get("read_only") is not True:
+        return _Check("data_confidence_reference", "FAIL", fields, assertion="CONF_REF_NOT_READ_ONLY")
+    if len(data.get("confidence_levels") or []) < 5:
+        return _Check("data_confidence_reference", "FAIL", fields, assertion="CONF_LEVELS_INCOMPLETE")
+    return _Check("data_confidence_reference", "PASS", fields)
+
+
+def _check_data_confidence_field_missing_param() -> _Check:
+    from app.api.data_confidence_api import get_field_provenance_response
+    result, status = get_field_provenance_response(None, None, None, None)
+    fields = {
+        "status": status,
+        "provider_calls_triggered": result.get("provider_calls_triggered"),
+    }
+    if status != 400:
+        return _Check("data_confidence_field_validation", "FAIL", fields, assertion="MISSING_FIELD_ID_NOT_400")
+    if result.get("provider_calls_triggered") is not False:
+        return _Check("data_confidence_field_validation", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED")
+    return _Check("data_confidence_field_validation", "PASS", fields)
 
 
 def _log_check(log: Callable[[str], None], check: _Check) -> None:
