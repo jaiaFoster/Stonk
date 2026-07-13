@@ -1,14 +1,14 @@
 <!-- ROADMAP_META
-patch: 33A
+patch: 33A.1
 last_updated: 2026-07-13
 roadmap_json: config/roadmap.json
 -->
 
-# ASA Agent Reference — Patch 33A
+# ASA Agent Reference — Patch 33A.1
 
-**Patch title:** Evolutionary Opportunity Tracking and Calendar Discovery Repair
+**Patch title:** Strategy Opportunity Lifecycle Kernel and Earnings Calendar Business Logic Repair
 **Sprint status:** in_progress
-**Machine-readable roadmap:** `config/roadmap.json` (schema version 33A.v1)
+**Machine-readable roadmap:** `config/roadmap.json` (schema version 33A.1.v1)
 
 ---
 
@@ -35,6 +35,10 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/services/` | Pipeline and diagnostic services |
 | `app/services/options_structure_builder.py` | Universal Options Structure Builder (Patch 33A) |
 | `app/models/options_structure_spec.py` | Declarative spec model for structure construction (Patch 33A) |
+| `app/models/strategy_opportunity_lifecycle.py` | Generic lifecycle enums and models (Patch 33A.1) |
+| `app/models/calendar_evolution_policy.py` | CalendarEvolutionPolicy — immutable timing thresholds (Patch 33A.1) |
+| `app/services/strategy_opportunity_lifecycle_service.py` | Generic lifecycle invariant validation and canonical construction (Patch 33A.1) |
+| `app/services/calendar_opportunity_lifecycle_adapter.py` | Earnings-calendar lifecycle classifier and opportunity_id builder (Patch 33A.1) |
 | `app/api/` | Blueprints for advisor, admin, user, knowledge, plaid, auth, telemetry, custom strategy |
 
 Provider call isolation: no `/api/dev/*` endpoint may trigger a live provider call unless
@@ -53,9 +57,21 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 ---
 
-## Current Sprint — Patch 33A
+## Current Sprint — Patch 33A.1
 
 **Focus areas:**
+- Generic Strategy Opportunity Lifecycle kernel (LifecycleStage, EvaluationState, Verdict, RecommendedAction)
+- CalendarEvolutionPolicy — immutable policy with validated ordering invariants
+- Earnings-calendar lifecycle migration: classify DISCOVERED/DEVELOPING/SURFACED/ACTIONABLE stages
+- Config fix: EARNINGS_DISCOVERY_END_DAYS now reads from Railway env (default 35, was hardcoded 21)
+- Discovery horizon changed from 4–21 DTE to 0–35 event DTE
+- Structure building starts at 24 event DTE; surfacing at 14 event DTE
+- Budget skips and expected-missing data are NOT strategy failures (EvaluationState.DEFERRED_BUDGET / EXPECTED_MISSING)
+- Stable parent opportunity_id across structure changes
+- `/api/dev/strategy-lifecycle` read-only lifecycle summary endpoint
+- 90 new behavioral tests covering all DTE boundaries and lifecycle invariants
+
+**Previously completed (Patch 33A):**
 - Universal Options Structure Builder (one shared engine for all option strategies)
 - Evolutionary calendar-entry evidence model (CalendarStage taxonomy, low-DTE persistence)
 - Row-aware data-confidence validation profiles (skipped/rejected/lifecycle/ranked/candidate)
@@ -74,11 +90,11 @@ architecture table to reflect changes actually made.
 
 | Patch | Title |
 |---|---|
+| 33A | Evolutionary Opportunity Tracking and Calendar Discovery Repair |
 | 32B | Data Confidence UI Integration, Provider Reconciliation, Calendar Discovery Audit |
 | 32A | Data Confidence Completion — FieldProvenanceRecord, validation service |
 | 31B | Calendar scan barrier, pre-scan quality filter, expiration pair precheck |
 | 30C | Universal row enrichment for earnings calendar |
-| 30B | Universal strategy observation journal |
 
 ---
 
@@ -86,7 +102,10 @@ architecture table to reflect changes actually made.
 
 | ID | Title | Priority | Status | Category | Next Action |
 |---|---|---|---|---|---|
-| TKT-CALENDAR-PREWINDOW | Calendar PRE_WINDOW stage and early discovery | P0 | in_progress | calendar | Implement PRE_WINDOW stage in calendar scanner |
+| TKT-STRATEGY-LIFECYCLE-KERNEL | Generic lifecycle kernel — enums, models, validation service | P0 | completed | lifecycle | Done in Patch 33A.1 |
+| TKT-CALENDAR-LIFECYCLE-MIGRATION | Migrate earnings_calendar to lifecycle contract | P0 | completed | lifecycle | Done in Patch 33A.1 |
+| TKT-DISCOVERY-HORIZON-FIX | Fix EARNINGS_DISCOVERY_END_DAYS hardcoded to 21 | P0 | completed | config | Done in Patch 33A.1 — now reads Railway env, default 35 |
+| TKT-CALENDAR-PREWINDOW | Calendar PRE_WINDOW stage and early discovery | P0 | in_progress | calendar | Wire lifecycle_rows_from_discovery into scanner output |
 | TKT-LEGACY-SUMMARY-DEPRECATION | Remove legacy report summary from normal hot path | P0 | in_progress | performance | Add LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED=False config flag |
 | TKT-CALENDAR-ENTRY-WINDOW | Calendar entry-window transition and expiration enumeration | P1 | in_progress | calendar | Add explicit expiration list enumeration before pair selection |
 | TKT-ADV-006 | Weekly expiration discovery / expiration stepping failure | P1 | in_progress | calendar | Audit TRADIER_CHAIN_EXPIRATIONS_PER_TICKER=1 effect on calendar discovery |
@@ -149,6 +168,16 @@ All threshold changes require user approval before merging.
 | `OPPORTUNITY_HISTORY_ENABLED` | true | Enable cross-run opportunity history tracking |
 | `UNIVERSAL_STRUCTURE_BUILDER_ENABLED` | true | Use universal builder for expiration pair audit logging (Patch 33A) |
 
+## Discovery Horizon Config (Patch 33A.1)
+
+| Key | Default | Was | Notes |
+|---|---|---|---|
+| `EARNINGS_DISCOVERY_START_DAYS` | 0 | 4 | Same-day events included in discovery |
+| `EARNINGS_DISCOVERY_END_DAYS` | 35 | 21 (hardcoded) | Now reads from Railway env var |
+| `EARNINGS_DISCOVERY_WINDOW_END_DAYS` | (alias) | missing | Alias for quality-filter entry-window gate |
+| `CALENDAR_STRUCTURE_BUILD_START_EVENT_DTE` | 24 | — | Structure building starts ≤24 event DTE |
+| `CALENDAR_SURFACE_START_EVENT_DTE` | 14 | — | API-visible (surfaced) ≤14 event DTE |
+
 ---
 
 ## Universal Options Structure Builder
@@ -169,6 +198,40 @@ strategies. Strategies declare requirements via `OptionsStructureSpec`; the buil
 - Integration is behind `UNIVERSAL_STRUCTURE_BUILDER_ENABLED=True`.
 - Every expiration pair must receive a disposition — `NO_SILENT_DISCARDS` is a hard rule.
 - Log token: `UNIVERSAL_STRUCTURE_BUILDER` for per-ticker output, `CALENDAR_DISCOVERY_AUDIT` for per-run summary.
+
+---
+
+## Strategy Opportunity Lifecycle Framework (Patch 33A.1)
+
+Three independent state dimensions for every opportunity:
+
+| Dimension | Values |
+|---|---|
+| `lifecycle_stage` | OUTSIDE_WINDOW, DISCOVERED, DEVELOPING, SURFACED, ACTIONABLE, OPEN_POSITION, POST_EVENT, INVALIDATED, TERMINAL |
+| `evaluation_state` | NOT_REQUESTED, EXPECTED_MISSING, DEFERRED_BUDGET, DATA_INCOMPLETE, BUILDING, STRUCTURE_COMPLETE, STRUCTURE_UNAVAILABLE, FULLY_EVALUATED, STALE, ERROR |
+| `verdict` | NOT_EVALUATED, PASS, WATCH, NEAR_MISS, FAIL, BLOCKED |
+
+**Calendar DTE mapping (event DTE = days until earnings date):**
+- 35–25 DTE → DISCOVERED / EXPECTED_MISSING (early stage, no structure attempted)
+- 24–15 DTE → DEVELOPING / BUILDING (structure building phase)
+- 14–13 DTE → SURFACED / approaching entry window
+- 12–4 DTE → ACTIONABLE / entry evaluation (6–12 ideal, 4–5 late)
+- 0–3 DTE → still ACTIONABLE but past late-entry cutoff
+- < 0 DTE → POST_EVENT
+
+**Hard invariants (enforced in tests):**
+- `EXPECTED_MISSING` and `DEFERRED_BUDGET` evaluation states MUST NOT produce verdict=`FAIL`
+- `entry_allowed=True` requires `surface_eligible=True`
+- `surface_eligible=True` requires `build_eligible=True`
+- POST_EVENT / INVALIDATED / TERMINAL stages MUST NOT be `entry_allowed`
+- `opportunity_id` (`earnings_calendar:<TICKER>:<YYYY-MM-DD>`) is stable across structure changes
+- No silent opportunity deletion: every in-window ticker must produce a lifecycle row
+
+**Key files:**
+- `app/models/strategy_opportunity_lifecycle.py` — generic enums and dataclasses
+- `app/models/calendar_evolution_policy.py` — CalendarEvolutionPolicy (immutable, validated)
+- `app/services/strategy_opportunity_lifecycle_service.py` — invariant validation + construction
+- `app/services/calendar_opportunity_lifecycle_adapter.py` — calendar-specific classifier
 
 ---
 
@@ -209,11 +272,17 @@ curl $BASE/api/calendar/history/NVDA?token=$DEV
 # Check opportunity evolution history (Patch 33A)
 curl $BASE/api/opportunities/calendar_spread/NVDA/history?token=$DEV
 
+# Check strategy lifecycle summary (Patch 33A.1)
+curl $BASE/api/dev/strategy-lifecycle?token=$DEV
+
 # Syntax check app/main.py
 python -m py_compile app/main.py
 
 # Run focused tests (when available)
 python -m pytest tests/ -x -q
+
+# Run Patch 33A + 33A.1 tests
+python -m pytest tests/test_patch33a_workstreams.py tests/test_patch33a1_strategy_lifecycle_kernel.py tests/test_patch33a1_calendar_lifecycle.py tests/test_patch33a1_calendar_lifecycle_integration.py -v
 ```
 
 ---
@@ -222,9 +291,9 @@ python -m pytest tests/ -x -q
 
 ```
 last_run:            2026-07-13
-patch:               33A
+patch:               33A.1
 result:              in_progress
-focused_tests_passed: null
+focused_tests_passed: 149 (33A: 59, 33A.1 kernel: 38, 33A.1 calendar: 27, 33A.1 integration: 25)
 full_suite_passed:   null
 ```
 

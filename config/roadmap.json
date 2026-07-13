@@ -1,9 +1,9 @@
 {
-  "schema_version": "33A.v1",
-  "patch": "33A",
-  "patch_title": "Evolutionary Opportunity Tracking and Calendar Discovery Repair",
+  "schema_version": "33A.1.v1",
+  "patch": "33A.1",
+  "patch_title": "Strategy Opportunity Lifecycle Kernel and Earnings Calendar Business Logic Repair",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 33A",
+  "current_sprint": "Patch 33A.1",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
@@ -28,10 +28,28 @@
   ],
   "active_tickets": [
     {
+      "id": "TKT-STRATEGY-LIFECYCLE-KERNEL", "title": "Generic lifecycle kernel — enums, models, validation service",
+      "priority": "P0", "status": "completed", "category": "lifecycle",
+      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
+      "next_action": "Done — models in app/models/strategy_opportunity_lifecycle.py", "relevant_patch": "33A.1"
+    },
+    {
+      "id": "TKT-CALENDAR-LIFECYCLE-MIGRATION", "title": "Migrate earnings_calendar to lifecycle contract",
+      "priority": "P0", "status": "completed", "category": "lifecycle",
+      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
+      "next_action": "Done — adapter in app/services/calendar_opportunity_lifecycle_adapter.py", "relevant_patch": "33A.1"
+    },
+    {
+      "id": "TKT-DISCOVERY-HORIZON-FIX", "title": "Fix EARNINGS_DISCOVERY_END_DAYS hardcoded to 21",
+      "priority": "P0", "status": "completed", "category": "config",
+      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
+      "next_action": "Done — now reads Railway env var, default 35", "relevant_patch": "33A.1"
+    },
+    {
       "id": "TKT-CALENDAR-PREWINDOW", "title": "Calendar PRE_WINDOW stage and early discovery",
       "priority": "P0", "status": "in_progress", "category": "calendar",
       "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Implement PRE_WINDOW stage in calendar scanner", "relevant_patch": "33A"
+      "next_action": "Wire lifecycle_rows_from_discovery into scanner output", "relevant_patch": "33A.1"
     },
     {
       "id": "TKT-CALENDAR-ENTRY-WINDOW", "title": "Calendar entry-window transition and expiration enumeration",
@@ -136,6 +154,7 @@
     }
   ],
   "recently_completed": [
+    {"patch": "33A", "title": "Evolutionary Opportunity Tracking and Calendar Discovery Repair"},
     {"patch": "32B", "title": "Data Confidence UI Integration, Provider Reconciliation, Calendar Discovery Audit"},
     {"patch": "32A", "title": "Data Confidence Completion — FieldProvenanceRecord, validation service"},
     {"patch": "31B", "title": "Calendar scan barrier, pre-scan quality filter, expiration pair precheck"},
@@ -144,9 +163,9 @@
   ],
   "validation_status": {
     "last_run": "2026-07-13",
-    "patch": "33A",
+    "patch": "33A.1",
     "result": "in_progress",
-    "focused_tests_passed": null,
+    "focused_tests_passed": 149,
     "full_suite_passed": null
   },
   "known_data_confidence_issues": [

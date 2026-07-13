@@ -3055,6 +3055,92 @@ def api_opportunity_history(strategy_id, ticker):
         return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
 
 
+# ─── 33A.1: Strategy lifecycle endpoint ──────────────────────────────────────
+
+@app.route("/api/dev/strategy-lifecycle")
+def api_strategy_lifecycle():
+    """Read-only lifecycle summary for all active earnings-calendar opportunities.
+
+    Returns lifecycle stage, evaluation state, and verdict for each ticker
+    in the most recent quality-filter snapshot. No provider calls triggered.
+    """
+    _require_dev_diagnostics_token()
+    try:
+        from datetime import date as _date
+        from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+        from app.models.strategy_opportunity_lifecycle import LifecycleStage, EvaluationState
+        from app.services.calendar_opportunity_lifecycle_adapter import (
+            build_calendar_lifecycle_opportunity,
+            build_opportunity_id,
+        )
+        from app.services.strategy_opportunity_lifecycle_service import summarize_lifecycle_batch
+
+        policy = load_calendar_evolution_policy()
+        today = _date.today()
+
+        # Pull from stored snapshot — same pattern as /api/calendar/discovery-audit
+        quality_items: list = []
+        source_run_id: str | None = None
+        try:
+            repo = ReportSnapshotRepository()
+            snapshot = repo.latest_success(include_full=True)
+            if snapshot:
+                source_run_id = snapshot.get("run_id")
+                summary = repo.load_summary(snapshot, full=True)
+                report = summary.get("report_data", {}) or {}
+                tradier = report.get("tradier_snapshot", {}) or {}
+                quality_items = (tradier.get("_earnings_discovery_quality") or {}).get("items") or []
+        except Exception:
+            pass
+
+        opportunities = []
+        for item in quality_items:
+            ticker = str(item.get("ticker") or "").upper().strip()
+            if not ticker:
+                continue
+            event = item.get("event") or item
+            earnings_date_str = event.get("earnings_date") or event.get("date") or item.get("earnings_date")
+            if not earnings_date_str:
+                continue
+            try:
+                from datetime import datetime as _dt
+                earnings_date = _dt.strptime(str(earnings_date_str)[:10], "%Y-%m-%d").date()
+            except (ValueError, TypeError):
+                continue
+            days_until = (earnings_date - today).days
+            has_structure = bool(item.get("front_expiration") and item.get("back_expiration"))
+            opp, _ = build_calendar_lifecycle_opportunity(
+                ticker=ticker,
+                earnings_date=earnings_date,
+                days_until_event=days_until,
+                policy=policy,
+                has_structure=has_structure,
+                evaluation_date=today,
+            )
+            opportunities.append(opp)
+
+        summary = summarize_lifecycle_batch(opportunities)
+        return jsonify({
+            "status": "ok",
+            "strategy_id": "earnings_calendar",
+            "as_of_date": today.isoformat(),
+            "source_run_id": source_run_id,
+            "policy": policy.to_dict(),
+            "summary": summary,
+            "opportunities": [o.to_dict() for o in opportunities],
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "error": str(exc),
+            "trace": traceback.format_exc(),
+            "provider_calls_triggered": False,
+        }), 500
+
+
 def _reconstruct_calendar_lifecycle(ticker: str, engine_row: dict, quality_row: dict) -> dict:
     """Reconstruct per-ticker pipeline stages from stored snapshot data."""
     qp = quality_row or {}
