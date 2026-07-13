@@ -499,6 +499,12 @@ OPPORTUNITY_HISTORY_MAX_ROWS_PER_RUN = _int_env("OPPORTUNITY_HISTORY_MAX_ROWS_PE
 # serialized, or stored. Normal routes use compact manifest + StrategyRowRepository.
 LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED = _bool_env("LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED", False)
 
+# --- 33A: Universal Structure Builder ---
+# Master switch for the universal option structure builder engine (Patch 33A).
+# When True the builder module is importable and can be called by strategies.
+# Existing strategies continue to use their own construction paths when this is False.
+UNIVERSAL_STRUCTURE_BUILDER_ENABLED = _bool_env("UNIVERSAL_STRUCTURE_BUILDER_ENABLED", True)
+
 # --- 32A: Data Confidence & Provenance Persistence ---
 # Master switch for Patch 32A data confidence enrichment and provenance persistence.
 DATA_CONFIDENCE_ENABLED = _bool_env("DATA_CONFIDENCE_ENABLED", True)

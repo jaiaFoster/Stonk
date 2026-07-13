@@ -2937,6 +2937,124 @@ def dev_roadmap():
     }), 200
 
 
+# ─── 33A: Options structures endpoint ────────────────────────────────────────
+
+@app.route("/api/options-structures/<strategy_id>")
+def api_options_structures(strategy_id):
+    _require_dev_diagnostics_token()
+    try:
+        # Return the build spec info (no chain data available at API layer — return metadata)
+        from app.services.options_structure_builder import PairStatus
+        from app.models.options_structure_spec import OptionsStructureSpec, LiquidityRequirements
+
+        # Return the spec config for the strategy (read-only, no builds triggered)
+        if strategy_id == "calendar_spread":
+            spec = OptionsStructureSpec(
+                strategy_id=strategy_id,
+                structure_type=f"{getattr(config, 'CALENDAR_OPTION_TYPE', 'call')}_calendar",
+                option_types=[str(getattr(config, 'CALENDAR_OPTION_TYPE', 'call'))],
+                front_dte_min=int(getattr(config, 'CALENDAR_EARNINGS_FRONT_MIN_DTE', 7) or 7),
+                front_dte_max=int(getattr(config, 'CALENDAR_EARNINGS_FRONT_MAX_DTE', 14) or 14),
+                min_expiration_gap_days=14,
+                max_expiration_gap_days=49,
+            )
+        else:
+            return jsonify({"status": "error", "error": f"Unknown strategy_id: {strategy_id}", "provider_calls_triggered": False}), 404
+
+        from dataclasses import asdict
+        return jsonify({
+            "status": "ok",
+            "strategy_id": strategy_id,
+            "spec": asdict(spec),
+            "universal_builder_enabled": bool(getattr(config, "UNIVERSAL_STRUCTURE_BUILDER_ENABLED", False)),
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
+
+
+# ─── 33A: Calendar discovery audit endpoint ───────────────────────────────────
+
+@app.route("/api/calendar/discovery-audit")
+def api_calendar_discovery_audit():
+    _require_dev_diagnostics_token()
+    try:
+        from app.services.report_snapshot_service import ReportSnapshotRepository
+        repo = ReportSnapshotRepository()
+        snapshot = repo.latest_success(include_full=True)
+        if not snapshot:
+            return jsonify({"status": "unavailable", "error": "No completed run snapshot found.", "provider_calls_triggered": False}), 404
+        summary = repo.load_summary(snapshot, full=True)
+        report = summary.get("report_data", {}) or {}
+        tradier = report.get("tradier_snapshot", {}) or {}
+        calendar = tradier.get("_earnings_discovery_quality") or {}
+
+        return jsonify({
+            "status": "ok",
+            "source_run_id": snapshot.get("run_id"),
+            "provider_calls_triggered": False,
+            "read_only": True,
+            "quality_items": len(calendar.get("items") or []),
+            "rejected_items": len(calendar.get("rejected_items") or []),
+            "prescreen_stats": calendar.get("_prescreen_stats") or {},
+            "calendar_discovery_summary": {
+                k: v for k, v in calendar.items()
+                if not k.startswith("items") and not k.startswith("rejected_items")
+            },
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
+
+
+# ─── 33A: Calendar history endpoint ──────────────────────────────────────────
+
+@app.route("/api/calendar/history/<ticker>")
+def api_calendar_history(ticker):
+    _require_dev_diagnostics_token()
+    try:
+        from app.db.strategy_opportunity_history import get_recent_history
+        ticker = ticker.upper()
+        rows = get_recent_history(ticker=ticker, strategy_id="calendar_spread", limit=30)
+        return jsonify({
+            "status": "ok",
+            "ticker": ticker,
+            "strategy_id": "calendar_spread",
+            "history_count": len(rows),
+            "history": rows,
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
+
+
+# ─── 33A: Opportunity history endpoint ───────────────────────────────────────
+
+@app.route("/api/opportunities/<strategy_id>/<ticker>/history")
+def api_opportunity_history(strategy_id, ticker):
+    _require_dev_diagnostics_token()
+    try:
+        from app.db.strategy_opportunity_history import get_recent_history
+        ticker = ticker.upper()
+        rows = get_recent_history(ticker=ticker, strategy_id=strategy_id, limit=30)
+        return jsonify({
+            "status": "ok",
+            "ticker": ticker,
+            "strategy_id": strategy_id,
+            "history_count": len(rows),
+            "history": rows,
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({"status": "error", "error": str(exc), "trace": traceback.format_exc(), "provider_calls_triggered": False}), 500
+
+
 def _reconstruct_calendar_lifecycle(ticker: str, engine_row: dict, quality_row: dict) -> dict:
     """Reconstruct per-ticker pipeline stages from stored snapshot data."""
     qp = quality_row or {}
