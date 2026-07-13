@@ -315,8 +315,11 @@ def _build_structure_summary(row: dict[str, Any], strategy_id: str) -> dict[str,
         }
 
     if strategy_id == "forward_factor_calendar":
+        _row_dry_run = bool(row.get("dry_run", True))
+        _rec_mode = str(row.get("recommendation_mode") or ("research" if _row_dry_run else "live_recommendation"))
         return {
-            "dry_run": True,
+            "dry_run": _row_dry_run,
+            "recommendation_mode_at_observation": _rec_mode,
             "source_forward_factor": row.get("source_forward_factor"),
             "diagnostic_raw_iv_forward_factor": row.get("diagnostic_raw_iv_forward_factor"),
             "source_qualified": row.get("source_qualified"),
@@ -326,7 +329,7 @@ def _build_structure_summary(row: dict[str, Any], strategy_id: str) -> dict[str,
             "earnings_contaminated": row.get("earnings_contaminated"),
             "primary_blocker": str(row.get("primary_blocker") or "")[:200],
             "next_action": str(row.get("next_action") or "")[:200],
-            "daily_opportunity_eligible": False,
+            "daily_opportunity_eligible": bool(row.get("daily_opportunity_eligible")),
             "can_trade_live": False,
             "ff_candidate_stage": row.get("ff_candidate_stage"),
             # 32C: Four-tier verdict fields

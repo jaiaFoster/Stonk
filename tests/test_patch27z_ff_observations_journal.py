@@ -318,15 +318,21 @@ class TestIntegrationWithBuildFF(unittest.TestCase):
 
     def test_dry_run_true_unchanged(self):
         from app import config
+        # Legacy dry-run flag preserved for backwards compat
         self.assertTrue(config.FORWARD_FACTOR_DRY_RUN)
+        # Patch 33A: live recommendations enabled by default; execution still gated off
+        self.assertTrue(getattr(config, "FF_RECOMMENDATIONS_ENABLED", False))
+        self.assertFalse(getattr(config, "FF_EXECUTION_ENABLED", True))
 
-    def test_ff_absent_from_daily_opportunity(self):
+    def test_ff_absent_from_daily_opportunity_when_recommendations_disabled(self):
+        """When FF_RECOMMENDATIONS_ENABLED=False FF rows are absent from Daily Opportunity."""
         from app import config
         from app.services.forward_factor_service import build_forward_factor_strategy
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "ff.db")
             with patch.object(config, "FF_JOURNAL_ENABLED", True), \
-                 patch.object(config, "FF_JOURNAL_DB_PATH", path):
+                 patch.object(config, "FF_JOURNAL_DB_PATH", path), \
+                 patch.object(config, "FF_RECOMMENDATIONS_ENABLED", False):
                 result = build_forward_factor_strategy(
                     ["ELF"], {"ELF": {"current_price": 150, "average_volume_30d": 8_000_000}},
                     self._hub(), run_mode="dev", requirement_plan=self._plan(["ELF"]),

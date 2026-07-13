@@ -225,10 +225,11 @@ _CALENDAR_SCAN_STATE: dict[str, Any] = {
     "status": "never_run",
     "candidates": [],
     "completed_at": None,
+    "scan_id": None,
 }
 
 
-def _run_calendar_scan_bg(scan_fn: Callable[[], list[dict[str, Any]]]) -> None:
+def _run_calendar_scan_bg(scan_fn: Callable[[], list[dict[str, Any]]], scan_id: str | None = None) -> None:
     """Background thread: run calendar scan and update shared state."""
     try:
         result = scan_fn()
@@ -239,6 +240,7 @@ def _run_calendar_scan_bg(scan_fn: Callable[[], list[dict[str, Any]]]) -> None:
             "status": "complete",
             "candidates": result,
             "completed_at": datetime.now(timezone.utc).isoformat(),
+            "scan_id": scan_id,
         })
 
 
@@ -889,17 +891,26 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
 
     # Calendar scan deferred to background thread — main pipeline does not block.
     # Results from the previous run's background scan are used immediately.
+    # 33A: Each scan gets a unique scan_id; candidates are tagged to prevent stale reuse.
+    import uuid as _uuid
+    _new_scan_id = f"scan_{run_context.run_id}_{_uuid.uuid4().hex[:8]}"
     with _CALENDAR_SCAN_LOCK:
         calendar_candidates = list(_CALENDAR_SCAN_STATE["candidates"])
         _scan_prior_status = _CALENDAR_SCAN_STATE["status"]
         _scan_completed_at = _CALENDAR_SCAN_STATE["completed_at"]
+        _prior_scan_id = _CALENDAR_SCAN_STATE.get("scan_id")
     _calendar_scan_status = "pending" if _scan_prior_status == "never_run" else "stale"
+    # Tag prior-scan candidates as historical so they can be distinguished from fresh ones.
+    for _cand in calendar_candidates:
+        if isinstance(_cand, dict):
+            _cand.setdefault("scan_id", _prior_scan_id or "prior")
+            _cand.setdefault("scan_source", "prior_run")
     # TKT-027: apply price freshness gate using current quotes from tradier_snapshot.
     calendar_candidates = _apply_price_freshness_gate(calendar_candidates, tradier_snapshot)
     begin_step(pipeline_status, "calendar_spread_scan", "Calendar spread scan deferred to background thread...")
-    log_print(f"Calendar scan: background mode; prior status={_scan_prior_status}, candidates={len(calendar_candidates)}. Launching new scan.")
-    skip_step(pipeline_status, "calendar_spread_scan", f"Deferred to background; prior_status={_scan_prior_status}; candidates_available={len(calendar_candidates)}")
-    _bg = threading.Thread(target=_run_calendar_scan_bg, args=(run_calendar_scan,), daemon=True)
+    log_print(f"Calendar scan: background mode; prior status={_scan_prior_status}, candidates={len(calendar_candidates)}, scan_id={_new_scan_id}. Launching new scan.")
+    skip_step(pipeline_status, "calendar_spread_scan", f"Deferred to background; prior_status={_scan_prior_status}; candidates_available={len(calendar_candidates)}; scan_id={_new_scan_id}")
+    _bg = threading.Thread(target=_run_calendar_scan_bg, args=(run_calendar_scan, _new_scan_id), daemon=True)
     _bg.start()
     candle_status = run_optional_step(
         "calendar_candle_rescue",
@@ -922,6 +933,8 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "source": "tradier",
         "universe_source": "earnings_discovery_v1",
         "scan_completed_at": _scan_completed_at,
+        "current_scan_id": _new_scan_id,
+        "prior_scan_id": _prior_scan_id,
     }
     tradier_snapshot["_candle_status"] = candle_status
 
@@ -1340,14 +1353,21 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             }
             if config.ENABLE_PAYLOAD_SIZE_PROFILE:
                 import zlib
-                from app.services.report_snapshot_service import build_compact_full_report_summary, build_compact_manifest_summary
-                full_summary_json = json.dumps(
-                    build_compact_full_report_summary(snapshot_summary),
-                    default=str,
-                    separators=(",", ":"),
-                ).encode("utf-8")
+                from app.services.report_snapshot_service import build_compact_manifest_summary
                 hot_summary_json = json.dumps(build_compact_manifest_summary(snapshot_summary), default=str, separators=(",", ":")).encode("utf-8")
-                compressed_summary = zlib.compress(full_summary_json)
+                _legacy_enabled = getattr(config, "LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED", False)
+                if _legacy_enabled:
+                    from app.services.report_snapshot_service import build_compact_full_report_summary
+                    full_summary_json = json.dumps(
+                        build_compact_full_report_summary(snapshot_summary),
+                        default=str,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    compressed_summary = zlib.compress(full_summary_json)
+                    _legacy_summary_bytes = len(full_summary_json)
+                else:
+                    compressed_summary = b""
+                    _legacy_summary_bytes = 0
                 compressed_payload = zlib.compress(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
                 raw_provider_json = json.dumps(tradier_snapshot, default=str, separators=(",", ":")).encode("utf-8")
                 compressed_raw_provider = zlib.compress(raw_provider_json)
@@ -1371,9 +1391,21 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                     "full_archive_blob_bytes": len(compressed_summary),
                     "raw_provider_archive_blob_bytes": len(compressed_raw_provider),
                     "api_hot_path_bytes": len(hot_summary_json),
+                    "legacy_summary_generated": _legacy_enabled,
+                    "legacy_summary_bytes": _legacy_summary_bytes,
                 })
                 from app.services.payload_profile_service import _payload_status
                 payload_profile["summary_payload_status"] = _payload_status(len(hot_summary_json))
+                _row_store_rows = (tradier_snapshot.get("_strategy_row_store") or {}).get("write_count", 0)
+                _history_rows = (tradier_snapshot.get("_opportunity_history_write") or {}).get("rows_written", 0)
+                log_print(
+                    f"PayloadProfile: compact_manifest={len(hot_summary_json)}B "
+                    f"legacy_summary_generated={_legacy_enabled} "
+                    f"legacy_summary_bytes={_legacy_summary_bytes} "
+                    f"api_hot_path={len(hot_summary_json)}B "
+                    f"row_store_rows={_row_store_rows} "
+                    f"history_rows={_history_rows}"
+                )
             snapshot_started = perf_counter()
             snapshot_method(
                 run_context.run_id,
@@ -1443,6 +1475,34 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                     _write_run_report(run_context.run_id, "pipeline", _suite_result)
             except Exception as _val_exc:
                 log_print(f"DataConfidenceRunReport: write failed (non-fatal): {_val_exc}")
+
+            # 33A: Opportunity evolution history write — non-blocking.
+            try:
+                if getattr(config, "OPPORTUNITY_HISTORY_ENABLED", True):
+                    from app.db.strategy_opportunity_history import write_run as _write_opp_hist
+                    _run_date_hist = str(run_context.created_at or "")[:10]
+                    _hist_result = _write_opp_hist(
+                        run_id=run_context.run_id,
+                        strategy_results=normalized_strategy_results,
+                        run_date=_run_date_hist,
+                    )
+                    log_print(
+                        f"OpportunityHistory: run_id={run_context.run_id} "
+                        f"rows_written={_hist_result.get('rows_written', 0)} "
+                        f"first_observations={_hist_result.get('first_observations', 0)} "
+                        f"updated_opportunities={_hist_result.get('rows_written', 0) - _hist_result.get('first_observations', 0)} "
+                        f"stage_transitions={_hist_result.get('stage_transitions', 0)} "
+                        f"verdict_transitions={_hist_result.get('verdict_transitions', 0)}"
+                    )
+                    tradier_snapshot["_opportunity_history_write"] = _hist_result
+                    # Opportunistic cleanup
+                    try:
+                        from app.db.strategy_opportunity_history import cleanup_old_observations as _hist_cleanup
+                        _hist_cleanup()
+                    except Exception:
+                        pass
+            except Exception as _hist_exc:
+                log_print(f"OpportunityHistory: write failed (non-fatal): {_hist_exc}")
 
             # 30B: Universal strategy observation journal write — non-blocking.
             try:

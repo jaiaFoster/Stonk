@@ -308,7 +308,17 @@ def _semantic_from_row(row: dict[str, Any]) -> dict[str, Any]:
     verdict_upper = str(row.get("verdict") or "").upper()
     row_type = str(row.get("row_type") or "")
     if sid == "forward_factor_calendar":
+        from app import config as _cfg
+        _ff_live = bool(getattr(_cfg, "FF_RECOMMENDATIONS_ENABLED", False)) and not bool(getattr(_cfg, "FF_EXECUTION_ENABLED", False))
         _at = str(row.get("action_type") or "")
+        _verdict_up = str(row.get("verdict") or row.get("final_verdict") or "").upper()
+        if _ff_live and (row.get("can_enter_daily_opportunity") or row.get("daily_opportunity_eligible")):
+            if _at == "forward_factor_entry" or _verdict_up.startswith("PASS"):
+                return _semantic("recommendation", "forward_factor_entry", "review_only", "eligible", "Forward Factor PASS signal — live recommendation, no execution.", "", "normal", "ready", "ff_promoted")
+            if _at == "forward_factor_watch" or _verdict_up.startswith("WATCH"):
+                return _semantic("watch", "forward_factor_watch", "monitor_only", "conditional", "Forward Factor WATCH signal — live recommendation, no execution.", "", "low", "review_required", "ff_promoted")
+        if _ff_live:
+            return _semantic("diagnostic", "diagnostic", "non_actionable", "excluded", "Forward Factor: not eligible for daily opportunity.", "eligibility_gates_not_met", "diagnostic", "blocked", "ff_promoted")
         if _at == "forward_factor_entry":
             return _semantic("dry_run_entry", "forward_factor_entry", "dry_run_only", "conditional", "Forward Factor PASS signal — dry-run only, no execution.", "dry_run", "normal", "review_required", "legacy_verdict_inference")
         if _at == "forward_factor_watch":
