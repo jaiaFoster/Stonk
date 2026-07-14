@@ -1350,30 +1350,54 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         _ec_persisted = ((tradier_snapshot.get("_strategy_row_store") or {}).get("by_strategy") or {}).get("earnings_calendar")
         _ec_history = (tradier_snapshot.get("_opportunity_history_write") or {}).get("rows_written")
         _ec_journal = (tradier_snapshot.get("_journal_write_status") or {}).get("observations_written")
+        _api_earnings_rows = len(_ec_rows)
+        _api_lifecycle_rows = 0
+        _open_parent_rows = 0
+        _open_child_rows = 0
+        try:
+            from app.api.strategy_api import get_strategy_rows
+            _strategy_api = get_strategy_rows("earnings_calendar", limit=500)
+            _api_rows = [row for row in (_strategy_api.get("rows") or []) if isinstance(row, dict)]
+            _api_earnings_rows = len([row for row in _api_rows if str(row.get("row_model") or row.get("row_type") or "") == "OPPORTUNITY_PARENT"])
+            _api_lifecycle_rows = len([row for row in _api_rows if str(row.get("row_model") or row.get("row_type") or "") in {"OPEN_POSITION_PARENT", "OPEN_POSITION_CHILD"} or str(row.get("lifecycle_stage") or "") == "OPEN_POSITION"])
+        except Exception:
+            pass
+        try:
+            from app.api.open_positions_api import build_open_positions_response
+            _open_api = build_open_positions_response()
+            _open_parent_rows = int(_open_api.get("parent_double_calendar_count") or len(_open_api.get("double_calendar_structures") or []) or 0)
+            _open_child_rows = int(_open_api.get("child_calendar_count") or len(_open_api.get("calendar_structures") or []) or 0)
+        except Exception:
+            pass
         _calendar_recon = build_calendar_row_reconciliation(
             calendar_projection,
             persisted_rows=_ec_persisted,
-            api_visible_rows=len(_ec_rows),
+            api_visible_rows=_api_earnings_rows,
             history_rows=_ec_history,
             journal_rows=_ec_journal,
         )
         _calendar_recon["canonical_rows"] = len(_ec_rows)
+        _calendar_recon["strategy_lifecycle_api_rows"] = _api_lifecycle_rows
+        _calendar_recon["open_positions_api_parent_rows"] = _open_parent_rows
+        _calendar_recon["open_positions_api_child_rows"] = _open_child_rows
         calendar_projection["calendar_row_reconciliation"] = _calendar_recon
         tradier_snapshot["_calendar_row_reconciliation"] = _calendar_recon
         log_print(
             "CALENDAR_ROW_RECONCILIATION "
-            f"parent_generated={_calendar_recon.get('parent_generated', _calendar_recon.get('generated_rows', 0))} "
-            f"open_parent_generated={_calendar_recon.get('open_parent_generated', 0)} "
-            f"open_child_generated={_calendar_recon.get('open_child_generated', 0)} "
+            f"opportunity_parents_generated={_calendar_recon.get('opportunity_parents_generated', _calendar_recon.get('parent_generated', 0))} "
+            f"open_position_parents_generated={_calendar_recon.get('open_position_parents_generated', 0)} "
+            f"open_position_children_generated={_calendar_recon.get('open_position_children_generated', _calendar_recon.get('open_child_generated', 0))} "
             f"structure_records={_calendar_recon.get('structure_records', 0)} "
             f"diagnostic_records={_calendar_recon.get('diagnostic_records', 0)} "
             f"normalized={_calendar_recon.get('normalized_rows', 0)} "
             f"duplicates={_calendar_recon.get('duplicate_rows', 0)} "
             f"invalid={_calendar_recon.get('invalid_rows', 0)} "
             f"persisted={_calendar_recon.get('persisted_rows')} "
-            f"api_visible_parents={_calendar_recon.get('api_visible_parents', _calendar_recon.get('api_rows'))} "
-            f"api_visible_children={_calendar_recon.get('api_visible_children', 0)} "
-            f"daily_visible={_calendar_recon.get('daily_opportunity_rows', 0)} "
+            f"earnings_calendar_api_rows={_calendar_recon.get('earnings_calendar_api_rows')} "
+            f"strategy_lifecycle_api_rows={_calendar_recon.get('strategy_lifecycle_api_rows')} "
+            f"open_positions_api_parent_rows={_calendar_recon.get('open_positions_api_parent_rows')} "
+            f"open_positions_api_child_rows={_calendar_recon.get('open_positions_api_child_rows')} "
+            f"daily_opportunity_rows={_calendar_recon.get('daily_opportunity_rows', 0)} "
             f"history={_calendar_recon.get('history_rows')} "
             f"journal={_calendar_recon.get('journal_rows')} "
             f"api_exclusions={_calendar_recon.get('api_exclusions', {})} "
@@ -1425,7 +1449,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         attach_status()
         try:
             report_repository = ReportSnapshotRepository(log_print=log_print)
-            snapshot_method = report_repository.save_success if report_quality == "SUCCESS_COMPLETE" else report_repository.save_degraded
             trimmed_log = log[-config.REPORT_SNAPSHOT_MAX_LOG_LINES:]
             snapshot_summary = {
                 **report_summary,
@@ -1495,23 +1518,84 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
                     f"row_store_rows={_row_store_rows} "
                     f"history_rows={_history_rows}"
                 )
-            snapshot_started = perf_counter()
-            snapshot_method(
-                run_context.run_id,
-                clean_mode,
-                payload,
-                snapshot_summary,
-                coverage,
-                provider_status,
+            from app.services.run_manifest_repository import RunManifestRepository, build_run_manifest
+            candidate_manifest = build_run_manifest(
+                run_context.run_id, clean_mode, pipeline_status.get("overall_status", "complete"),
+                report_quality, runtime_profile, payload_profile, pipeline_status, normalized_strategy_results,
+                daily_opportunity_engine, provider_fetch_count=len(run_context.fetch_audit),
+                provider_status=provider_status,
             )
+            RunManifestRepository().save(candidate_manifest)
+            tradier_snapshot["_run_manifest"] = candidate_manifest
+
+            verification = None
+            try:
+                from app.services.endpoint_verification_service import run_endpoint_verification
+
+                verification = run_endpoint_verification(
+                    completed_run_id=run_context.run_id,
+                    report_quality=report_quality,
+                    log_print=log_print,
+                )
+                tradier_snapshot["_endpoint_verification"] = verification
+            except Exception as verify_exc:
+                verification = {
+                    "verification_status": "FAILED",
+                    "required_failed_count": 1,
+                    "failed_count": 1,
+                    "error": "verification_exception",
+                }
+                tradier_snapshot["_endpoint_verification"] = verification
+                log_print(f"[VERIFY][FAIL] endpoint_verification assertion=UNEXPECTED_ERROR message={str(verify_exc)[:160]}")
+
+            if int((verification or {}).get("required_failed_count") or 0) > 0:
+                report_quality = "FAILED_VALIDATION"
+                pipeline_status["report_quality"] = report_quality
+                pipeline_status["overall_status"] = "failed_validation"
+                pipeline_status.setdefault("degraded_evidence", {})["endpoint_verification"] = {
+                    "required_failed_count": int((verification or {}).get("required_failed_count") or 0),
+                    "failed_count": int((verification or {}).get("failed_count") or 0),
+                }
+                report_summary["report_quality"] = report_quality
+                snapshot_summary["report_quality"] = report_quality
+                snapshot_summary["pipeline_status"] = pipeline_status
+                log_print("report_quality set to FAILED_VALIDATION: required endpoint/canonical semantic verification failed.")
+
+            try:
+                from app.api.daily_opportunity_api import build_daily_opportunity_response
+                _daily_endpoint = build_daily_opportunity_response(limit=12, include_exclusions=True)
+                _in_run_daily_actions = len((daily_opportunity_engine or {}).get("actions") or [])
+                _endpoint_daily_actions = int(_daily_endpoint.get("action_count") or 0)
+                tradier_snapshot["_daily_opportunity_parity"] = {
+                    "in_run_daily_actions": _in_run_daily_actions,
+                    "endpoint_daily_actions": _endpoint_daily_actions,
+                    "reconciled": _in_run_daily_actions == _endpoint_daily_actions,
+                    "source": _daily_endpoint.get("source"),
+                }
+                log_print(
+                    "DAILY_OPPORTUNITY_PARITY "
+                    f"in_run_daily_actions={_in_run_daily_actions} "
+                    f"endpoint_daily_actions={_endpoint_daily_actions} "
+                    f"source={_daily_endpoint.get('source')} "
+                    f"reconciled={_in_run_daily_actions == _endpoint_daily_actions}"
+                )
+            except Exception as _daily_parity_exc:
+                log_print(f"DAILY_OPPORTUNITY_PARITY error={_daily_parity_exc}")
+
+            snapshot_started = perf_counter()
+            if report_quality == "SUCCESS_COMPLETE":
+                report_repository.save_success(run_context.run_id, clean_mode, payload, snapshot_summary, coverage, provider_status)
+            elif report_quality == "FAILED_VALIDATION":
+                report_repository.record_failure(run_context.run_id, clean_mode, snapshot_summary)
+            else:
+                report_repository.save_degraded(run_context.run_id, clean_mode, payload, snapshot_summary, coverage, provider_status)
             snapshot_save_ms = round((perf_counter() - snapshot_started) * 1000)
             runtime_profile.setdefault("phases_ms", {})["report_snapshot_save"] = snapshot_save_ms
             runtime_profile["total_ms"] = int(runtime_profile.get("total_ms", 0)) + snapshot_save_ms
             log_print(f"RuntimeProfile: report_snapshot_save={snapshot_save_ms}ms")
             _write_local_vault(run_context.run_id, clean_mode, positions, tradier_snapshot, snapshot_summary, pipeline_status, log_print)
-            from app.services.run_manifest_repository import RunManifestRepository, build_run_manifest
             manifest = build_run_manifest(
-                run_context.run_id, clean_mode, pipeline_status.get("overall_status", "complete"),
+                run_context.run_id, clean_mode, pipeline_status.get("overall_status", "complete" if report_quality == "SUCCESS_COMPLETE" else "degraded"),
                 report_quality, runtime_profile, payload_profile, pipeline_status, normalized_strategy_results,
                 daily_opportunity_engine, provider_fetch_count=len(run_context.fetch_audit),
                 provider_status=provider_status,

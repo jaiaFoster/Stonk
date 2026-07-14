@@ -273,6 +273,11 @@ def _seed_verification_run(db_path: str, run_id: str, *, bad_calendar_semantics:
             "action_type": "calendar_entry",
             "actionability": "review_only",
             "eligibility_status": "eligible",
+            "evaluation_state": "STRUCTURE_UNAVAILABLE",
+            "trade_verdict": "NOT_EVALUATED",
+            "recommended_action": "MONITOR",
+            "entry_evaluation_eligible": False,
+            "entry_allowed": True,
             "semantic_source": "row",
             "semantic_fields_version": "30J.v1",
         })
@@ -316,7 +321,7 @@ def test_endpoint_verification_packet_passes_after_persistence(monkeypatch):
     assert not any("FULL_RAW" in line or "account_number" in line for line in logs)
 
 
-def test_endpoint_verification_detects_rejected_row_marked_eligible(monkeypatch):
+def test_endpoint_verification_detects_invalid_calendar_entry_permission(monkeypatch):
     from app.services.endpoint_verification_service import run_endpoint_verification
 
     with TemporaryDirectory() as tmp:
@@ -332,7 +337,7 @@ def test_endpoint_verification_detects_rejected_row_marked_eligible(monkeypatch)
         )
 
     assert result["failed_count"] >= 1
-    assert any("REJECTED_ROW_MARKED_ELIGIBLE" in line for line in logs)
+    assert any("CALENDAR_ENTRY_PERMISSION_INVALID" in line for line in logs)
     assert any("[VERIFY][FAIL] earnings_calendar" in line for line in logs)
 
 

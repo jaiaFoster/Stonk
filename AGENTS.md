@@ -1,14 +1,14 @@
 <!-- ROADMAP_META
-patch: 33C.1
+patch: 33C.2
 last_updated: 2026-07-13
 roadmap_json: config/roadmap.json
 -->
 
-# ASA Agent Reference — Patch 33C.1
+# ASA Agent Reference — Patch 33C.2
 
-**Patch title:** Delete the Legacy Calendar Pipeline and Enforce Canonical Opportunity Ownership
+**Patch title:** Canonical Status Semantics, Explicit Eligibility, and Verified Snapshot Promotion
 **Sprint status:** in_progress
-**Machine-readable roadmap:** `config/roadmap.json` (schema version 33C.1.v1)
+**Machine-readable roadmap:** `config/roadmap.json` (schema version 33C.2.v1)
 
 ---
 
@@ -40,12 +40,12 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/services/strategy_opportunity_lifecycle_service.py` | Generic lifecycle invariant validation and canonical construction (Patch 33A.1) |
 | `app/services/calendar_opportunity_lifecycle_adapter.py` | Earnings-calendar lifecycle classifier and opportunity_id builder (Patch 33A.1) |
 | `app/services/calendar_scan_result_service.py` | Run-scoped calendar scan results and scanner status contract (Patch 33B) |
-| `app/services/calendar_decision_service.py` | Sole owner of final calendar decision fields: evaluation state, trade verdict, recommended action, and entry permission (Patch 33C.1) |
-| `app/services/calendar_opportunity_projection_service.py` | Sole calendar row projection path; parent rows own nested structure attempts (Patch 33C.1) |
+| `app/services/calendar_decision_service.py` | Sole owner of final calendar decision fields: evaluation state, trade verdict, recommended action, and entry permission (Patch 33C.2) |
+| `app/services/calendar_opportunity_projection_service.py` | Sole calendar row projection path; parent rows own nested structure attempts and pre-persistence invariant validation (Patch 33C.2) |
 | `app/services/open_options_position_reconciliation_service.py` | Sole open child-calendar and double-calendar parent grouping service (Patch 33C.1) |
 | `app/services/calendar_risk_fact_service.py` | Pure account-risk fact helper; no verdict/action ownership (Patch 33C.1) |
 | `app/services/calendar_trade_type_service.py` | Pure calendar trade-type fact helper; no verdict/action ownership (Patch 33C.1) |
-| `app/services/run_finalization_coordinator.py` | Required strategy artifact persistence before snapshot/manifest finalization (Patch 33B) |
+| `app/services/run_finalization_coordinator.py` | Required semantic validation and strategy artifact persistence before snapshot/manifest finalization (Patch 33C.2) |
 | `app/api/` | Blueprints for advisor, admin, user, knowledge, plaid, auth, telemetry, custom strategy |
 
 Provider call isolation: no `/api/dev/*` endpoint may trigger a live provider call unless
@@ -64,21 +64,23 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 ---
 
-## Current Sprint — Patch 33C.1
+## Current Sprint — Patch 33C.2
 
 **Focus areas:**
-- Legacy Earnings Calendar business-state services are deleted from live execution: no Unified Calendar Trade Engine, no Calendar Verdict Service finalizer, no `UNIFIED_CALENDAR_ENGINE_ENABLED` flag.
-- Calendar business-state ownership is centralized: lifecycle adapter classifies stage, decision service assigns final trade decision, projection service writes parent rows, and open-position reconciliation service groups child/parent structures.
-- Strategy rows, Daily Opportunity, and Open Positions APIs read canonical row-store state. They must not silently rebuild calendar business state from report snapshots.
-- Calendar projection emits one parent opportunity row per ticker and earnings event; rejected expiration/strike attempts stay nested in `structure_attempt_summary`.
-- Pre-window and budget-deferred rows may carry blockers, but must remain `trade_verdict=NOT_EVALUATED`.
-- SBUX-style call+put calendars group into one explicit double-calendar parent while preserving both child calendars.
+- Strategy Registry summaries use canonical `evaluation_state` and `trade_verdict`; `NOT_EVALUATED` is not a failure.
+- Calendar rows use explicit eligibility dimensions. Generic compatibility fields may be derived, but entry behavior depends on `entry_allowed`.
+- `STRUCTURE_UNAVAILABLE`, `DEFERRED_BUDGET`, and pre-window rows must never become entry-allowed.
+- Calendar semantic validation runs before StrategyRowRepository persistence; invariant failures block hot-row writes and mark the run invalid.
+- Endpoint verification runs before canonical snapshot promotion. Required failures produce `FAILED_VALIDATION` and preserve the prior canonical snapshot.
+- Data-confidence `failed` counts represent hard failures only and must reconcile with hard failure codes.
+- Calendar reconciliation logs use explicit opportunity parent, open-position parent, and open-position child terminology.
+- Policy source attribution reports `railway_env:<VAR>` when an environment variable is present, even if it equals the approved default.
 
 **Canonical Calendar Pipeline:** raw earnings events → parent opportunity creation → lifecycle classification → data-requirement planning → structure building → quantitative facts → `CalendarDecisionService` → `CalendarOpportunityProjectionService` → `StrategyRowRepository` → repository-backed APIs.
 
 **Legacy retirement rules:** no permanent dual-read or dual-write calendar path; no API-side business reconstruction; no legacy fallback that labels stale/prior-run rows as current; retained compatibility adapters must be read-only and derive from canonical state.
 
-**Previous sprint note:** Patch 33B added current-run scan barrier and durable first-class lifecycle fields. Patch 33C introduced canonical services; Patch 33C.1 deletes the remaining legacy live pipeline and enforces canonical ownership.
+**Previous sprint note:** Patch 33B added current-run scan barrier and durable first-class lifecycle fields. Patch 33C introduced canonical services; Patch 33C.1 deleted the remaining legacy live pipeline; Patch 33C.2 hardens canonical status and promotion semantics.
 
 ---
 
