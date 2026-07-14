@@ -1,27 +1,26 @@
-import unittest
+from datetime import date
 
-from app.services.unified_calendar_trade_engine_service import _entry_plan
-
-
-class UnifiedCalendarTradeEngineWordingTests(unittest.TestCase):
-    def test_pre_earnings_financing_debit_fail_is_research_only_no_entry(self):
-        plan = _entry_plan(
-            "FAIL / DEBIT TOO LARGE",
-            {"days_until_earnings": 5},
-            {"ticker": "ADBE", "conservative_debit": 15.0},
-            {"next_check": "Possible entry window after live quotes confirm."},
-            {
-                "trade_type": "pre_earnings_financing_or_directional_long_vol",
-                "trade_type_label": "PRE-EARNINGS FINANCING / LONG-VOL TRADE",
-                "main_blocker": "debit too large for account",
-            },
-        )
-
-        self.assertIn("No entry.", plan)
-        self.assertIn("Research-only pre-earnings financing / long-vol", plan)
-        self.assertIn("debit/account guardrail failed", plan)
-        self.assertNotIn("Possible entry window", plan)
+from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+from app.services.calendar_decision_service import decide_calendar_opportunity
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_pre_entry_monitor_is_not_final_entry_verdict():
+    decision = decide_calendar_opportunity(
+        {"entry_window_status": "MONITOR_PRE_WINDOW", "verdict": "PASS / OLD ENGINE"},
+        lifecycle_stage="SURFACED",
+        lifecycle_evaluation_state="STRUCTURE_COMPLETE",
+        lifecycle_recommended_action="PREPARE",
+        entry_evaluation_eligible=False,
+        structure_available=True,
+    )
+
+    assert decision.trade_verdict == "NOT_EVALUATED"
+    assert decision.recommended_action == "MONITOR"
+    assert decision.entry_allowed is False
+
+
+def test_calendar_policy_defaults_are_entry_window_specific():
+    policy = load_calendar_evolution_policy()
+    assert policy.is_surface_eligible(14)
+    assert not policy.is_entry_allowed(14)
+    assert policy.is_entry_allowed(12)

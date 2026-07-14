@@ -184,7 +184,6 @@ def build_config_check(run_mode: str = "prod") -> dict[str, Any]:
         "calendar_scanner": config.CALENDAR_SCANNER_ENABLED,
         "earnings_provider": config.EARNINGS_PROVIDER_ENABLED,
         "earnings_discovery": config.EARNINGS_DISCOVERY_ENABLED,
-        "unified_calendar_engine": config.UNIFIED_CALENDAR_ENGINE_ENABLED,
         "open_options_detector": config.OPEN_OPTIONS_DETECTOR_ENABLED,
         "calendar_lifecycle": config.CALENDAR_LIFECYCLE_ENABLED,
         "watchlist": config.WATCHLIST_ENABLED,

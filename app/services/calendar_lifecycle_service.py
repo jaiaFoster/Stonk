@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from app import config
 from app.services.calendar_hold_through_service import build_hold_through_score
-from app.services.calendar_verdict_service import classify_trade_type
+from app.services.calendar_trade_type_service import classify_trade_type
 
 LogFn = Callable[[str], None]
 

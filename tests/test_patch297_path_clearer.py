@@ -80,7 +80,7 @@ class TestTKT038PayloadBloatFollowthrough:
         skew = self._make_strategy_result(3)
         result = build_payload_size_profile(
             payload="", positions=[], news=[], recommendations=[],
-            snapshot={"_unified_calendar_engine": cal, "_strategy_results": {"skew_momentum_vertical": skew}},
+            snapshot={"_calendar_canonical_projection": cal, "_strategy_results": {"skew_momentum_vertical": skew}},
             log=[],
         )
         assert "strategy_row_profile" in result
@@ -349,7 +349,8 @@ class TestPatch29JCalendarExpirationDiagnostics:
         assert exp_gate["status"] == "watch"
 
     def test_trade_row_forwards_expiration_pair_diagnostics(self):
-        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
+        from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+        from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
         event = {
             "ticker": "CTAS",
             "earnings_date": "2026-07-09",
@@ -363,14 +364,37 @@ class TestPatch29JCalendarExpirationDiagnostics:
                 "expiration_pair_reject_reason": "no_valid_expiration_pair",
             },
         }
-        row = _build_new_trade_row(event, {}, {})
+        row = build_calendar_canonical_projection(
+            earnings_trade_discovery={"items": []},
+            earnings_discovery_quality={"items": [event]},
+            calendar_candidates=[],
+            earnings_calendar_strategy={"items": []},
+            calendar_ranking={"items": []},
+            account_context={},
+            open_options={},
+            lifecycle_checks={},
+            policy=load_calendar_evolution_policy(),
+            log_print=lambda _msg: None,
+        )["new_trade_rows"][0]
         assert "expiration_pair_diagnostics" in row
         assert row["expiration_pair_diagnostics"]["expiration_pair_status"] == "fail"
 
     def test_expiration_pair_diagnostics_empty_by_default(self):
         """Trade rows without quality precheck get an empty diagnostics dict."""
-        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
-        row = _build_new_trade_row({"ticker": "AAPL"}, {}, {})
+        from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+        from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
+        row = build_calendar_canonical_projection(
+            earnings_trade_discovery={"items": [{"ticker": "AAPL", "earnings_date": "2026-07-09"}]},
+            earnings_discovery_quality={"items": []},
+            calendar_candidates=[],
+            earnings_calendar_strategy={"items": []},
+            calendar_ranking={"items": []},
+            account_context={},
+            open_options={},
+            lifecycle_checks={},
+            policy=load_calendar_evolution_policy(),
+            log_print=lambda _msg: None,
+        )["new_trade_rows"][0]
         assert isinstance(row.get("expiration_pair_diagnostics"), dict)
 
 

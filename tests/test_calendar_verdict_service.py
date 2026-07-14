@@ -1,83 +1,10 @@
 import unittest
 
-from app.services.calendar_verdict_service import build_final_calendar_verdict, classify_trade_type
+from app.services.calendar_risk_fact_service import evaluate_account_risk
+from app.services.calendar_trade_type_service import classify_trade_type
 
 
-class CalendarVerdictServiceTests(unittest.TestCase):
-    def test_aso_style_untradeable_candidate_never_passes(self):
-        candidate = {
-            "ticker": "ASO",
-            "max_leg_spread_pct": 91.9,
-            "min_leg_open_interest": 0,
-            "min_leg_volume": 0,
-            "iv_edge": -8,
-            "front_expiration": "2026-06-10",
-            "back_expiration": "2026-07-10",
-            "earnings_event": {
-                "earnings_date": "2026-06-12",
-                "session_label": "After Market Close",
-                "is_timestamp_confirmed": True,
-            },
-        }
-        ranking = {
-            "ticker": "ASO",
-            "action": "FAIL / DO NOT BACKTEST",
-            "criteria": [{"status": "FAIL", "detail": "Max spread 91.9%, min OI 0, min volume 0."}],
-        }
-
-        verdict = build_final_calendar_verdict(candidate, ranking)
-
-        self.assertEqual(verdict["status"], "FAIL")
-        self.assertFalse(verdict["can_show_as_entry"])
-        self.assertEqual(verdict["main_blocker"], "options market untradeable")
-        self.assertEqual(verdict["backtest_status"], "skipped_untradeable")
-
-    def test_ranking_fail_overrides_raw_pass(self):
-        candidate = {
-            "ticker": "XYZ",
-            "max_leg_spread_pct": 10,
-            "min_leg_open_interest": 100,
-            "min_leg_volume": 25,
-            "iv_edge": 2,
-            "front_expiration": "2026-06-10",
-            "back_expiration": "2026-07-10",
-            "earnings_event": {
-                "earnings_date": "2026-06-12",
-                "session_label": "After Market Close",
-                "is_timestamp_confirmed": True,
-            },
-        }
-        ranking = {"ticker": "XYZ", "action": "FAIL / DO NOT BACKTEST", "criteria": []}
-
-        verdict = build_final_calendar_verdict(candidate, ranking)
-
-        self.assertEqual(verdict["final_verdict"], "FAIL / DO NOT ENTER")
-        self.assertEqual(verdict["status"], "FAIL")
-        self.assertEqual(verdict["raw_scanner_verdict"], "PASS / POSSIBLE ENTRY SETUP")
-
-    def test_pre_earnings_financing_is_research_only_by_default(self):
-        candidate = {
-            "ticker": "ABC",
-            "max_leg_spread_pct": 5,
-            "min_leg_open_interest": 100,
-            "min_leg_volume": 25,
-            "iv_edge": 1,
-            "front_expiration": "2026-06-10",
-            "back_expiration": "2026-06-19",
-            "earnings_event": {
-                "earnings_date": "2026-06-12",
-                "session_label": "Before Market Open",
-                "is_timestamp_confirmed": True,
-            },
-        }
-        ranking = {"ticker": "ABC", "action": "PASS / BACKTEST", "backtest_eligible": True}
-
-        verdict = build_final_calendar_verdict(candidate, ranking)
-
-        self.assertEqual(verdict["trade_type"], "pre_earnings_financing_or_directional_long_vol")
-        self.assertEqual(verdict["status"], "WATCH")
-        self.assertFalse(verdict["can_show_as_entry"])
-
+class CalendarFactServiceTests(unittest.TestCase):
     def test_trade_type_unknown_when_timestamp_unconfirmed(self):
         candidate = {
             "front_expiration": "2026-06-10",
@@ -89,92 +16,30 @@ class CalendarVerdictServiceTests(unittest.TestCase):
 
         self.assertEqual(result["trade_type"], "unknown_event_timing")
 
-    def test_front_leg_below_hard_minimum_fails(self):
+    def test_pre_earnings_financing_fact(self):
         candidate = {
-            "ticker": "CAG",
-            "front_dte": 1,
-            "max_leg_spread_pct": 5,
-            "min_leg_open_interest": 100,
-            "min_leg_volume": 25,
-            "iv_edge": 2,
             "front_expiration": "2026-06-10",
-            "back_expiration": "2026-07-10",
+            "back_expiration": "2026-06-19",
             "earnings_event": {
                 "earnings_date": "2026-06-12",
-                "session_label": "After Market Close",
-                "is_timestamp_confirmed": True,
-            },
-        }
-
-        verdict = build_final_calendar_verdict(candidate, {"action": "PASS / BACKTEST"})
-
-        self.assertEqual(verdict["status"], "FAIL")
-        self.assertEqual(verdict["main_blocker"], "FRONT_LEG_DTE_TOO_LOW")
-        self.assertIn("below hard minimum", " ".join(verdict["blockers"]))
-
-    def test_adverse_iv_relationship_is_hard_fail(self):
-        candidate = {
-            "ticker": "XYZ",
-            "front_dte": 10,
-            "max_leg_spread_pct": 5,
-            "min_leg_open_interest": 100,
-            "min_leg_volume": 25,
-            "iv_edge": -0.5,
-            "front_expiration": "2026-06-10",
-            "back_expiration": "2026-07-10",
-            "earnings_event": {
-                "earnings_date": "2026-06-12",
-                "session_label": "After Market Close",
-                "is_timestamp_confirmed": True,
-            },
-        }
-
-        verdict = build_final_calendar_verdict(candidate, {"action": "PASS / BACKTEST"})
-
-        self.assertEqual(verdict["status"], "FAIL")
-        self.assertEqual(verdict["main_blocker"], "IV_RELATIONSHIP_ADVERSE")
-        self.assertIn("IV_RELATIONSHIP_ADVERSE", " ".join(verdict["blockers"]))
-
-    def test_cpb_bmo_short_before_earnings_is_pre_earnings_financing(self):
-        candidate = {
-            "ticker": "CPB",
-            "max_leg_spread_pct": 54.5,
-            "min_leg_open_interest": 27,
-            "min_leg_volume": 0,
-            "front_expiration": "2026-06-05",
-            "back_expiration": "2026-07-02",
-            "earnings_event": {
-                "earnings_date": "2026-06-08",
-                "session_label": "Before market open",
-                "is_timestamp_confirmed": True,
-            },
-        }
-
-        verdict = build_final_calendar_verdict(candidate, {"action": "FAIL / DO NOT BACKTEST"})
-
-        self.assertEqual(verdict["trade_type"], "pre_earnings_financing_or_directional_long_vol")
-        self.assertEqual(verdict["final_verdict"], "FAIL / UNTRADEABLE SPREAD")
-        self.assertEqual(verdict["main_blocker"], "options market untradeable")
-
-    def test_mtn_amc_short_after_earnings_not_generic_not_calendar(self):
-        candidate = {
-            "ticker": "MTN",
-            "max_leg_spread_pct": 10,
-            "min_leg_open_interest": 100,
-            "min_leg_volume": 20,
-            "front_expiration": "2026-06-18",
-            "back_expiration": "2026-07-17",
-            "earnings_event": {
-                "earnings_date": "2026-06-08",
-                "session_label": "After market close",
+                "session_label": "Before Market Open",
                 "is_timestamp_confirmed": True,
             },
         }
 
         result = classify_trade_type(candidate)
 
-        self.assertIn(result["trade_type"], {"true_earnings_iv_crush_calendar", "invalid_for_earnings_strategy"})
-        self.assertNotEqual(result["trade_type"], "not_an_earnings_calendar")
+        self.assertEqual(result["trade_type"], "pre_earnings_financing_or_directional_long_vol")
+
+    def test_account_risk_is_fact_only(self):
+        result = evaluate_account_risk(
+            {"conservative_debit": 2.5},
+            {"account_value_estimate": 100_000, "account_value_source": "fixture"},
+        )
+
+        self.assertEqual(result["account_value_source"], "fixture")
+        self.assertEqual(result["debit_total_estimate"], 250.0)
+        self.assertIn(result["account_risk_status"], {"OK", "WATCH SIZE", "TOO LARGE"})
 
 
 if __name__ == "__main__":

@@ -43,6 +43,7 @@ def decide_calendar_opportunity(
     reasons = _reasons(row)
     legacy_verdict = str(row.get("verdict") or row.get("final_verdict") or "").upper()
     state = _normalize_evaluation_state(row, lifecycle_evaluation_state, structure_available)
+    status = str(row.get("entry_window_status") or row.get("disposition_code") or "")
 
     if lifecycle_stage == LifecycleStage.OPEN_POSITION:
         return CalendarDecision(
@@ -62,6 +63,27 @@ def decide_calendar_opportunity(
             entry_allowed=False,
             blockers=blockers,
             reasons=reasons or ["Calendar evaluation deferred by provider or dev budget."],
+        )
+
+    trust_label = str(row.get("earnings_trust_label") or "")
+    if row.get("calendar_entry_allowed") is False and trust_label in {"conflict_do_not_trade", "unknown_research_only"}:
+        return CalendarDecision(
+            evaluation_state=EvaluationState.DATA_INCOMPLETE,
+            trade_verdict=Verdict.NOT_EVALUATED,
+            recommended_action=RecommendedAction.NONE,
+            entry_allowed=False,
+            blockers=blockers or [str(row.get("earnings_trust_reason") or "Earnings date trust does not allow entry.")],
+            reasons=reasons,
+        )
+
+    if status == "MONITOR_PRE_WINDOW":
+        return CalendarDecision(
+            evaluation_state=EvaluationState.STRUCTURE_COMPLETE if structure_available else state,
+            trade_verdict=Verdict.NOT_EVALUATED,
+            recommended_action=RecommendedAction.MONITOR,
+            entry_allowed=False,
+            blockers=blockers,
+            reasons=reasons or ["Calendar opportunity is before the approved entry-evaluation window."],
         )
 
     if lifecycle_stage in {LifecycleStage.DISCOVERED, LifecycleStage.DEVELOPING, LifecycleStage.SURFACED}:
@@ -99,8 +121,8 @@ def decide_calendar_opportunity(
     if state == EvaluationState.STRUCTURE_UNAVAILABLE:
         return CalendarDecision(
             evaluation_state=state,
-            trade_verdict=Verdict.BLOCKED,
-            recommended_action=RecommendedAction.AVOID,
+            trade_verdict=Verdict.NOT_EVALUATED,
+            recommended_action=RecommendedAction.NONE,
             entry_allowed=False,
             blockers=blockers or ["No valid calendar structure is available."],
             reasons=reasons,

@@ -10,7 +10,6 @@ from app.services.earnings_trust_service import (
 )
 from app.services.public_screener_gate_service import earnings_trust_public_label
 from app.services.skew_momentum_vertical_verdict_service import apply_skew_momentum_vertical_verdict
-from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
 
 
 def _event(date="2026-07-09", sources=None, conflict=False, **extra):
@@ -69,12 +68,25 @@ def test_calendar_daily_opportunity_excludes_untrusted_pass():
 
 
 def test_calendar_conflict_gets_explicit_hard_fail():
-    row = _build_new_trade_row(
-        _event(sources=["finnhub", "reference"], conflict=True),
-        {},
-        {},
+    from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+    from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
+
+    result = build_calendar_canonical_projection(
+        earnings_trade_discovery={"items": []},
+        earnings_discovery_quality={"items": [_event(sources=["finnhub", "reference"], conflict=True)]},
+        calendar_candidates=[],
+        earnings_calendar_strategy={"items": []},
+        calendar_ranking={"items": []},
+        account_context={},
+        open_options={},
+        lifecycle_checks={},
+        policy=load_calendar_evolution_policy(),
+        evaluation_date=None,
+        run_mode="dev",
     )
-    assert row["verdict"] == "FAIL / EARNINGS DATE CONFLICT"
+    row = result["new_trade_rows"][0]
+    assert row["trade_verdict"] == "NOT_EVALUATED"
+    assert row["entry_allowed"] is False
     assert row["calendar_entry_allowed"] is False
 
 

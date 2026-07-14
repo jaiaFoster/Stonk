@@ -1,43 +1,25 @@
-# Patch 33C — Calendar Legacy Path Retirement and Canonical Pipeline Cutover
+# Patch 33C.1 — Calendar Legacy Pipeline Deletion and Canonical Cutover
 
 ## Purpose
 
-Patch 33C cuts calendar business-state ownership down to one canonical pipeline:
+Patch 33C.1 removes the remaining live legacy Earnings Calendar business pipeline.
+
+Canonical path:
 
 ```text
-Raw earnings events
+earnings discovery
 -> parent opportunity creation
 -> lifecycle classification
--> data-requirement planning
--> structure building / quantitative facts
+-> structure/fact calculation
 -> CalendarDecisionService
 -> CalendarOpportunityProjectionService
 -> StrategyRowRepository
--> repository-backed APIs
+-> repository-backed APIs/UI
 ```
 
-No read-only API should rebuild lifecycle, verdict, entry eligibility, or double-calendar grouping from the legacy report snapshot.
+No normal API or runtime service should rebuild calendar lifecycle, verdict, entry eligibility, or open-position grouping from legacy report objects.
 
-## Inventory Summary
-
-| Symbol / module | Classification | Notes |
-|---|---|---|
-| `calendar_opportunity_lifecycle_adapter.py` | KEEP_AS_CANONICAL_OWNER | Event-DTE lifecycle classification and stable opportunity/structure IDs. |
-| `calendar_decision_service.py` | KEEP_AS_CANONICAL_OWNER | Sole final calendar decision owner for `evaluation_state`, `trade_verdict`, `recommended_action`, `entry_allowed`. |
-| `calendar_opportunity_projection_service.py` | KEEP_AS_CANONICAL_OWNER | Sole calendar row projection path. Collapses many structure attempts into one parent opportunity row. |
-| `open_options_position_reconciliation_service.py` | KEEP_AS_CANONICAL_OWNER | Sole child-calendar and double-calendar parent grouping service. |
-| `strategy_row_repository.py` | KEEP_AS_CANONICAL_OWNER | Persistence and repository readback. Does not own strategy math. |
-| `daily_opportunity_api.py` | KEEP_AS_CANONICAL_API | Reads row store only. No legacy snapshot fallback. |
-| `open_positions_api.py` | KEEP_AS_CANONICAL_API | Reads row store and delegates grouping to reconciliation service. No legacy snapshot fallback. |
-| `strategy_api.py#get_strategy_rows` | KEEP_AS_CANONICAL_API | Reads StrategyRowRepository only. Legacy row reconstruction retired. |
-| `calendar_ranking_service.py` | KEEP_AS_PURE_CALCULATION | Ranking no longer calls final verdict attachment. |
-| `calendar_verdict_service.py` | TEMPORARY_COMPATIBILITY_ADAPTER | Finalizer functions retained for older tests/compat, but live ranking/unified engine callers removed. `evaluate_account_risk` remains pure calculation. |
-| `unified_calendar_trade_engine_service.py` | TEMPORARY_COMPATIBILITY_ADAPTER | Retained as a compatibility row assembler. Projection/decision services override canonical fields. |
-| `calendar_audit_service.py` | KEEP_AS_DIAGNOSTIC | Budget skips now emit `BUDGET_DEFERRED`, `DEFERRED_BUDGET`, `NOT_EVALUATED`, `NONE`, not `OPTIONABILITY`. |
-
-No `UNKNOWN_REQUIRES_INVESTIGATION` items remain for 33C live-path ownership.
-
-## Before Graph
+## Before Execution Graph
 
 ```text
 earnings discovery
@@ -45,131 +27,241 @@ earnings discovery
 -> scanner
 -> earnings calendar strategy
 -> ranking
--> Calendar Verdict Service
 -> Unified Calendar Trade Engine
+-> legacy verdict finalizer
 -> strategy registry
--> report snapshot
--> Daily Opportunity / Open Positions / Strategy APIs sometimes reconstructed state
+-> row store / report / APIs
 ```
 
-Parallel/fallback branches existed through legacy report summary, lifecycle checks, open-position API grouping, and strategy API snapshot row rebuilds.
+This allowed one scanned event to expand into multiple strategy rows and allowed pre-window monitor rows to receive final PASS/FAIL semantics.
 
-## After Graph
+## After Execution Graph
 
 ```text
 earnings discovery
--> quality filter
--> scanner
--> compatibility row assembly
--> CalendarOpportunityLifecycleAdapter
--> CalendarDecisionService
+-> quality/scanner/ranking facts
 -> CalendarOpportunityProjectionService
+   -> one parent opportunity row per ticker + earnings date
+   -> nested structure_attempt_summary
+   -> open-position child rows
+-> CalendarDecisionService
 -> StrategyRowRepository
--> Daily Opportunity API
--> OpenOptionsPositionReconciliationService
--> Open Positions API
--> Strategy Rows API
+-> Daily Opportunity / Open Positions / Strategy Rows APIs
 ```
 
-APIs may filter, paginate, redact, and project response fields only.
+## Canonical Ownership Map
 
-## Ownership Map
-
-| Responsibility | Sole owner |
+| Responsibility | Owner |
 |---|---|
-| Event parent identity | `CalendarOpportunityLifecycleAdapter` |
+| Parent opportunity identity | `CalendarOpportunityLifecycleAdapter` |
 | Event-DTE lifecycle stage | `CalendarOpportunityLifecycleAdapter` |
-| Structure/fact attempts | Existing scanner/builder path, projected as nested attempts |
-| Final trade decision | `CalendarDecisionService` |
+| Final decision fields | `CalendarDecisionService` |
 | Parent row projection | `CalendarOpportunityProjectionService` |
-| Daily Opportunity calendar inclusion | Canonical row semantics in `StrategyRowRepository` + `daily_opportunity_api.py` |
+| Structure-attempt nesting | `CalendarOpportunityProjectionService` |
+| Account-risk facts | `calendar_risk_fact_service.py` |
+| Trade-type facts | `calendar_trade_type_service.py` |
 | Child calendar grouping | `OpenOptionsPositionReconciliationService` |
 | Double-calendar parent grouping | `OpenOptionsPositionReconciliationService` |
 | Persistence | `StrategyRowRepository` |
-| API truth | Repository-backed APIs |
+| API truth | Repository-backed API routes |
 
-## Deleted / Retired Paths
+## Delete-Versus-Retain Review
 
-Deleted or retired from normal API flow:
+| Component | Action | Reason |
+|---|---|---|
+| Unified Calendar Trade Engine | DELETE | Duplicate row, action, and verdict owner |
+| `UNIFIED_CALENDAR_ENGINE_ENABLED` | DELETE | Canonical architecture is not feature-flagged |
+| Legacy Calendar Verdict Service | DELETE | Final verdict owner competed with decision service |
+| Account-risk calculation | RETAIN AS PURE FACTS | Moved to `calendar_risk_fact_service.py` |
+| Trade-type calculation | RETAIN AS PURE FACTS | Moved to `calendar_trade_type_service.py` |
+| Calendar Ranking final-verdict branches | DELETE | Ranker remains facts/scoring only |
+| API calendar reconstruction helpers | DELETE | APIs read repository truth |
+| Daily Opportunity calendar inference | DELETE/RESTRICT | Uses canonical lifecycle/action state |
+| API double-calendar grouping | DELETE | Reconciliation occurs before API serialization |
+| Structure-attempt strategy rows | DELETE | Attempts are nested diagnostics, not opportunity rows |
+| Old stage writers | DELETE FROM LIVE PATH | Lifecycle adapter and projection own compatibility fields |
 
-- Daily Opportunity legacy report snapshot fallback.
-- Open Positions legacy report snapshot fallback and API-side calendar grouping helpers.
-- Strategy rows legacy snapshot reconstruction for built-in strategies.
-- Calendar ranking final verdict attachment call.
-- Unified engine live call to `build_final_calendar_verdict`.
-- Misleading budget `OPTIONABILITY` classification for dev-budget not-selected names.
+## Deletion Report
 
-Retained compatibility adapters:
-
-- `calendar_verdict_service.py`: removal ticket `TKT-CALENDAR-VERDICT-OWNER`; finalizer has no live ranking/unified-engine caller.
-- `unified_calendar_trade_engine_service.py`: removal ticket `TKT-CALENDAR-LEGACY-RETIREMENT`; retained as row assembly input to canonical projection until upstream scanner emits canonical parent rows directly.
-
-## Schema / Cache / API Decisions
-
-- No destructive migration. Historical rows remain readable.
-- New/current calendar rows rely on first-class lifecycle/opportunity columns.
-- No API fallback to stale report snapshot when row store is empty. Endpoints return `source=empty`.
-- Legacy report archive may still exist for debug/export, but not normal strategy row, Daily Opportunity, or Open Positions source.
-
-## Verdict Gating
-
-- `DISCOVERED`, `DEVELOPING`, and `SURFACED` rows produce `trade_verdict=NOT_EVALUATED`.
-- Pre-window rows can preserve blockers such as high debit/liquidity, but cannot become final `FAIL`.
-- `DEFERRED_BUDGET` produces `NOT_EVALUATED` and `recommended_action=NONE`.
-- `ACTIONABLE` rows with unavailable structures become `BLOCKED / AVOID`.
-- Only fully evaluated actionable rows can become `PASS / ENTER`.
-
-## Parent Versus Structure Records
-
-- One ticker + earnings event produces one parent strategy opportunity row.
-- Multiple rejected expiration/strike attempts are stored under `structure_attempt_summary`.
-- Structure attempts are not counted as strategy opportunities.
-
-## Double-Calendar Proof
-
-Fixture proof:
+Files deleted:
 
 ```text
-SBUX 110 call calendar + SBUX 100 put calendar
--> child_calendars=2
--> double_calendar_parents=1
--> unmatched_child_calendars=0
+app/services/unified_calendar_trade_engine_service.py
+app/services/calendar_verdict_service.py
 ```
 
-API projection exposes both compatibility child count and canonical parent count:
+Files added:
+
+```text
+app/services/calendar_risk_fact_service.py
+app/services/calendar_trade_type_service.py
+```
+
+Functions/classes deleted:
+
+```text
+build_unified_calendar_trade_engine
+_build_new_trade_row
+_build_open_trade_rows
+_new_trade_verdict
+_entry_plan
+_verdict_tier
+CalendarFinalVerdict
+build_final_calendar_verdict
+attach_final_verdicts_to_ranking
+apply_hard_fail_overrides
+```
+
+Flags deleted:
+
+```text
+UNIFIED_CALENDAR_ENGINE_ENABLED
+```
+
+Imports deleted from live app:
+
+```text
+app.services.unified_calendar_trade_engine_service
+app.services.calendar_verdict_service
+build_final_calendar_verdict
+attach_final_verdicts_to_ranking
+UNIFIED_CALENDAR_ENGINE_ENABLED
+```
+
+Compatibility retained:
+
+```text
+Historical report snapshots may still contain _unified_calendar_engine.
+report_service can read that key for archive rendering only.
+New runs write _calendar_canonical_projection.
+```
+
+## Verdict Invariants
+
+Pre-persistence canonical validation now checks:
+
+```text
+entry_evaluation_eligible=false -> trade_verdict=NOT_EVALUATED
+final PASS/WATCH/NEAR_MISS/FAIL -> evaluation_state=FULLY_EVALUATED
+parent opportunity IDs are unique
+structure attempts are not parent row IDs
+recommended_action is always present
+```
+
+Expected production effects:
+
+```text
+MONITOR_PRE_WINDOW -> NOT_EVALUATED / MONITOR / entry_allowed=false
+STRUCTURE_UNAVAILABLE -> NOT_EVALUATED / NONE / entry_allowed=false
+DEFERRED_BUDGET -> NOT_EVALUATED / NONE / entry_allowed=false
+OPEN_POSITION -> WATCH / HOLD / entry_allowed=false
+```
+
+## Parent Row Model
+
+Canonical row models:
+
+```text
+OPPORTUNITY_PARENT
+OPEN_POSITION_CHILD
+```
+
+One ticker + canonical earnings date creates one parent opportunity row.
+Rejected expirations, alternate strikes, and calculation branches are nested under `structure_attempt_summary`.
+
+## SBUX 4 -> 2 -> 1 -> 0 Proof
+
+Fixture proof remains enforced:
+
+```text
+4 broker legs
+-> 2 child calendars
+-> 1 double-calendar parent
+-> 0 unmatched child calendars
+```
+
+Open Positions API exposes:
 
 ```text
 child_calendar_count=2
 parent_double_calendar_count=1
 active_parent_calendar_count=1
+has_open_calendars=true
 ```
 
-## Row Reconciliation
+## Reconciliation Contract
 
-`CALENDAR_ROW_RECONCILIATION` now names pending write/read phases instead of emitting naked `None` before persistence. After run finalization, persisted/history/journal/API-visible counts are recomputed from finalized artifacts.
+Runtime logs now use explicit dimensions:
+
+```text
+CALENDAR_ROW_RECONCILIATION
+parent_generated=N
+open_parent_generated=N
+open_child_generated=N
+structure_records=N
+diagnostic_records=N
+normalized=N
+persisted=N
+api_visible_parents=N
+api_visible_children=N
+daily_visible=N
+api_exclusions={...}
+persistence_exclusions={...}
+strategy_dispositions={...}
+```
+
+No `pending_*` values are emitted by the reconciliation builder.
+
+## Source Scan Proof
+
+App-code scan is expected to return no matches for:
+
+```text
+UNIFIED_CALENDAR_ENGINE_ENABLED
+Running Unified Calendar Trade Engine
+Unified Calendar Trade Engine produced
+unified_calendar_trade_engine_service
+calendar_verdict_service
+build_final_calendar_verdict
+attach_final_verdicts_to_ranking
+```
 
 ## Tests
 
-Focused tests:
+Focused affected suite:
 
 ```text
-tests/test_patch33c_calendar_legacy_cutover.py
-tests/test_patch33b_calendar_lifecycle_finalization.py
-tests/test_patch30h1_endpoint_truthing.py
-tests/test_patch30gh_rowstore_consumers.py
-tests/test_patch30e_payload_budget.py
-tests/test_legacy_summary_hot_path_absence.py
+247 passed
+126 passed
+46 passed
 ```
 
-Current focused result:
+Full regression:
 
 ```text
-54 passed
+3233 passed, 1 skipped, 2 subtests passed
+```
+
+## Railway Validation Plan
+
+After merge/deploy, verify logs:
+
+```text
+CALENDAR_CANONICAL_PROJECTION ...
+CALENDAR_DECISION_AUDIT ... invariant_violations=0
+OPEN_POSITION_RECONCILIATION ... child_calendars=2 parent_double_calendars=1 unmatched_legs=0
+DATA_CONFIDENCE_VALIDATION failed=0
+```
+
+Forbidden next-run log strings:
+
+```text
+UNIFIED_CALENDAR_ENGINE_ENABLED
+Running Unified Calendar Trade Engine
+Unified Calendar Trade Engine produced
 ```
 
 ## Known Remaining Work
 
-- Delete `unified_calendar_trade_engine_service.py` fully after scanner/strategy output natively emits canonical parent rows.
-- Delete or shrink `calendar_verdict_service.py` finalizer functions after older compatibility tests are migrated.
-- Move report HTML calendar sections to canonical row projections where they still display legacy labels.
-- Verify Railway post-deploy endpoint packet for data-confidence hard failures and live SBUX grouping.
+- Rename old archive helper function names in report/export code if desired; they no longer represent live execution and read canonical `_calendar_canonical_projection` for new runs.
+- Run live endpoint packet after Railway deploy to prove production ALGN/SBUX behavior.

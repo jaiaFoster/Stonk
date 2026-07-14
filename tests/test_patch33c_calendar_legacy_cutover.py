@@ -53,8 +53,8 @@ def test_actionable_structure_unavailable_blocks_entry():
     )
 
     assert decision.evaluation_state == EvaluationState.STRUCTURE_UNAVAILABLE
-    assert decision.trade_verdict == Verdict.BLOCKED
-    assert decision.recommended_action == RecommendedAction.AVOID
+    assert decision.trade_verdict == Verdict.NOT_EVALUATED
+    assert decision.recommended_action == RecommendedAction.NONE
     assert decision.entry_allowed is False
 
 
@@ -216,7 +216,9 @@ def test_calendar_apis_do_not_import_legacy_business_builders():
 
 
 def test_no_calendar_verdict_service_finalizer_live_callers():
-    from app.services import calendar_ranking_service, unified_calendar_trade_engine_service
+    from app.services import calendar_ranking_service
 
     assert "attach_final_verdicts_to_ranking" not in inspect.getsource(calendar_ranking_service)
-    assert "build_final_calendar_verdict" not in inspect.getsource(unified_calendar_trade_engine_service)
+    import pathlib
+    assert not pathlib.Path("app/services/unified_calendar_trade_engine_service.py").exists()
+    assert not pathlib.Path("app/services/calendar_verdict_service.py").exists()
