@@ -234,12 +234,15 @@ EARNINGS_EXCLUDED_FUND_TICKERS = os.environ.get("EARNINGS_EXCLUDED_FUND_TICKERS"
 # Separate from portfolio/watchlist. This starts from provider earnings-calendar
 # events, then runs Tradier option-chain/calendar scoring only on those tickers.
 EARNINGS_DISCOVERY_ENABLED = _bool_env("EARNINGS_DISCOVERY_ENABLED", True)
-EARNINGS_DISCOVERY_START_DAYS = _int_env("EARNINGS_DISCOVERY_START_DAYS", 4)
-# The product contract is a +4..+21 discovery horizon. Preserve the requested
-# Railway value for diagnostics, but do not allow a stale override to silently
-# change the runtime calendar universe.
-EARNINGS_DISCOVERY_END_DAYS_REQUESTED = _int_env("EARNINGS_DISCOVERY_END_DAYS", 21)
-EARNINGS_DISCOVERY_END_DAYS = 21
+# Discovery horizon: 0..35 event DTE. 0 means same-day; 35 means early-stage.
+# Patch 33A.1: start=0 (was 4), end=35 (was hardcoded 21).
+EARNINGS_DISCOVERY_START_DAYS = _int_env("EARNINGS_DISCOVERY_START_DAYS", 0)
+EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 35)
+# Alias used by earnings_discovery_quality_service for entry-window gate.
+EARNINGS_DISCOVERY_WINDOW_END_DAYS = EARNINGS_DISCOVERY_END_DAYS
+# Structure-building starts at 24 event DTE; surfacing (API-visible) at 14 event DTE.
+CALENDAR_STRUCTURE_BUILD_START_EVENT_DTE = _int_env("CALENDAR_STRUCTURE_BUILD_START_EVENT_DTE", 24)
+CALENDAR_SURFACE_START_EVENT_DTE = _int_env("CALENDAR_SURFACE_START_EVENT_DTE", 14)
 EARNINGS_DISCOVERY_MAX_EVENTS = _int_env("EARNINGS_DISCOVERY_MAX_EVENTS", 25)
 # Raw discovery and optionability are intentionally separate. Dev mode should
 # limit expensive Tradier checks, not randomly truncate the raw earnings list to
