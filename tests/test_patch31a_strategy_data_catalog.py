@@ -43,18 +43,19 @@ def test_rejected_calendar_rows_take_semantic_precedence():
 def test_calendar_entry_lifecycle_monitor_and_ff_regressions():
     from app.services.strategy_row_normalization_service import normalize_strategy_row
 
-    entry = normalize_strategy_row({"ticker": "C", "verdict": "PASS / CALENDAR", "calendar_entry_allowed": True}, "earnings_calendar")
+    entry = normalize_strategy_row({"ticker": "C", "verdict": "PASS / CALENDAR", "trade_verdict": "PASS", "entry_allowed": True, "recommended_action": "ENTER"}, "earnings_calendar")
     assert entry["decision_class"] == "entry"
     assert entry["action_type"] == "calendar_entry"
     assert entry["eligibility_status"] == "eligible"
 
     lifecycle = normalize_strategy_row({"ticker": "SBUX", "type": "open_calendar", "verdict": "HOLD / MONITOR"}, "earnings_calendar")
     assert lifecycle["decision_class"] == "lifecycle"
-    assert lifecycle["action_type"] == "active_calendar"
+    assert lifecycle["action_type"] == "calendar_position_action"
 
     monitor = normalize_strategy_row({"ticker": "NFLX", "entry_window_status": "MONITOR_PRE_WINDOW"}, "earnings_calendar")
     assert monitor["decision_class"] == "monitor"
-    assert monitor["action_type"] == "monitor"
+    assert monitor["action_type"] == "none"
+    assert monitor["eligibility_status"] == "excluded"
 
     ff = normalize_strategy_row({"ticker": "ELF", "verdict": "WATCH / EX-EARNINGS IV UNAVAILABLE"}, "forward_factor_calendar")
     assert ff["decision_class"] == "diagnostic"

@@ -32,54 +32,9 @@ def _action_shape(action: dict[str, Any]) -> dict[str, Any]:
 
 
 def build_daily_opportunity_response(limit: int = 12, include_exclusions: bool = False) -> dict[str, Any]:
-    """Read Daily Opportunity from StrategyRowRepository first.
-
-    Legacy snapshot fallback remains for old deployments with no row-store data.
-    """
+    """Read Daily Opportunity from StrategyRowRepository only."""
     try:
-        row_store_response = _daily_opportunity_from_row_store(limit=limit, include_exclusions=include_exclusions)
-        if row_store_response.get("source") == "strategy_row_store":
-            return row_store_response
-    except Exception:
-        row_store_response = {}
-
-    try:
-        from app.services.report_snapshot_service import ReportSnapshotRepository
-        repo = ReportSnapshotRepository()
-        snapshot = repo.latest_success(include_full=True)
-        if not snapshot:
-            return {
-                **_READ_ONLY_BASE,
-                "empty_state": "no_snapshot",
-                "enabled": True,
-                "has_data": False,
-                "action_count": 0,
-                "actions": [],
-                "source": "empty",
-                "fallback_used": False,
-            }
-        summary = repo.load_summary(snapshot, full=True)
-        report = summary.get("report_data", {}) or {}
-        tradier = report.get("tradier_snapshot", {}) or {}
-        do_engine = tradier.get("_daily_opportunity_engine") or {}
-        raw_actions = do_engine.get("actions") or []
-        if isinstance(raw_actions, dict):
-            raw_actions = raw_actions.get("sample") or []
-        cap = min(int(limit), 50)
-        actions = [_action_shape(a) for a in list(raw_actions)[:cap] if isinstance(a, dict)]
-        return {
-            **_READ_ONLY_BASE,
-            "source_run_id": snapshot.get("run_id"),
-            "generated_at": snapshot.get("completed_at"),
-            "source": "legacy_snapshot_fallback",
-            "engine_source": do_engine.get("source", "daily_opportunity_engine_v1"),
-            "fallback_used": True,
-            "enabled": bool(do_engine.get("enabled", True)),
-            "has_data": bool(do_engine.get("has_data") or actions),
-            "action_count": len(actions),
-            "actions": actions,
-            "summary": do_engine.get("summary") or {},
-        }
+        return _daily_opportunity_from_row_store(limit=limit, include_exclusions=include_exclusions)
     except Exception as exc:
         return {**_READ_ONLY_BASE, "error": str(exc), "actions": [], "action_count": 0}
 
@@ -204,7 +159,7 @@ def _daily_opportunity_from_row_store(limit: int = 12, include_exclusions: bool 
             "action_type_counts": dict(action_type_counts),
             "exclusion_counts": dict(exclusion_counts),
             "inferred_semantics_count": int(semantic_sources.get("legacy_verdict_inference", 0)),
-            "calendar_count": sum(1 for action in returned_actions if action.get("type") in {"calendar", "active_calendar"}),
+            "calendar_count": sum(1 for action in returned_actions if action.get("type") in {"calendar", "active_calendar", "calendar_entry", "calendar_monitor", "calendar_position_action"}),
             "stock_count": sum(1 for action in returned_actions if action.get("type") in {"stock", "stock_add", "stock_watch", "tactical_stock_watch"}),
             "stock_watch_count": sum(1 for action in returned_actions if action.get("type") in {"stock_watch", "tactical_stock_watch"}),
             "skew_vertical_count": sum(1 for action in returned_actions if action.get("type") in {"skew_vertical", "active_skew_vertical"}),
@@ -326,8 +281,16 @@ def _semantic_from_row(row: dict[str, Any]) -> dict[str, Any]:
         return _semantic("diagnostic", "diagnostic", "dry_run_only", "dry_run_excluded", "Forward Factor remains dry-run.", "dry_run", "diagnostic", "blocked", "legacy_verdict_inference")
     if sid == "stock_momentum" and _stock_row_daily_eligible(verdict_upper, str(row.get("friendly_verdict") or "")):
         return _semantic("watch", _stock_action_type(verdict_upper), "monitor_only", "eligible", "Legacy stock row inferred as Daily Opportunity watch.", "", "low", "needs_confirmation", "legacy_verdict_inference")
-    if sid == "earnings_calendar" and row_type == "lifecycle_check":
-        return _semantic("lifecycle", "active_calendar", "actionable", "eligible", "Legacy lifecycle row inferred as active calendar.", "", "high", "monitor", "legacy_verdict_inference")
+    if sid == "earnings_calendar":
+        lifecycle = str(row.get("lifecycle_stage") or "")
+        trade_verdict = str(row.get("trade_verdict") or "").upper()
+        recommended = str(row.get("recommended_action") or "").upper()
+        if lifecycle == "OPEN_POSITION" or row_type == "lifecycle_check":
+            return _semantic("lifecycle", "calendar_position_action", "actionable", "eligible", "Active calendar lifecycle row.", "", "high", "monitor", "legacy_verdict_inference")
+        if trade_verdict == "PASS" and bool(row.get("entry_allowed")) and recommended == "ENTER":
+            return _semantic("entry", "calendar_entry", "review_only", "eligible", "Calendar entry candidate passed canonical lifecycle gates.", "", "normal", "ready", "legacy_verdict_inference")
+        if lifecycle == "SURFACED" and recommended in {"MONITOR", "PREPARE"}:
+            return _semantic("monitor", "calendar_monitor", "monitor_only", "eligible", "Calendar opportunity is surfaced for monitoring.", "", "low", "monitor", "legacy_verdict_inference")
     if sid == "skew_momentum_vertical" and verdict_upper.startswith("PASS"):
         return _semantic("entry", "vertical_entry", "review_only", "eligible", "Legacy skew row inferred as vertical entry.", "", "normal", "ready", "legacy_verdict_inference")
     return _semantic("rejected", "none", "non_actionable", "excluded", "", "hard_fail" if verdict_upper.startswith("FAIL") else "not_daily_opportunity_eligible", "diagnostic", "blocked", "legacy_verdict_inference")
@@ -447,10 +410,13 @@ def _action_limit_exclusion(action: dict[str, Any]) -> dict[str, Any]:
 
 def _daily_sort_key(action: dict[str, Any]) -> tuple[int, float]:
     priority = {
+        "calendar_position_action": 0,
         "active_calendar": 0,
         "active_skew_vertical": 1,
+        "calendar_entry": 2,
         "calendar": 2,
         "skew_vertical": 3,
+        "calendar_monitor": 4,
         "stock_add": 4,
         "stock": 4,
         "stock_watch": 5,

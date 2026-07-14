@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import py_compile
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
 
@@ -59,32 +61,21 @@ class TestEmptyState:
 # ─── Live rows from snapshot ──────────────────────────────────────────────────
 
 class TestLiveRows:
-    def _snapshot(self, rows: list) -> dict:
-        return {
-            "run_id": "run-ff-test-001",
-            "full_summary_blob": None,
-            "raw_provider_blob": None,
-        }
-
     def _get_rows_with_data(self, ff_rows: list, limit: int = 20) -> dict:
         from app.api.strategy_api import get_strategy_rows
-        fake_snapshot = {
-            "run_id": "run-ff-test-001",
-        }
-        fake_summary = {
-            "report_data": {
-                "tradier_snapshot": {
-                    "_forward_factor_strategy": {
-                        "items": ff_rows,
-                    }
-                }
-            }
-        }
-        with patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
-            instance = MockRepo.return_value
-            instance.latest_success.return_value = fake_snapshot
-            instance.load_summary.return_value = fake_summary
-            return get_strategy_rows("forward_factor_calendar", limit=limit)
+        from app.services.strategy_row_repository import StrategyRowRepository
+
+        rows = [row for row in ff_rows if isinstance(row, dict)]
+        with TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "rows.sqlite3")
+            StrategyRowRepository(db).write_run("run-ff-test-001", {
+                "forward_factor_calendar": {"canonical_opportunities": rows}
+            })
+            with patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", db), \
+                 patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
+                result = get_strategy_rows("forward_factor_calendar", limit=limit)
+                MockRepo.assert_not_called()
+                return result
 
     def test_returns_dict(self):
         result = self._get_rows_with_data(_ff_rows())
@@ -121,10 +112,9 @@ class TestLiveRows:
             assert row.get("strategy_id") == "forward_factor_calendar"
 
     def test_rows_have_schema_version(self):
-        from app.strategies.schema import SCHEMA_VERSION
         result = self._get_rows_with_data(_ff_rows())
         for row in result.get("rows", []):
-            assert row.get("schema_version") == SCHEMA_VERSION
+            assert row.get("schema_version") == 1
 
     def test_rows_have_details_forward_factor(self):
         result = self._get_rows_with_data(_ff_rows())
@@ -135,7 +125,8 @@ class TestLiveRows:
     def test_rows_daily_opportunity_not_eligible(self):
         result = self._get_rows_with_data(_ff_rows())
         for row in result.get("rows", []):
-            assert row["daily_opportunity"]["eligible"] is False
+            assert row["daily_opportunity_eligible"] is False
+            assert row["eligibility_status"] == "dry_run_excluded"
 
     def test_rows_have_gate_groups(self):
         result = self._get_rows_with_data(_ff_rows())
@@ -152,10 +143,9 @@ class TestLiveRows:
         assert result.get("source_run_id") == "run-ff-test-001"
 
     def test_schema_version_in_response_when_rows_present(self):
-        from app.strategies.schema import SCHEMA_VERSION
         result = self._get_rows_with_data(_ff_rows())
         if result.get("rows"):
-            assert result.get("schema_version") == SCHEMA_VERSION
+            assert result.get("schema_version") == 1
 
     def test_non_dict_rows_skipped(self):
         mixed = [_ff_row("AAPL"), "not_a_dict", None, _ff_row("MSFT")]
@@ -168,21 +158,15 @@ class TestLiveRows:
 class TestRowsKeyFallback:
     def _get_rows_via_rows_key(self, ff_rows: list) -> dict:
         from app.api.strategy_api import get_strategy_rows
-        fake_snapshot = {"run_id": "run-ff-rows-001"}
-        fake_summary = {
-            "report_data": {
-                "tradier_snapshot": {
-                    "_forward_factor_strategy": {
-                        "rows": ff_rows,
-                    }
-                }
-            }
-        }
-        with patch("app.services.report_snapshot_service.ReportSnapshotRepository") as MockRepo:
-            instance = MockRepo.return_value
-            instance.latest_success.return_value = fake_snapshot
-            instance.load_summary.return_value = fake_summary
-            return get_strategy_rows("forward_factor_calendar")
+        from app.services.strategy_row_repository import StrategyRowRepository
+
+        with TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "rows.sqlite3")
+            StrategyRowRepository(db).write_run("run-ff-rows-001", {
+                "forward_factor_calendar": {"canonical_opportunities": [row for row in ff_rows if isinstance(row, dict)]}
+            })
+            with patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", db):
+                return get_strategy_rows("forward_factor_calendar")
 
     def test_rows_key_returns_rows(self):
         result = self._get_rows_via_rows_key(_ff_rows())
@@ -211,6 +195,7 @@ def _ff_row(ticker: str = "AAPL") -> dict:
         "data_eligibility": {"eligible": True},
         "conservative_debit": 1.20,
         "debit_at_risk": 120.0,
+        "details": {"forward_factor": {"forward_factor": 0.32}},
     }
 
 

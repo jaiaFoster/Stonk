@@ -489,7 +489,13 @@ class TestEarningsCalendarMapping:
         return normalize_strategy_row(row, "earnings_calendar")
 
     def test_calendar_entry_allowed_maps_to_daily_opp_eligible(self):
-        row: dict[str, Any] = {"calendar_entry_allowed": True, "ticker": "AAPL", "action": "EARNINGS CALENDAR CANDIDATE"}
+        row: dict[str, Any] = {
+            "ticker": "AAPL",
+            "verdict": "PASS / CALENDAR",
+            "trade_verdict": "PASS",
+            "entry_allowed": True,
+            "recommended_action": "ENTER",
+        }
         self._normalize(row)
         assert row["daily_opportunity_eligible"] is True
 
@@ -797,7 +803,7 @@ class TestDailyOpportunityRegression:
 
     def test_calendar_entry_allowed_true_means_eligible(self):
         from app.services.strategy_row_normalization_service import normalize_strategy_row
-        row: dict[str, Any] = {"calendar_entry_allowed": True}
+        row: dict[str, Any] = {"trade_verdict": "PASS", "entry_allowed": True, "recommended_action": "ENTER"}
         normalize_strategy_row(row, "earnings_calendar")
         assert row["daily_opportunity_eligible"] is True
 

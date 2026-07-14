@@ -1,5 +1,10 @@
 """
-app/services/unified_calendar_trade_engine_service.py — Unified Calendar Trade Engine v1.
+app/services/unified_calendar_trade_engine_service.py — legacy calendar row assembler.
+
+Patch 33C compatibility note: this module no longer owns lifecycle, final
+verdict, entry permission, persistence, or API state. It remains as a
+temporary read-only row assembly adapter feeding CalendarOpportunityProjection
+until upstream scanner/strategy output is fully canonical.
 
 This is an orchestration/reporting layer over the existing read-only modules:
 - Earnings Trade Discovery v1: finds upcoming earnings events.
@@ -23,7 +28,7 @@ from typing import Any, Callable
 
 from app import config
 from app.services.calendar_opportunity_state_service import attach_calendar_display_fields
-from app.services.calendar_verdict_service import build_final_calendar_verdict, evaluate_account_risk
+from app.services.calendar_verdict_service import evaluate_account_risk
 from app.services.earnings_trust_service import normalize_earnings_trust
 
 LogFn = Callable[[str], None]
@@ -208,8 +213,8 @@ def _build_new_trade_row(
         requirements.append(_req("Earnings placement", "WARN", "Candidate exists, but earnings-aware strategy did not evaluate it."))
 
     no_structure_blocker = "" if has_candidate else _no_structure_blocker(quality_row, requirements)
-    final = build_final_calendar_verdict(candidate, ranking, None, account_context) if has_candidate else {}
-    verdict = str(final.get("final_verdict") or _new_trade_verdict(has_candidate, strategy, quality_row))
+    final: dict[str, Any] = {}
+    verdict = str(_new_trade_verdict(has_candidate, strategy, quality_row))
     trust_label = trust["earnings_trust_label"]
     if trust_label == "conflict_do_not_trade" and not config.EARNINGS_TRUST_CONFLICT_CAN_PASS:
         verdict = "FAIL / EARNINGS DATE CONFLICT"
@@ -218,7 +223,6 @@ def _build_new_trade_row(
     elif trust_label == "single_source_verify" and config.EARNINGS_TRUST_REQUIRE_MULTI_SOURCE_FOR_CALENDAR_PASS and str(verdict).upper().startswith("PASS"):
         verdict = "WATCH / VERIFY EARNINGS DATE"
     if not trust["calendar_entry_allowed"]:
-        final = dict(final)
         final.update({"final_verdict": verdict, "main_blocker": trust["earnings_trust_reason"], "hard_fail_reason": trust["earnings_trust_reason"]})
     if quality_row and str(quality_row.get("entry_window_status") or "") in {
         "ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY",
@@ -226,7 +230,6 @@ def _build_new_trade_row(
         "DATE_CONFLICT_REVIEW",
     }:
         timing_reason = str(quality_row.get("entry_window_reason") or no_structure_blocker or "Calendar entry timing gate failed.")
-        final = dict(final)
         final.update({"final_verdict": verdict, "main_blocker": timing_reason, "hard_fail_reason": timing_reason})
     entry_plan = _entry_plan(verdict, event, candidate, strategy, final)
     possible_spread = _possible_spread(candidate)

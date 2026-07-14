@@ -13,6 +13,7 @@ from typing import Any
 
 from app.models.calendar_evolution_policy import CalendarEvolutionPolicy
 from app.models.strategy_opportunity_lifecycle import EvaluationState, LifecycleStage, Verdict
+from app.services.calendar_decision_service import decide_calendar_opportunity
 from app.services.calendar_opportunity_lifecycle_adapter import (
     build_calendar_lifecycle_opportunity,
     build_opportunity_id,
@@ -34,6 +35,7 @@ def enrich_calendar_engine_rows(
         for row in engine.get(key) or []:
             if isinstance(row, dict):
                 _enrich_row(row, policy=policy, evaluation_date=today, open_position=(key == "open_trade_rows"))
+    engine["new_trade_rows"] = _collapse_parent_rows(engine.get("new_trade_rows") or [])
     engine["calendar_row_reconciliation"] = build_calendar_row_reconciliation(engine)
     return engine
 
@@ -73,11 +75,11 @@ def build_calendar_row_reconciliation(
         "normalized_rows": generated - invalid,
         "duplicate_rows": duplicates,
         "invalid_rows": invalid,
-        "persisted_rows": persisted_rows,
-        "api_rows": api_visible_rows,
+        "persisted_rows": persisted_rows if persisted_rows is not None else "pending_persistence",
+        "api_rows": api_visible_rows if api_visible_rows is not None else "pending_api_visibility",
         "daily_opportunity_rows": daily_visible,
-        "history_rows": history_rows,
-        "journal_rows": journal_rows,
+        "history_rows": history_rows if history_rows is not None else "pending_history_write",
+        "journal_rows": journal_rows if journal_rows is not None else "pending_journal_write",
         "excluded_rows_by_reason": excluded,
     }
 
@@ -126,13 +128,9 @@ def _enrich_row(
     row.setdefault("clock_value", days_until)
     row.setdefault("anchor_timestamp", event_date.isoformat())
     row["lifecycle_stage"] = opp.lifecycle_stage
-    row["evaluation_state"] = opp.evaluation_state
-    row["trade_verdict"] = _trade_verdict(row, opp.verdict, status)
-    row["recommended_action"] = opp.recommended_action
     row["build_eligible"] = opp.build_eligible
     row["surface_eligible"] = opp.surface_eligible
     row["entry_evaluation_eligible"] = bool(policy.is_entry_allowed(days_until))
-    row["entry_allowed"] = bool(row.get("calendar_entry_allowed") or opp.entry_allowed)
     row["terminal"] = opp.lifecycle_stage in {LifecycleStage.POST_EVENT, LifecycleStage.INVALIDATED, LifecycleStage.TERMINAL}
     row["policy_version"] = policy.policy_version
     row["policy_source"] = policy.source_by_field
@@ -151,10 +149,24 @@ def _enrich_row(
         row.setdefault("previous_structure_id", None)
         row.setdefault("structure_changed", False)
         row.setdefault("structure_change_reason", "initial_or_same_structure")
-    row.setdefault("row_id", row.get("structure_id") or row.get("opportunity_id"))
+    decision = decide_calendar_opportunity(
+        row,
+        lifecycle_stage=opp.lifecycle_stage,
+        lifecycle_evaluation_state=opp.evaluation_state,
+        lifecycle_recommended_action=opp.recommended_action,
+        entry_evaluation_eligible=bool(row["entry_evaluation_eligible"]),
+        structure_available=bool(structure_id or row.get("possible_spread") or row.get("candidate")),
+    )
+    row.update(decision.to_dict())
+    row["can_enter_daily_opportunity"] = bool(decision.entry_allowed and decision.trade_verdict == Verdict.PASS)
+    row["calendar_entry_allowed"] = bool(decision.entry_allowed)
+    row["entry_allowed"] = bool(decision.entry_allowed)
+    row.setdefault("row_id", row.get("current_structure_id") if open_position else row.get("opportunity_id"))
 
 
 def _structure_state(row: dict[str, Any], status: str) -> str | None:
+    if status == "DEV_MODE_BUDGET_NOT_SELECTED" or str(row.get("exit_reason") or "") == "DEV_MODE_BUDGET_NOT_SELECTED":
+        return EvaluationState.DEFERRED_BUDGET
     if status in {"DATA_NEEDED", "DATE_CONFLICT_REVIEW"}:
         return EvaluationState.DATA_INCOMPLETE
     if status in {"ENTRY_WINDOW_CLOSED", "NO_PRE_EARNINGS_SHORT_EXPIRY", "SHORT_LEG_SPANS_EARNINGS", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED"}:
@@ -162,19 +174,6 @@ def _structure_state(row: dict[str, Any], status: str) -> str | None:
     if row.get("possible_spread") or row.get("candidate") or row.get("front_expiration"):
         return EvaluationState.FULLY_EVALUATED if bool(row.get("entry_allowed") or row.get("calendar_entry_allowed")) else EvaluationState.STRUCTURE_COMPLETE
     return None
-
-
-def _trade_verdict(row: dict[str, Any], default: str, status: str) -> str:
-    verdict = str(row.get("verdict") or default or Verdict.NOT_EVALUATED).upper()
-    if verdict.startswith("FAIL"):
-        return Verdict.BLOCKED if status else Verdict.FAIL
-    if verdict.startswith("PASS"):
-        return Verdict.PASS
-    if verdict.startswith("WATCH"):
-        return Verdict.WATCH
-    if verdict.startswith("NEAR"):
-        return Verdict.NEAR_MISS
-    return default or Verdict.NOT_EVALUATED
 
 
 def _calendar_stage(row: dict[str, Any], policy: CalendarEvolutionPolicy, dte: int, status: str, *, open_position: bool) -> str:
@@ -218,6 +217,74 @@ def _structure_id_for_row(row: dict[str, Any], opportunity_id: str) -> str | Non
     if option_type and strike is not None and front and back:
         return build_structure_id(opportunity_id, str(option_type).lower(), strike, str(front), str(back))
     return None
+
+
+def _collapse_parent_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one parent strategy row per ticker+earnings event.
+
+    Structure attempts stay nested in `structure_attempt_summary`; they are not
+    separate strategy opportunities.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    passthrough: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        opp_id = str(row.get("opportunity_id") or "")
+        if not opp_id:
+            passthrough.append(row)
+            continue
+        grouped.setdefault(opp_id, []).append(row)
+
+    collapsed: list[dict[str, Any]] = []
+    for opp_id, group in grouped.items():
+        group.sort(key=_parent_preference_key, reverse=True)
+        parent = dict(group[0])
+        attempts = [_attempt_summary(row) for row in group]
+        disposition_counts: dict[str, int] = {}
+        for attempt in attempts:
+            code = str(attempt.get("disposition_code") or "UNKNOWN")
+            disposition_counts[code] = disposition_counts.get(code, 0) + 1
+        parent["row_id"] = opp_id
+        parent["opportunity_id"] = opp_id
+        parent["structure_attempt_summary"] = {
+            "attempt_count": len(attempts),
+            "current_structure_id": parent.get("current_structure_id"),
+            "rejected_attempt_count": sum(1 for attempt in attempts if _is_rejected_attempt(attempt)),
+            "disposition_counts": disposition_counts,
+            "attempts": attempts,
+        }
+        parent["duplicate_parent_rows_collapsed"] = max(0, len(group) - 1)
+        collapsed.append(parent)
+    return collapsed + passthrough
+
+
+def _parent_preference_key(row: dict[str, Any]) -> tuple[int, int, float]:
+    has_structure = 1 if row.get("current_structure_id") or row.get("possible_spread") or row.get("candidate") else 0
+    entry = 1 if row.get("entry_allowed") else 0
+    try:
+        score = float(row.get("score") or 0)
+    except Exception:
+        score = 0.0
+    return has_structure, entry, score
+
+
+def _attempt_summary(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "structure_id": row.get("current_structure_id") or row.get("structure_id"),
+        "disposition_code": row.get("disposition_code"),
+        "disposition_reason": row.get("disposition_reason"),
+        "evaluation_state": row.get("evaluation_state"),
+        "trade_verdict": row.get("trade_verdict"),
+        "entry_window_status": row.get("entry_window_status"),
+        "blocker_code": row.get("blocker_code"),
+    }
+
+
+def _is_rejected_attempt(attempt: dict[str, Any]) -> bool:
+    state = str(attempt.get("evaluation_state") or "")
+    verdict = str(attempt.get("trade_verdict") or "")
+    return state in {EvaluationState.STRUCTURE_UNAVAILABLE, EvaluationState.ERROR} or verdict in {Verdict.FAIL, Verdict.BLOCKED}
 
 
 def _row_event_date(row: dict[str, Any]) -> date | None:

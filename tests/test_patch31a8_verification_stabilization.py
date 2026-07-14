@@ -180,49 +180,33 @@ class ActiveCalendarCountTests(unittest.TestCase):
         result = _finalize_result(self._make_result(num_calendars=3))
         self.assertEqual(result["active_calendar_count"], result["summary"]["calendar_count"])
 
-    def _api_response_with_open_opts(self, open_opts_dict):
-        """Call build_open_positions_response with a mocked snapshot repo."""
+    def _api_response_with_calendar_rows(self):
+        """Call build_open_positions_response from canonical row-store lifecycle rows."""
         import tempfile
         from pathlib import Path
-        from unittest.mock import MagicMock, patch as upatch
+        from unittest.mock import patch as upatch
         from app.api.open_positions_api import build_open_positions_response
-        from app.services.report_snapshot_service import ReportSnapshotRepository
+        from app.services.strategy_row_repository import StrategyRowRepository
 
-        fake_snapshot = {"run_id": "run-1", "completed_at": "2026-07-10T10:00:00Z"}
-        fake_summary = {
-            "report_data": {
-                "tradier_snapshot": {
-                    "_open_options_positions": open_opts_dict,
-                    "_calendar_lifecycle_checks": {},
-                }
-            }
-        }
-        mock_repo = MagicMock(spec=ReportSnapshotRepository)
-        mock_repo.latest_success.return_value = fake_snapshot
-        mock_repo.load_summary.return_value = fake_summary
+        rows = [
+            {"type": "open_calendar", "ticker": "SBUX", "row_id": "call", "verdict": "HOLD / MONITOR", "score": 1, "details": {"earnings_calendar": {"structure": "110.0 CALL | short 2026-08-21 / long 2026-09-18"}}},
+            {"type": "open_calendar", "ticker": "SBUX", "row_id": "put", "verdict": "HOLD / MONITOR", "score": 1, "details": {"earnings_calendar": {"structure": "100.0 PUT | short 2026-08-21 / long 2026-09-18"}}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "rows.sqlite3")
+            StrategyRowRepository(db).write_run("run-33c", {"earnings_calendar": {"active_rows": rows}})
+            with upatch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", db):
+                return build_open_positions_response()
 
-        with upatch("app.services.report_snapshot_service.ReportSnapshotRepository", return_value=mock_repo):
-            return build_open_positions_response()
-
-    def test_api_reads_active_calendar_count_from_top_level(self):
-        """The API helper returns active_calendar_count from the top-level key."""
-        open_opts = {
-            "active_calendar_count": 2,
-            "has_open_calendars": True,
-            "has_open_verticals": False,
-        }
-        response = self._api_response_with_open_opts(open_opts)
+    def test_api_reads_active_calendar_count_from_row_store_children(self):
+        response = self._api_response_with_calendar_rows()
         self.assertEqual(response["active_calendar_count"], 2)
+        self.assertEqual(response["child_calendar_count"], 2)
 
-    def test_api_fallback_to_summary_calendar_count(self):
-        """Legacy snapshots without top-level key fall back to summary.calendar_count."""
-        open_opts = {
-            "has_open_calendars": True,
-            "has_open_verticals": False,
-            "summary": {"calendar_count": 2},
-        }
-        response = self._api_response_with_open_opts(open_opts)
-        self.assertEqual(response["active_calendar_count"], 2)
+    def test_api_groups_row_store_children_into_parent_double_calendar(self):
+        response = self._api_response_with_calendar_rows()
+        self.assertEqual(response["parent_double_calendar_count"], 1)
+        self.assertEqual(response["active_parent_calendar_count"], 1)
 
 
 # ── Ticket 4: TKT-FF-FORWARD-VARIANCE-DIAGNOSTICS ───────────────────────────
