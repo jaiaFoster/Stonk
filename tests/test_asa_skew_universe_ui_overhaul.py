@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -464,15 +465,17 @@ class TestSelectExpirationPairsPrecheck:
         return _select_expiration_pairs(expirations, earnings_event=earnings_event, diagnostics=diagnostics)
 
     def test_uses_precheck_pair_when_both_expirations_available(self):
-        expirations = ["2026-07-10", "2026-07-17", "2026-08-07", "2026-09-18"]
+        front = (date.today() + timedelta(days=7)).isoformat()
+        back = (date.today() + timedelta(days=35)).isoformat()
+        expirations = [front, (date.today() + timedelta(days=14)).isoformat(), back, (date.today() + timedelta(days=63)).isoformat()]
         event = {
-            "precheck_front_expiration": "2026-07-10",
-            "precheck_back_expiration": "2026-08-07",
+            "precheck_front_expiration": front,
+            "precheck_back_expiration": back,
         }
         diag: dict = {}
         result = self._run(expirations, earnings_event=event, diagnostics=diag)
 
-        assert result == [("2026-07-10", "2026-08-07")]
+        assert result == [(front, back)]
         assert diag.get("source") == "quality_precheck"
 
     def test_falls_through_when_precheck_pair_stale(self):

@@ -1,184 +1,358 @@
 {
-  "schema_version": "33A.1.v1",
-  "patch": "33A.1",
-  "patch_title": "Strategy Opportunity Lifecycle Kernel and Earnings Calendar Business Logic Repair",
+  "schema_version": "33B.v1",
+  "patch": "33B",
+  "patch_title": "Calendar Lifecycle Orchestration, Durable Opportunity State, and Finalization Truth",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 33A.1",
+  "current_sprint": "Patch 33B",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
     "dashboard_summary_source": "compact_manifest",
     "provenance_db": "data_provenance.db",
-    "history_db": "strategy_opportunity_history.db"
+    "history_db": "strategy_opportunity_history.db",
+    "calendar_scan_source": "CalendarScanResult current-run barrier",
+    "calendar_lifecycle_projection": "StrategyRowRepository lifecycle fields",
+    "run_finalization": "RunFinalizationCoordinator before snapshot save"
   },
   "built_in_strategies": [
-    {"id": "earnings_calendar", "label": "Earnings Calendar", "status": "live"},
-    {"id": "forward_factor_calendar", "label": "Forward Factor Calendar", "status": "live_recommendation"},
-    {"id": "skew_momentum_vertical", "label": "Skew Momentum Vertical", "status": "live"},
-    {"id": "stock_momentum", "label": "Stock Momentum", "status": "live"}
+    {
+      "id": "earnings_calendar",
+      "label": "Earnings Calendar",
+      "status": "live"
+    },
+    {
+      "id": "forward_factor_calendar",
+      "label": "Forward Factor Calendar",
+      "status": "live_recommendation"
+    },
+    {
+      "id": "skew_momentum_vertical",
+      "label": "Skew Momentum Vertical",
+      "status": "live"
+    },
+    {
+      "id": "stock_momentum",
+      "label": "Stock Momentum",
+      "status": "live"
+    }
   ],
   "feature_flags": [
-    {"key": "FF_RECOMMENDATIONS_ENABLED", "default": true, "description": "Forward Factor live recommendation mode"},
-    {"key": "FF_EXECUTION_ENABLED", "default": false, "description": "FF execution — must remain false"},
-    {"key": "FORWARD_FACTOR_DRY_RUN", "default": true, "description": "Legacy dry-run flag (deprecated — use FF_RECOMMENDATIONS_ENABLED)"},
-    {"key": "LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED", "default": false, "description": "Generate and store legacy full report summary blob"},
-    {"key": "CALENDAR_SCANNER_ENABLED", "default": true, "description": "Enable earnings calendar scanning"},
-    {"key": "DATA_CONFIDENCE_ENABLED", "default": true, "description": "Enable data confidence provenance tracking"},
-    {"key": "OPPORTUNITY_HISTORY_ENABLED", "default": true, "description": "Enable cross-run opportunity history tracking"}
+    {
+      "key": "FF_RECOMMENDATIONS_ENABLED",
+      "default": true,
+      "description": "Forward Factor live recommendation mode"
+    },
+    {
+      "key": "FF_EXECUTION_ENABLED",
+      "default": false,
+      "description": "FF execution \u2014 must remain false"
+    },
+    {
+      "key": "FORWARD_FACTOR_DRY_RUN",
+      "default": true,
+      "description": "Legacy dry-run flag (deprecated \u2014 use FF_RECOMMENDATIONS_ENABLED)"
+    },
+    {
+      "key": "LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED",
+      "default": false,
+      "description": "Generate and store legacy full report summary blob"
+    },
+    {
+      "key": "CALENDAR_SCANNER_ENABLED",
+      "default": true,
+      "description": "Enable earnings calendar scanning"
+    },
+    {
+      "key": "DATA_CONFIDENCE_ENABLED",
+      "default": true,
+      "description": "Enable data confidence provenance tracking"
+    },
+    {
+      "key": "OPPORTUNITY_HISTORY_ENABLED",
+      "default": true,
+      "description": "Enable cross-run opportunity history tracking"
+    }
   ],
   "active_tickets": [
     {
-      "id": "TKT-STRATEGY-LIFECYCLE-KERNEL", "title": "Generic lifecycle kernel — enums, models, validation service",
-      "priority": "P0", "status": "completed", "category": "lifecycle",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Done — models in app/models/strategy_opportunity_lifecycle.py", "relevant_patch": "33A.1"
+      "id": "TKT-STRATEGY-LIFECYCLE-KERNEL",
+      "title": "Generic lifecycle kernel \u2014 enums, models, validation service",
+      "priority": "P0",
+      "status": "completed",
+      "category": "lifecycle",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Done \u2014 models in app/models/strategy_opportunity_lifecycle.py",
+      "relevant_patch": "33A.1"
     },
     {
-      "id": "TKT-CALENDAR-LIFECYCLE-MIGRATION", "title": "Migrate earnings_calendar to lifecycle contract",
-      "priority": "P0", "status": "completed", "category": "lifecycle",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Done — adapter in app/services/calendar_opportunity_lifecycle_adapter.py", "relevant_patch": "33A.1"
+      "id": "TKT-CALENDAR-LIFECYCLE-MIGRATION",
+      "title": "Migrate earnings_calendar to lifecycle contract",
+      "priority": "P0",
+      "status": "completed",
+      "category": "lifecycle",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Done \u2014 adapter in app/services/calendar_opportunity_lifecycle_adapter.py",
+      "relevant_patch": "33A.1"
     },
     {
-      "id": "TKT-DISCOVERY-HORIZON-FIX", "title": "Fix EARNINGS_DISCOVERY_END_DAYS hardcoded to 21",
-      "priority": "P0", "status": "completed", "category": "config",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Done — now reads Railway env var, default 35", "relevant_patch": "33A.1"
+      "id": "TKT-DISCOVERY-HORIZON-FIX",
+      "title": "Fix EARNINGS_DISCOVERY_END_DAYS hardcoded to 21",
+      "priority": "P0",
+      "status": "completed",
+      "category": "config",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Done \u2014 now reads Railway env var, default 35",
+      "relevant_patch": "33A.1"
     },
     {
-      "id": "TKT-CALENDAR-PREWINDOW", "title": "Calendar PRE_WINDOW stage and early discovery",
-      "priority": "P0", "status": "in_progress", "category": "calendar",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Wire lifecycle_rows_from_discovery into scanner output", "relevant_patch": "33A.1"
+      "id": "TKT-CALENDAR-PREWINDOW",
+      "title": "Calendar PRE_WINDOW stage and early discovery",
+      "priority": "P0",
+      "status": "completed",
+      "category": "calendar",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Done in Patch 33B \u2014 current-run scan barrier and lifecycle projection persist pre-window rows",
+      "relevant_patch": "33B"
     },
     {
-      "id": "TKT-CALENDAR-ENTRY-WINDOW", "title": "Calendar entry-window transition and expiration enumeration",
-      "priority": "P1", "status": "in_progress", "category": "calendar",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Add explicit expiration list enumeration before pair selection", "relevant_patch": "33A"
+      "id": "TKT-CALENDAR-ENTRY-WINDOW",
+      "title": "Calendar entry-window transition and expiration enumeration",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "calendar",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Add explicit expiration list enumeration before pair selection",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-ADV-006", "title": "Weekly expiration discovery / expiration stepping failure",
-      "priority": "P1", "status": "in_progress", "category": "calendar",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
-      "next_action": "Audit TRADIER_CHAIN_EXPIRATIONS_PER_TICKER=1 effect on calendar discovery", "relevant_patch": "33A"
+      "id": "TKT-ADV-006",
+      "title": "Weekly expiration discovery / expiration stepping failure",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "calendar",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
+      "next_action": "Audit TRADIER_CHAIN_EXPIRATIONS_PER_TICKER=1 effect on calendar discovery",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-ADV-013", "title": "Open positions active calendar count and lifecycle disconnect",
-      "priority": "P1", "status": "in_progress", "category": "open_positions",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
-      "next_action": "Add parent double-calendar structure grouping", "relevant_patch": "33A"
+      "id": "TKT-ADV-013",
+      "title": "Open positions active calendar count and lifecycle disconnect",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "open_positions",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
+      "next_action": "Add parent double-calendar structure grouping",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-OPEN-OPTIONS-DEDUP", "title": "Open options account alias deduplication",
-      "priority": "P1", "status": "in_progress", "category": "open_positions",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
-      "next_action": "Connect canonical account identity to dedup logic", "relevant_patch": "33A"
+      "id": "TKT-OPEN-OPTIONS-DEDUP",
+      "title": "Open options account alias deduplication",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "open_positions",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
+      "next_action": "Connect canonical account identity to dedup logic",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-DOUBLE-CALENDAR-PARENT", "title": "SBUX four-leg double calendar missing parent structure",
-      "priority": "P1", "status": "in_progress", "category": "open_positions",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
-      "next_action": "Add parent structure detection for call+put calendars on same ticker", "relevant_patch": "33A"
+      "id": "TKT-DOUBLE-CALENDAR-PARENT",
+      "title": "SBUX four-leg double calendar missing parent structure",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "open_positions",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
+      "next_action": "Add parent structure detection for call+put calendars on same ticker",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-FF-PROMOTION", "title": "Promote Forward Factor to live ranked recommendations",
-      "priority": "P1", "status": "in_progress", "category": "strategy",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
-      "next_action": "Add FF_RECOMMENDATIONS_ENABLED flag and update daily opportunity routing", "relevant_patch": "33A"
+      "id": "TKT-FF-PROMOTION",
+      "title": "Promote Forward Factor to live ranked recommendations",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "strategy",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
+      "next_action": "Add FF_RECOMMENDATIONS_ENABLED flag and update daily opportunity routing",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-OPPORTUNITY-EVOLUTION", "title": "Persistent opportunity evolution tracking",
-      "priority": "P1", "status": "in_progress", "category": "persistence",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Create strategy_opportunity_history DB table and evolution service", "relevant_patch": "33A"
+      "id": "TKT-OPPORTUNITY-EVOLUTION",
+      "title": "Persistent opportunity evolution tracking",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "persistence",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 33B persists opportunity history before snapshot finalization; continue score-change UX later",
+      "relevant_patch": "33B"
     },
     {
-      "id": "TKT-LEGACY-SUMMARY-DEPRECATION", "title": "Remove legacy report summary from normal hot path",
-      "priority": "P0", "status": "in_progress", "category": "performance",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
-      "next_action": "Add LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED=False config flag", "relevant_patch": "33A"
+      "id": "TKT-LEGACY-SUMMARY-DEPRECATION",
+      "title": "Remove legacy report summary from normal hot path",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "performance",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
+      "next_action": "Add LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED=False config flag",
+      "relevant_patch": "33A"
     },
     {
-      "id": "TKT-ROADMAP-AUTOSYNC", "title": "Roadmap metadata autosync check",
-      "priority": "P2", "status": "in_progress", "category": "developer_tooling",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Add regression test that detects stale patch ID in roadmap.json", "relevant_patch": "33A"
+      "id": "TKT-ROADMAP-AUTOSYNC",
+      "title": "Roadmap metadata autosync check",
+      "priority": "P2",
+      "status": "in_progress",
+      "category": "developer_tooling",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch metadata updated to 33B",
+      "relevant_patch": "33B"
     },
     {
-      "id": "TKT-DATA-CONFIDENCE-UI", "title": "Data confidence UI provenance interactions",
-      "priority": "P1", "status": "partial", "category": "ui",
-      "first_seen": "2026-07-01", "last_updated": "2026-07-13",
+      "id": "TKT-DATA-CONFIDENCE-UI",
+      "title": "Data confidence UI provenance interactions",
+      "priority": "P1",
+      "status": "partial",
+      "category": "ui",
+      "first_seen": "2026-07-01",
+      "last_updated": "2026-07-13",
       "next_action": "Wire data_confidence_popover into earnings date display points in report_service",
       "relevant_patch": "32B"
     },
     {
-      "id": "TKT-OPTION-CHAIN-CONFIDENCE", "title": "Option chain data provenance and diagnostics",
-      "priority": "P1", "status": "in_progress", "category": "provenance",
-      "first_seen": "2026-07-13", "last_updated": "2026-07-13",
-      "next_action": "Add chain provenance fields to strategy rows and UI disclosures", "relevant_patch": "33A"
+      "id": "TKT-OPTION-CHAIN-CONFIDENCE",
+      "title": "Option chain data provenance and diagnostics",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "provenance",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Add chain provenance fields to strategy rows and UI disclosures",
+      "relevant_patch": "33A"
     }
   ],
   "deferred_tickets": [
     {
-      "id": "TKT-CALENDAR-HISTORICAL-BACKTEST", "title": "Calendar historical backtest simulator",
-      "priority": "P2", "status": "deferred",
+      "id": "TKT-CALENDAR-HISTORICAL-BACKTEST",
+      "title": "Calendar historical backtest simulator",
+      "priority": "P2",
+      "status": "deferred",
       "reason": "Patch 33A records the history required; full simulator deferred to later sprint",
       "dependency": "strategy_opportunity_history table"
     },
     {
-      "id": "TKT-CUSTOM-STRATEGY-BUILDER", "title": "Custom strategy builder",
-      "priority": "Future", "status": "planned",
+      "id": "TKT-CUSTOM-STRATEGY-BUILDER",
+      "title": "Custom strategy builder",
+      "priority": "Future",
+      "status": "planned",
       "reason": "Depends on trusted row store, field catalog, provenance, history",
       "dependency": "full provenance + history stack"
     },
     {
-      "id": "TKT-CAL-001", "title": "CAG/LEVI/EPAC outside earnings discovery window",
-      "priority": "P2", "status": "deferred",
+      "id": "TKT-CAL-001",
+      "title": "CAG/LEVI/EPAC outside earnings discovery window",
+      "priority": "P2",
+      "status": "deferred",
       "reason": "Re-verify when earnings dates enter the 21-day discovery window"
     },
     {
-      "id": "TKT-CAL-002", "title": "Mid-caps reaching IV check after volume gate lowered",
-      "priority": "P2", "status": "deferred",
+      "id": "TKT-CAL-002",
+      "title": "Mid-caps reaching IV check after volume gate lowered",
+      "priority": "P2",
+      "status": "deferred",
       "reason": "Re-check after EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME=250000 settles"
     },
     {
-      "id": "TKT-CAL-003", "title": "Wire date_confidence to Saku morning brief",
-      "priority": "P2", "status": "deferred",
+      "id": "TKT-CAL-003",
+      "title": "Wire date_confidence to Saku morning brief",
+      "priority": "P2",
+      "status": "deferred",
       "reason": "Blocked on morning brief refactor in 33A"
     },
     {
-      "id": "TKT-BROKER-RAW-LOGS", "title": "Broker raw log archival",
-      "priority": "P1", "status": "verify",
+      "id": "TKT-BROKER-RAW-LOGS",
+      "title": "Broker raw log archival",
+      "priority": "P1",
+      "status": "verify",
       "reason": "Verify whether already addressed in Patch 32B or earlier"
     }
   ],
   "recently_completed": [
-    {"patch": "33A", "title": "Evolutionary Opportunity Tracking and Calendar Discovery Repair"},
-    {"patch": "32B", "title": "Data Confidence UI Integration, Provider Reconciliation, Calendar Discovery Audit"},
-    {"patch": "32A", "title": "Data Confidence Completion — FieldProvenanceRecord, validation service"},
-    {"patch": "31B", "title": "Calendar scan barrier, pre-scan quality filter, expiration pair precheck"},
-    {"patch": "30C", "title": "Universal row enrichment for earnings calendar"},
-    {"patch": "30B", "title": "Universal strategy observation journal"}
+    {
+      "patch": "33A.1",
+      "title": "Strategy Opportunity Lifecycle Kernel and Earnings Calendar Business Logic Repair"
+    },
+    {
+      "patch": "33A",
+      "title": "Evolutionary Opportunity Tracking and Calendar Discovery Repair"
+    },
+    {
+      "patch": "32B",
+      "title": "Data Confidence UI Integration, Provider Reconciliation, Calendar Discovery Audit"
+    },
+    {
+      "patch": "32A",
+      "title": "Data Confidence Completion \u2014 FieldProvenanceRecord, validation service"
+    },
+    {
+      "patch": "31B",
+      "title": "Calendar scan barrier, pre-scan quality filter, expiration pair precheck"
+    },
+    {
+      "patch": "30C",
+      "title": "Universal row enrichment for earnings calendar"
+    },
+    {
+      "patch": "30B",
+      "title": "Universal strategy observation journal"
+    }
   ],
   "validation_status": {
     "last_run": "2026-07-13",
-    "patch": "33A.1",
+    "patch": "33B",
     "result": "in_progress",
-    "focused_tests_passed": 149,
+    "focused_tests_passed": 113,
     "full_suite_passed": null
   },
   "known_data_confidence_issues": [
-    "Alpha Vantage CSV endpoint cannot provide earnings session/hour data — by design, labeled ok_no_session",
+    "Alpha Vantage CSV endpoint cannot provide earnings session/hour data \u2014 by design, labeled ok_no_session",
     "TRADIER_CHAIN_EXPIRATIONS_PER_TICKER=1 limits calendar scanner to one expiration per ticker",
     "Robinhood chain retrieval not implemented for bulk calendar scanning"
   ],
   "strategy_thresholds": [
-    {"key": "FF_MIN_FORWARD_FACTOR", "value": 0.20, "change_requires": "user_approval"},
-    {"key": "CALENDAR_EARNINGS_FRONT_MIN_DTE", "value": 14, "change_requires": "user_approval"},
-    {"key": "CALENDAR_EARNINGS_FRONT_MAX_DTE", "value": 35, "change_requires": "user_approval"},
-    {"key": "CALENDAR_MIN_EXPIRATION_GAP_DAYS", "value": 14, "change_requires": "user_approval"},
-    {"key": "EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME", "change_requires": "user_approval"}
+    {
+      "key": "FF_MIN_FORWARD_FACTOR",
+      "value": 0.2,
+      "change_requires": "user_approval"
+    },
+    {
+      "key": "CALENDAR_EARNINGS_FRONT_MIN_DTE",
+      "value": 14,
+      "change_requires": "user_approval"
+    },
+    {
+      "key": "CALENDAR_EARNINGS_FRONT_MAX_DTE",
+      "value": 35,
+      "change_requires": "user_approval"
+    },
+    {
+      "key": "CALENDAR_MIN_EXPIRATION_GAP_DAYS",
+      "value": 14,
+      "change_requires": "user_approval"
+    },
+    {
+      "key": "EARNINGS_DISCOVERY_MIN_AVERAGE_VOLUME",
+      "change_requires": "user_approval"
+    }
   ],
   "next_roadmap_stages": [
     "Complete calendar PRE_WINDOW monitoring and expiration enumeration repair",

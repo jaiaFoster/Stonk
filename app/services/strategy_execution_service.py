@@ -64,6 +64,12 @@ _SURVIVAL_FIELDS = (
     "proposed_short_expiration", "proposed_long_expiration",
     "available_expirations", "current_dte_to_earnings", "ideal_entry_window",
     "estimated_entry_date", "days_until_entry_window", "blocker_code", "blocker_detail",
+    "opportunity_id", "anchor_type", "anchor_id", "clock_type", "clock_value", "anchor_timestamp",
+    "lifecycle_stage", "strategy_stage", "calendar_stage", "evaluation_state", "trade_verdict",
+    "recommended_action", "build_eligible", "surface_eligible", "entry_evaluation_eligible",
+    "entry_allowed", "terminal", "policy_version", "policy_source", "disposition_code",
+    "disposition_reason", "current_structure_id", "structure_id", "structure_version",
+    "previous_structure_id", "structure_changed", "structure_change_reason",
 )
 
 

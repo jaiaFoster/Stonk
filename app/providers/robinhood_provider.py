@@ -56,6 +56,14 @@ try:
 except (ImportError, ModuleNotFoundError):
     robinhood_authentication = None
 
+if not hasattr(r, "login"):
+    if robinhood_authentication is not None and hasattr(robinhood_authentication, "login"):
+        r.login = robinhood_authentication.login
+    else:
+        def _missing_robinhood_login(*args, **kwargs):
+            raise RuntimeError("Robinhood login function is unavailable in this robin_stocks build.")
+        r.login = _missing_robinhood_login
+
 DEBUG = True
 
 def discover_accounts() -> list[dict[str, Any]]:

@@ -469,17 +469,16 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
 # WS1: Calendar Scan ID
 # ---------------------------------------------------------------------------
 class TestCalendarScanId(unittest.TestCase):
-    """Scan ID is generated and stored in calendar scan state (verified via source)."""
+    """Scan ID is generated and stored in the run-scoped calendar scan result."""
 
-    def test_calendar_scan_state_has_scan_id_key_in_source(self):
-        """Verify _CALENDAR_SCAN_STATE includes scan_id field by inspecting source."""
-        import ast
+    def test_calendar_scan_result_has_scan_id_key_in_source(self):
+        """Verify CalendarScanResult includes scan_id and no legacy global state is used."""
         import pathlib
-        src = pathlib.Path("app/services/analysis_service.py").read_text()
-        # Check that scan_id is defined in _CALENDAR_SCAN_STATE dict literal
-        self.assertIn('"scan_id"', src,
-                      "scan_id must be a key in _CALENDAR_SCAN_STATE")
-        self.assertIn("_CALENDAR_SCAN_STATE", src)
+        scan_src = pathlib.Path("app/services/calendar_scan_result_service.py").read_text()
+        analysis_src = pathlib.Path("app/services/analysis_service.py").read_text()
+        # Check that scan_id is defined in the run-scoped scan-result model.
+        self.assertIn("scan_id", scan_src)
+        self.assertNotIn("_CALENDAR_SCAN_STATE", analysis_src)
 
     def test_scan_id_format_in_source(self):
         """Verify scan_id is generated from run_id + uuid hex."""
@@ -510,9 +509,9 @@ class TestRoadmapJson(unittest.TestCase):
         for field in ("patch", "schema_version", "patch_title", "active_tickets", "feature_flags"):
             self.assertIn(field, data, f"roadmap.json missing '{field}'")
 
-    def test_roadmap_patch_matches_33a(self):
+    def test_roadmap_patch_matches_current_patch(self):
         data = self._load()
-        self.assertEqual(data["patch"], "33A")
+        self.assertEqual(data["patch"], "33B")
 
     def test_roadmap_tickets_have_required_fields(self):
         data = self._load()
@@ -597,7 +596,7 @@ class TestDevRoadmapEndpoint(unittest.TestCase):
         if resp.status_code == 200:
             data = resp.get_json()
             self.assertIn("current_patch", data)
-            self.assertEqual(data["current_patch"], "33A")
+            self.assertEqual(data["current_patch"], "33B")
 
 
 if __name__ == "__main__":

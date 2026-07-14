@@ -389,19 +389,21 @@ class CustomStrategyAPIBlueprintTests(unittest.TestCase):
 
 class CalendarScanBarrierTests(unittest.TestCase):
 
-    def test_run_calendar_scan_bg_updates_state(self):
-        from app.services.analysis_service import _CALENDAR_SCAN_STATE, _run_calendar_scan_bg
-        original_status = _CALENDAR_SCAN_STATE.get("status")
-        _run_calendar_scan_bg(lambda: [{"ticker": "TEST"}])
-        self.assertEqual(_CALENDAR_SCAN_STATE["status"], "complete")
-        self.assertEqual(len(_CALENDAR_SCAN_STATE["candidates"]), 1)
-        self.assertEqual(_CALENDAR_SCAN_STATE["candidates"][0]["ticker"], "TEST")
+    def test_run_scoped_scan_result_updates_state(self):
+        from app.services.calendar_scan_result_service import complete_scan_result, new_scan_result
+        result = new_scan_result("run-31b", "scan-1")
+        complete_scan_result(result, [{"ticker": "TEST"}])
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0]["ticker"], "TEST")
+        self.assertEqual(result.candidates[0]["scan_source"], "current_run")
 
-    def test_run_calendar_scan_bg_handles_exception(self):
-        from app.services.analysis_service import _run_calendar_scan_bg
-        def failing_scan():
-            raise RuntimeError("scan error")
-        _run_calendar_scan_bg(failing_scan)
+    def test_run_scoped_scan_result_handles_exception(self):
+        from app.services.calendar_scan_result_service import fail_scan_result, new_scan_result
+        result = new_scan_result("run-31b", "scan-1")
+        fail_scan_result(result, RuntimeError("scan error"))
+        self.assertEqual(result.status, "FAILED")
+        self.assertIn("scan error", result.error)
 
 
 # ── TKT-31B-G: Canonical rejected-row invariant ───────────────────────────────
