@@ -135,7 +135,7 @@ class TestAccountValueWiring(unittest.TestCase):
         return {"conservative_debit": debit / 100.0, "mid_debit": debit / 100.0}
 
     def test_account_value_from_context(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
         with patch("app.config.CALENDAR_ACCOUNT_VALUE_OVERRIDE", None), \
              patch("app.config.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED", True), \
              patch("app.config.CALENDAR_MAX_DEBIT_DOLLARS", 500), \
@@ -150,7 +150,7 @@ class TestAccountValueWiring(unittest.TestCase):
         self.assertNotEqual(result["account_risk_status"], "UNKNOWN ACCOUNT VALUE")
 
     def test_account_value_override_takes_precedence(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
         with patch("app.config.CALENDAR_ACCOUNT_VALUE_OVERRIDE", 75000.0), \
              patch("app.config.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED", True), \
              patch("app.config.CALENDAR_MAX_DEBIT_DOLLARS", 500), \
@@ -165,7 +165,7 @@ class TestAccountValueWiring(unittest.TestCase):
         self.assertEqual(result["account_value_estimate"], 75000.0)
 
     def test_account_risk_not_unknown_when_context_present(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
         with patch("app.config.CALENDAR_ACCOUNT_VALUE_OVERRIDE", None), \
              patch("app.config.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED", True), \
              patch("app.config.CALENDAR_MAX_DEBIT_DOLLARS", 500), \

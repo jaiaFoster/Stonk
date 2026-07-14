@@ -24,8 +24,8 @@ from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
 from app.services.calendar_opportunity_projection_service import (
+    build_calendar_canonical_projection,
     build_calendar_row_reconciliation,
-    enrich_calendar_engine_rows,
 )
 from app.services.calendar_ranking_service import build_calendar_ranking
 from app.services.calendar_scan_result_service import (
@@ -82,7 +82,6 @@ from app.services.skew_momentum_vertical_service import build_skew_momentum_vert
 from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
 from app.services.forward_factor_service import build_forward_factor_strategy
 from app.services.tradier_service import get_tradier_snapshot_for_positions
-from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
 from app.services.watchlist_review_service import review_watchlist_candidates
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
 from app.strategies.portfolio_snapshot import PortfolioSnapshotStrategy
@@ -183,8 +182,8 @@ EMPTY_TRADE_MEMORY = {
     "summary": {"open_count": 0, "closed_count": 0, "watch_count": 0, "match_count": 0},
 }
 
-EMPTY_UNIFIED_CALENDAR = {
-    "source": "unified_calendar_trade_engine_v1",
+EMPTY_CALENDAR_PROJECTION = {
+    "source": "calendar_canonical_projection_v1",
     "enabled": True,
     "has_data": False,
     "new_trade_rows": [],
@@ -1082,10 +1081,10 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         EMPTY_CALENDAR_RANKING,
         lambda result: f"Calendar ranking found {((result or {}).get('summary', {}) or {}).get('pass_count', 0)} fully-qualified candidate(s).",
     )
-    unified_calendar_engine = run_optional_step(
-        "unified_calendar_engine",
-        "Running Unified Calendar Trade Engine v1...",
-        lambda: build_unified_calendar_trade_engine(
+    calendar_projection = run_optional_step(
+        "calendar_canonical_projection",
+        "Running Calendar Canonical Projection v1...",
+        lambda: build_calendar_canonical_projection(
             earnings_trade_discovery=earnings_trade_discovery,
             earnings_discovery_quality=earnings_discovery_quality,
             calendar_candidates=calendar_candidates,
@@ -1094,29 +1093,35 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             account_context=account_context,
             open_options=open_options,
             lifecycle_checks=lifecycle_checks,
+            policy=calendar_policy,
+            evaluation_date=run_context.created_at.date() if hasattr(run_context.created_at, "date") else None,
+            run_mode=run_mode,
             log_print=log_print,
         ),
-        EMPTY_UNIFIED_CALENDAR,
-        lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
+        EMPTY_CALENDAR_PROJECTION,
+        lambda result: f"Calendar canonical projection produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} parent row(s).",
     )
-    unified_calendar_engine = enrich_calendar_engine_rows(
-        unified_calendar_engine,
-        policy=calendar_policy,
-        evaluation_date=run_context.created_at.date() if hasattr(run_context.created_at, "date") else None,
-    )
-    _calendar_recon = unified_calendar_engine.get("calendar_row_reconciliation") or {}
+    tradier_snapshot["_calendar_canonical_projection"] = calendar_projection
+    _calendar_recon = calendar_projection.get("calendar_row_reconciliation") or {}
     log_print(
         "CALENDAR_ROW_RECONCILIATION "
-        f"generated={_calendar_recon.get('generated_rows', 0)} "
+        f"parent_generated={_calendar_recon.get('parent_generated', _calendar_recon.get('generated_rows', 0))} "
+        f"open_parent_generated={_calendar_recon.get('open_parent_generated', 0)} "
+        f"open_child_generated={_calendar_recon.get('open_child_generated', 0)} "
+        f"structure_records={_calendar_recon.get('structure_records', 0)} "
+        f"diagnostic_records={_calendar_recon.get('diagnostic_records', 0)} "
         f"normalized={_calendar_recon.get('normalized_rows', 0)} "
         f"duplicates={_calendar_recon.get('duplicate_rows', 0)} "
         f"invalid={_calendar_recon.get('invalid_rows', 0)} "
         f"persisted={_calendar_recon.get('persisted_rows')} "
-        f"api_visible={_calendar_recon.get('api_rows')} "
+        f"api_visible_parents={_calendar_recon.get('api_visible_parents', _calendar_recon.get('api_rows'))} "
+        f"api_visible_children={_calendar_recon.get('api_visible_children', 0)} "
         f"daily_visible={_calendar_recon.get('daily_opportunity_rows', 0)} "
         f"history={_calendar_recon.get('history_rows')} "
         f"journal={_calendar_recon.get('journal_rows')} "
-        f"excluded={_calendar_recon.get('excluded_rows_by_reason', {})}"
+        f"api_exclusions={_calendar_recon.get('api_exclusions', {})} "
+        f"persistence_exclusions={_calendar_recon.get('persistence_exclusions', {})} "
+        f"strategy_dispositions={_calendar_recon.get('excluded_rows_by_reason', {})}"
     )
     earnings_mini_backtest = run_optional_step(
         "earnings_mini_backtest",
@@ -1226,7 +1231,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         skew_momentum_vertical_strategy,
         "items", "pass_items", "watch_items", "blocked_items", "active_items",
     )
-    _attach_strategy_actionability(unified_calendar_engine, "new_trade_rows", "open_trade_rows", "blocked_rows")
+    _attach_strategy_actionability(calendar_projection, "new_trade_rows", "open_trade_rows", "blocked_rows")
     skew_vertical_cache = run_optional_step(
         "skew_vertical_opportunity_cache",
         "Updating Strategy 2 Opportunity Cache v1...",
@@ -1273,7 +1278,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "daily_opportunity",
         "Running Daily Opportunity Engine v1...",
         lambda: build_daily_opportunity_engine(
-            unified_calendar_engine=unified_calendar_engine,
+            calendar_projection=calendar_projection,
             stock_momentum_strategy=stock_momentum_strategy,
             portfolio_gap_analysis=portfolio_gap_analysis,
             recommendations=recommendations,
@@ -1286,7 +1291,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     tradier_snapshot["_daily_opportunity_engine"] = daily_opportunity_engine
 
     # TKT-STRATEGY-FAILURE-RUN-QUALITY (31B.1): degrade report_quality when an enabled strategy crashes.
-    _enabled_strategy_step_keys = ("unified_calendar_engine", "skew_momentum_vertical", "forward_factor_calendar", "stock_momentum")
+    _enabled_strategy_step_keys = ("calendar_canonical_projection", "skew_momentum_vertical", "forward_factor_calendar", "stock_momentum")
     for _failed_step_key in _enabled_strategy_step_keys:
         _step_info = pipeline_status.get("step_map", {}).get(_failed_step_key)
         if isinstance(_step_info, dict) and _step_info.get("status") == "error":
@@ -1298,7 +1303,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     normalized_strategy_results = collect_strategy_results(
         run_context,
         {
-            "earnings_calendar": unified_calendar_engine,
+            "earnings_calendar": calendar_projection,
             "skew_momentum_vertical": skew_momentum_vertical_strategy,
             "forward_factor_calendar": forward_factor_strategy,
             "stock_momentum": stock_momentum_strategy,
@@ -1346,26 +1351,34 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         _ec_history = (tradier_snapshot.get("_opportunity_history_write") or {}).get("rows_written")
         _ec_journal = (tradier_snapshot.get("_journal_write_status") or {}).get("observations_written")
         _calendar_recon = build_calendar_row_reconciliation(
-            unified_calendar_engine,
+            calendar_projection,
             persisted_rows=_ec_persisted,
+            api_visible_rows=len(_ec_rows),
             history_rows=_ec_history,
             journal_rows=_ec_journal,
         )
         _calendar_recon["canonical_rows"] = len(_ec_rows)
-        unified_calendar_engine["calendar_row_reconciliation"] = _calendar_recon
+        calendar_projection["calendar_row_reconciliation"] = _calendar_recon
         tradier_snapshot["_calendar_row_reconciliation"] = _calendar_recon
         log_print(
             "CALENDAR_ROW_RECONCILIATION "
-            f"generated={_calendar_recon.get('generated_rows', 0)} "
+            f"parent_generated={_calendar_recon.get('parent_generated', _calendar_recon.get('generated_rows', 0))} "
+            f"open_parent_generated={_calendar_recon.get('open_parent_generated', 0)} "
+            f"open_child_generated={_calendar_recon.get('open_child_generated', 0)} "
+            f"structure_records={_calendar_recon.get('structure_records', 0)} "
+            f"diagnostic_records={_calendar_recon.get('diagnostic_records', 0)} "
             f"normalized={_calendar_recon.get('normalized_rows', 0)} "
             f"duplicates={_calendar_recon.get('duplicate_rows', 0)} "
             f"invalid={_calendar_recon.get('invalid_rows', 0)} "
             f"persisted={_calendar_recon.get('persisted_rows')} "
-            f"api_visible={_calendar_recon.get('api_rows')} "
+            f"api_visible_parents={_calendar_recon.get('api_visible_parents', _calendar_recon.get('api_rows'))} "
+            f"api_visible_children={_calendar_recon.get('api_visible_children', 0)} "
             f"daily_visible={_calendar_recon.get('daily_opportunity_rows', 0)} "
             f"history={_calendar_recon.get('history_rows')} "
             f"journal={_calendar_recon.get('journal_rows')} "
-            f"excluded={_calendar_recon.get('excluded_rows_by_reason', {})}"
+            f"api_exclusions={_calendar_recon.get('api_exclusions', {})} "
+            f"persistence_exclusions={_calendar_recon.get('persistence_exclusions', {})} "
+            f"strategy_dispositions={_calendar_recon.get('excluded_rows_by_reason', {})}"
         )
     except Exception as _recon_exc:
         log_print(f"CALENDAR_ROW_RECONCILIATION error={_recon_exc}")

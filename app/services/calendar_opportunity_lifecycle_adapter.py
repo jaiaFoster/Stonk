@@ -279,7 +279,7 @@ def lifecycle_rows_from_discovery(
             item.get("front_expiration") and item.get("back_expiration")
         )
         structure_eval_state = None
-        if item.get("exit_stage") in {"DEV_MODE_BUDGET_NOT_SELECTED", "QUALITY_FILTER_BUDGET_NOT_SELECTED"}:
+        if item.get("exit_stage") in {"BUDGET_DEFERRED", "DEV_MODE_BUDGET_NOT_SELECTED", "QUALITY_FILTER_BUDGET_NOT_SELECTED"} or item.get("exit_reason") in {"DEV_MODE_BUDGET_NOT_SELECTED", "QUALITY_FILTER_BUDGET_NOT_SELECTED"}:
             structure_eval_state = EvaluationState.DEFERRED_BUDGET
 
         opportunity, val_errors = build_calendar_lifecycle_opportunity(

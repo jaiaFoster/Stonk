@@ -2,7 +2,7 @@
 app/services/daily_opportunity_engine_service.py — Daily Opportunity Engine v1.
 
 One daily action list across the app:
-- earnings-calendar entries from Unified Calendar Trade Engine
+- earnings-calendar entries from canonical calendar projection
 - stock adds / add-on-pullback from Stock Momentum Add Strategy
 - portfolio gap watchlist suggestions
 - portfolio risk/avoid names from existing portfolio scoring
@@ -34,7 +34,7 @@ ACTION_TYPE_PRIORITY = {
 
 
 def build_daily_opportunity_engine(
-    unified_calendar_engine: dict[str, Any] | None,
+    calendar_projection: dict[str, Any] | None,
     stock_momentum_strategy: dict[str, Any] | None,
     portfolio_gap_analysis: dict[str, Any] | None,
     recommendations: list[dict[str, Any]] | None,
@@ -55,7 +55,7 @@ def build_daily_opportunity_engine(
         return _finalize(result)
 
     actions: list[dict[str, Any]] = []
-    actions.extend(_calendar_actions(unified_calendar_engine or {}))
+    actions.extend(_calendar_actions(calendar_projection or {}))
     actions.extend(_skew_vertical_actions(skew_momentum_vertical_strategy or {}))
     # Stock add ideas are intentionally consolidated by ticker so the top-level
     # daily view does not show separate momentum/gap/watchlist rows for the same
@@ -148,40 +148,56 @@ def _daily_sort_key(item: dict[str, Any]) -> tuple[int, float]:
 def _calendar_actions(engine: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
 
-    # Active trades first: this is the most important daily viewer value.
-    # A detected open calendar may require action even when its P/L score is low.
     for row in engine.get("open_trade_rows") or []:
-        verdict = str(row.get("verdict") or "").upper()
+        lifecycle = str(row.get("lifecycle_stage") or "")
+        action_state = str(row.get("recommended_action") or row.get("action") or "").upper()
+        legacy_open_hint = bool(row.get("verdict") or row.get("next_action") or row.get("raw"))
+        if lifecycle != "OPEN_POSITION" and action_state not in {"HOLD", "EXIT", "REVIEW"} and not legacy_open_hint:
+            continue
+        verdict = str(row.get("trade_verdict") or row.get("verdict") or "").upper()
         raw = row.get("raw") if isinstance(row.get("raw"), dict) else {}
         score = float(raw.get("lifecycle_priority_score") or row.get("score") or 0)
-        if "URGENT" in verdict or "EXIT" in verdict or "CUT" in verdict or "RECHECK" in verdict or "TAKE PROFIT" in verdict:
+        if action_state in {"EXIT", "REVIEW"} or "URGENT" in verdict or "CUT" in verdict or "RECHECK" in verdict or "TAKE PROFIT" in verdict:
             score = max(score, 90.0 if ("URGENT" in verdict or "CUT" in verdict) else 78.0)
         out.append(
             {
                 "type": "active_calendar",
                 "ticker": row.get("ticker"),
                 "priority_score": score,
-                "action": row.get("verdict") or "Calendar review",
+                "action": row.get("recommended_action") or row.get("verdict") or "HOLD",
                 "why": _active_calendar_why(row),
                 "next_step": row.get("next_action") or "Review live spread quotes before acting.",
-                "source": "Active Calendar Lifecycle v2",
+                "source": "Calendar Canonical Projection",
             }
         )
 
     for row in engine.get("new_trade_rows") or []:
-        if row.get("calendar_entry_allowed") is False:
+        lifecycle = str(row.get("lifecycle_stage") or "")
+        trade_verdict = str(row.get("trade_verdict") or "").upper()
+        action_state = str(row.get("recommended_action") or "").upper()
+        if lifecycle == "SURFACED" and action_state in {"MONITOR", "PREPARE"}:
+            out.append(
+                {
+                    "type": "calendar_monitor",
+                    "ticker": row.get("ticker"),
+                    "priority_score": float(row.get("score") or 0),
+                    "action": row.get("recommended_action") or "MONITOR",
+                    "why": _calendar_why(row),
+                    "next_step": row.get("entry_plan") or row.get("next_action") or "Monitor until the configured entry window opens.",
+                    "source": "Calendar Canonical Projection",
+                }
+            )
             continue
-        verdict = str(row.get("verdict") or "").upper()
-        if verdict.startswith("PASS") or "URGENT" in verdict or "TAKE PROFIT" in verdict or "EXIT" in verdict:
+        if trade_verdict == "PASS" and bool(row.get("entry_allowed")) and action_state == "ENTER":
             out.append(
                 {
                     "type": "calendar",
                     "ticker": row.get("ticker"),
                     "priority_score": float(row.get("actionability_score") or row.get("score") or 0),
-                    "action": row.get("verdict") or "Calendar review",
+                    "action": row.get("recommended_action") or "ENTER",
                     "why": _calendar_why(row),
                     "next_step": row.get("entry_plan") or row.get("next_action") or "Review live spread quotes before acting.",
-                    "source": "Unified Calendar Trade Engine v1",
+                    "source": "Calendar Canonical Projection",
                 }
             )
     return out

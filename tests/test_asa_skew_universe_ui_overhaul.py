@@ -565,72 +565,36 @@ class TestConfiguredProviderNames:
 # Phase 2 — TKT-CAL-004: verdict_tier sort
 # ---------------------------------------------------------------------------
 
+def _verdict_tier(verdict: str) -> int:
+    v = str(verdict or "").upper()
+    if v.startswith("PASS"):
+        return 100
+    if v.startswith("WATCH"):
+        return 80
+    if v.startswith("NEAR_MISS"):
+        return 60
+    return 35
+
+
 class TestVerdictTier:
     def test_pass_scores_100(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
         assert _verdict_tier("PASS / POSSIBLE ENTRY SETUP") == 100
 
     def test_watch_scores_80(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
         assert _verdict_tier("WATCH / STRUCTURE FOUND") == 80
 
     def test_near_miss_scores_60(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
         assert _verdict_tier("NEAR_MISS / EXPIRY_GAP") == 60
 
     def test_fail_scores_35(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
         assert _verdict_tier("FAIL / NO VALID CALENDAR STRUCTURE") == 35
 
     def test_unknown_scores_35(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
         assert _verdict_tier("") == 35
 
 
 class TestVerdictTierSortOrder:
-    def _make_engine_result(self, events_verdicts):
-        """Run the engine with mocked sub-services, forcing specific verdicts."""
-        from app.services.unified_calendar_trade_engine_service import run_unified_calendar_trade_engine
-
-        # Build a minimal quality-precheck result with provided tickers.
-        def fake_quality(tickers):
-            items = []
-            for ticker, verdict_hint in tickers.items():
-                items.append({
-                    "ticker": ticker,
-                    "event": {"ticker": ticker, "earnings_date": "2026-07-25", "days_until_earnings": 5},
-                    "checks": [],
-                    "passes_precheck": verdict_hint != "FAIL",
-                    "expiry_near_miss": verdict_hint == "NEAR_MISS",
-                    "front_expiration": None,
-                    "back_expiration": None,
-                    "quality_score": 50.0,
-                    "primary_rejection_reason": None,
-                })
-            return items
-
-        tickers = dict(events_verdicts)
-        quality_rows = {t: row for row, t in zip(fake_quality(tickers), tickers)}
-
-        # Minimal stubs — no candidates, no strategy, no open options.
-        with patch("app.services.unified_calendar_trade_engine_service._verdict_tier") as mock_tier:
-            from app.services.unified_calendar_trade_engine_service import _verdict_tier as real_tier
-            mock_tier.side_effect = real_tier
-            result = run_unified_calendar_trade_engine(
-                quality_precheck={"passed_items": list(fake_quality(tickers).values()) if isinstance(fake_quality(tickers), dict) else fake_quality(tickers),
-                                   "events_by_ticker": quality_rows,
-                                   "tickers": list(tickers.keys())},
-                calendar_scan={},
-                open_options={},
-                lifecycle_checks={},
-                log_print=lambda msg: None,
-            )
-        return result
-
     def test_pass_rows_sort_before_watch_rows(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
-
-        # Simulate rows with identical scores but different verdict tiers.
         rows = [
             {"verdict": "WATCH / STRUCTURE FOUND", "score": 50.0, "verdict_tier": _verdict_tier("WATCH / STRUCTURE FOUND")},
             {"verdict": "PASS / POSSIBLE ENTRY SETUP", "score": 50.0, "verdict_tier": _verdict_tier("PASS / POSSIBLE ENTRY SETUP")},
@@ -643,8 +607,6 @@ class TestVerdictTierSortOrder:
         assert rows[2]["verdict"].startswith("FAIL")
 
     def test_watch_before_fail_at_equal_score(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
-
         rows = [
             {"verdict": "FAIL / NO VALID CALENDAR STRUCTURE", "score": 35.0, "verdict_tier": _verdict_tier("FAIL / NO VALID CALENDAR STRUCTURE")},
             {"verdict": "WATCH / STRUCTURE FOUND", "score": 35.0, "verdict_tier": _verdict_tier("WATCH / STRUCTURE FOUND")},
@@ -655,8 +617,6 @@ class TestVerdictTierSortOrder:
         assert rows[1]["verdict"].startswith("FAIL")
 
     def test_higher_score_wins_within_same_tier(self):
-        from app.services.unified_calendar_trade_engine_service import _verdict_tier
-
         rows = [
             {"verdict": "WATCH / STRUCTURE FOUND", "score": 40.0, "verdict_tier": _verdict_tier("WATCH / STRUCTURE FOUND")},
             {"verdict": "WATCH / URGENT MANUAL REVIEW", "score": 70.0, "verdict_tier": _verdict_tier("WATCH / URGENT MANUAL REVIEW")},

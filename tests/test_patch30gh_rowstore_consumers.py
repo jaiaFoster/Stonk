@@ -153,12 +153,12 @@ def test_daily_opportunity_reads_strategy_row_store_and_excludes_ff_dry_run():
     assert response["strategy_counts"]["forward_factor_calendar"]["rows_seen"] == 1
     assert response["dry_run_exclusions"]["forward_factor_calendar"]["excluded_reason"] == "dry_run"
     assert not any(action["source_strategy_id"] == "forward_factor_calendar" for action in response["actions"])
-    assert response["actions"][0]["type"] == "active_calendar"
+    assert response["actions"][0]["type"] == "calendar_position_action"
     assert any(action["ticker"] == "AMZN" for action in response["actions"])
     snapshot_repo.assert_not_called()
 
 
-def test_daily_opportunity_legacy_fallback_is_labeled_when_row_store_empty():
+def test_daily_opportunity_returns_empty_without_legacy_fallback_when_row_store_empty():
     with TemporaryDirectory() as tmp:
         db = str(Path(tmp) / "rows.sqlite3")
         with patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", db), \
@@ -182,9 +182,10 @@ def test_daily_opportunity_legacy_fallback_is_labeled_when_row_store_empty():
 
             response = build_daily_opportunity_response(limit=10)
 
-    assert response["source"] == "legacy_snapshot_fallback"
-    assert response["fallback_used"] is True
-    assert response["source_run_id"] == "legacy-run"
+    assert response["source"] == "empty"
+    assert response["fallback_used"] is False
+    assert response["source_run_id"] is None
+    snapshot_repo.assert_not_called()
 
 
 def test_open_positions_reads_lifecycle_rows_from_strategy_row_store():

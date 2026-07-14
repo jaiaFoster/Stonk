@@ -400,18 +400,39 @@ class TestB1QualityRowDateFields(unittest.TestCase):
 
 
 class TestB3NearMissVerdictLabel(unittest.TestCase):
-    """B3: NEAR_MISS verdict surfaces through unified engine."""
+    """B3: legacy near-miss rows are projected as non-entry canonical parents."""
 
     def test_near_miss_verdict_from_quality_row(self):
-        from app.services.unified_calendar_trade_engine_service import _new_trade_verdict
-        quality_row = {"expiry_near_miss": True}
-        verdict = _new_trade_verdict(False, {}, quality_row)
-        self.assertEqual(verdict, "NEAR_MISS / EXPIRY_GAP")
+        from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+        from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
+        result = build_calendar_canonical_projection(
+            earnings_trade_discovery={"items": []},
+            earnings_discovery_quality={"items": [{"ticker": "ABC", "earnings_date": "2026-07-09", "expiry_near_miss": True, "checks": []}]},
+            calendar_candidates=[],
+            earnings_calendar_strategy={"items": []},
+            calendar_ranking={"items": []},
+            account_context={},
+            open_options={},
+            lifecycle_checks={},
+            policy=load_calendar_evolution_policy(),
+            log_print=lambda _msg: None,
+        )
+        row = result["new_trade_rows"][0]
+        self.assertEqual(row["trade_verdict"], "NOT_EVALUATED")
+        self.assertFalse(row["entry_allowed"])
 
     def test_no_structure_verdict_without_near_miss(self):
-        from app.services.unified_calendar_trade_engine_service import _new_trade_verdict
-        verdict = _new_trade_verdict(False, {}, None)
-        self.assertEqual(verdict, "FAIL / NO VALID CALENDAR STRUCTURE")
+        from app.services.calendar_decision_service import decide_calendar_opportunity
+        decision = decide_calendar_opportunity(
+            {"entry_window_status": "ENTRY_WINDOW_CLOSED"},
+            lifecycle_stage="ACTIONABLE",
+            lifecycle_evaluation_state="STRUCTURE_UNAVAILABLE",
+            lifecycle_recommended_action="MONITOR",
+            entry_evaluation_eligible=True,
+            structure_available=False,
+        )
+        self.assertEqual(decision.trade_verdict, "NOT_EVALUATED")
+        self.assertEqual(decision.recommended_action, "NONE")
 
 
 class TestD1AccountRiskLabel(unittest.TestCase):
@@ -850,7 +871,7 @@ class TestPatch107AccountRiskAlreadyExists(unittest.TestCase):
     """Patch 107 Item 4: evaluate_account_risk already computes debit_pct_of_account."""
 
     def test_debit_pct_of_account_computed(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
         candidate = {"conservative_debit": 2.50}
         account_context = {"account_value_estimate": 50000.0}
         result = evaluate_account_risk(candidate, account_context)
@@ -859,7 +880,7 @@ class TestPatch107AccountRiskAlreadyExists(unittest.TestCase):
         self.assertIn("account_risk_status", result)
 
     def test_no_account_value_returns_unknown(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
         candidate = {"conservative_debit": 2.50}
         result = evaluate_account_risk(candidate, None)
         self.assertIn("account_risk_status", result)
@@ -1316,8 +1337,8 @@ class TestPatch28AAccountValueSource(unittest.TestCase):
         self.assertEqual(_account_value_source([]), "unknown")
 
     def test_evaluate_account_risk_surfaces_source_from_context(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
-        with patch("app.services.calendar_verdict_service.config") as mock_cfg:
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
+        with patch("app.services.calendar_risk_fact_service.config") as mock_cfg:
             mock_cfg.CALENDAR_ACCOUNT_VALUE_OVERRIDE = None
             mock_cfg.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED = False
             mock_cfg.CALENDAR_MAX_DEBIT_PCT_OF_ACCOUNT = 0.02
@@ -1328,8 +1349,8 @@ class TestPatch28AAccountValueSource(unittest.TestCase):
         self.assertEqual(result["account_value_source"], "live")
 
     def test_evaluate_account_risk_source_is_override_when_override_set(self):
-        from app.services.calendar_verdict_service import evaluate_account_risk
-        with patch("app.services.calendar_verdict_service.config") as mock_cfg:
+        from app.services.calendar_risk_fact_service import evaluate_account_risk
+        with patch("app.services.calendar_risk_fact_service.config") as mock_cfg:
             mock_cfg.CALENDAR_ACCOUNT_VALUE_OVERRIDE = 5000.0
             mock_cfg.CALENDAR_ACCOUNT_GUARDRAILS_ENABLED = False
             mock_cfg.CALENDAR_MAX_DEBIT_PCT_OF_ACCOUNT = 0.02
@@ -1456,8 +1477,7 @@ class TestCalendarRowFieldPromotion(unittest.TestCase):
         return event
 
     def test_fields_promoted_to_top_level(self):
-        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
-        row = _build_new_trade_row(self._quality_event(), {}, {}, None, None)
+        row = self._projected_row(self._quality_event())
         self.assertEqual(row["date_confidence"], "single_source")
         self.assertEqual(row["date_sources"], ["finnhub"])
         self.assertFalse(row["date_conflict"])
@@ -1467,8 +1487,7 @@ class TestCalendarRowFieldPromotion(unittest.TestCase):
         self.assertEqual(row["high_move_note"], "Historical earnings move avg 9.0%.")
 
     def test_defaults_when_quality_row_missing_fields(self):
-        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
-        row = _build_new_trade_row({"ticker": "AAPL", "checks": []}, {}, {}, None, None)
+        row = self._projected_row({"ticker": "AAPL", "earnings_date": "2026-07-09", "checks": []})
         self.assertEqual(row["date_confidence"], "unknown")
         self.assertEqual(row["date_sources"], [])
         self.assertFalse(row["date_conflict"])
@@ -1480,10 +1499,26 @@ class TestCalendarRowFieldPromotion(unittest.TestCase):
     def test_near_miss_verdict_still_correct_after_promotion(self):
         """Item 3 verification: NEAR_MISS verdict already derives correctly
         from the un-nested quality_row, independent of the promoted fields."""
-        from app.services.unified_calendar_trade_engine_service import _build_new_trade_row
-        row = _build_new_trade_row(self._quality_event(passes_precheck=False), {}, {}, None, None)
-        self.assertEqual(row["verdict"], "NEAR_MISS / EXPIRY_GAP")
+        row = self._projected_row(self._quality_event(passes_precheck=False))
+        self.assertEqual(row["trade_verdict"], "NOT_EVALUATED")
         self.assertTrue(row["expiry_near_miss"])
+
+    def _projected_row(self, quality_row):
+        from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+        from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
+        result = build_calendar_canonical_projection(
+            earnings_trade_discovery={"items": []},
+            earnings_discovery_quality={"items": [quality_row]},
+            calendar_candidates=[],
+            earnings_calendar_strategy={"items": []},
+            calendar_ranking={"items": []},
+            account_context={},
+            open_options={},
+            lifecycle_checks={},
+            policy=load_calendar_evolution_policy(),
+            log_print=lambda _msg: None,
+        )
+        return result["new_trade_rows"][0]
 
 
 class TestSessionLabelNotOverRedacted(unittest.TestCase):

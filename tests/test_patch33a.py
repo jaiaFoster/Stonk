@@ -395,7 +395,7 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
         }
 
     def test_call_and_put_paired_into_double_calendar(self):
-        from app.api.open_positions_api import _build_double_calendar_parents
+        from app.services.open_options_position_reconciliation_service import _build_double_calendar_parents
         structures = [
             self._make_struct("SBUX", "2026-07-18", "2026-08-15", "call", "82"),
             self._make_struct("SBUX", "2026-07-18", "2026-08-15", "put", "80"),
@@ -412,7 +412,7 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
         self.assertEqual(len(parent["child_structure_ids"]), 2)
 
     def test_single_leg_stays_unmatched(self):
-        from app.api.open_positions_api import _build_double_calendar_parents
+        from app.services.open_options_position_reconciliation_service import _build_double_calendar_parents
         structures = [
             self._make_struct("AAPL", "2026-07-18", "2026-08-15", "call"),
         ]
@@ -421,7 +421,7 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
         self.assertEqual(len(unmatched), 1)
 
     def test_different_tickers_not_paired(self):
-        from app.api.open_positions_api import _build_double_calendar_parents
+        from app.services.open_options_position_reconciliation_service import _build_double_calendar_parents
         structures = [
             self._make_struct("AAPL", "2026-07-18", "2026-08-15", "call"),
             self._make_struct("MSFT", "2026-07-18", "2026-08-15", "put"),
@@ -431,7 +431,7 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
         self.assertEqual(len(unmatched), 2)
 
     def test_different_expirations_not_paired(self):
-        from app.api.open_positions_api import _build_double_calendar_parents
+        from app.services.open_options_position_reconciliation_service import _build_double_calendar_parents
         structures = [
             self._make_struct("SBUX", "2026-07-18", "2026-08-15", "call"),
             self._make_struct("SBUX", "2026-07-25", "2026-08-22", "put"),
@@ -441,7 +441,7 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
         self.assertEqual(len(unmatched), 2)
 
     def test_total_debit_summed_from_children(self):
-        from app.api.open_positions_api import _build_double_calendar_parents
+        from app.services.open_options_position_reconciliation_service import _build_double_calendar_parents
         s1 = self._make_struct("SBUX", "2026-07-18", "2026-08-15", "call")
         s1["current_debit"] = 2.00
         s2 = self._make_struct("SBUX", "2026-07-18", "2026-08-15", "put")
@@ -451,7 +451,7 @@ class TestBuildDoubleCalendarParents(unittest.TestCase):
 
     def test_four_legs_two_children_one_parent(self):
         """SBUX use-case: 4-leg double calendar → 2 child structures + 1 parent."""
-        from app.api.open_positions_api import _build_double_calendar_parents
+        from app.services.open_options_position_reconciliation_service import _build_double_calendar_parents
         structures = [
             self._make_struct("SBUX", "2026-07-18", "2026-08-15", "call", "82"),
             self._make_struct("SBUX", "2026-07-18", "2026-08-15", "put", "80"),
@@ -511,7 +511,7 @@ class TestRoadmapJson(unittest.TestCase):
 
     def test_roadmap_patch_matches_current_patch(self):
         data = self._load()
-        self.assertEqual(data["patch"], "33B")
+        self.assertEqual(data["patch"], "33C")
 
     def test_roadmap_tickets_have_required_fields(self):
         data = self._load()
@@ -596,7 +596,7 @@ class TestDevRoadmapEndpoint(unittest.TestCase):
         if resp.status_code == 200:
             data = resp.get_json()
             self.assertIn("current_patch", data)
-            self.assertEqual(data["current_patch"], "33B")
+            self.assertEqual(data["current_patch"], "33C")
 
 
 if __name__ == "__main__":

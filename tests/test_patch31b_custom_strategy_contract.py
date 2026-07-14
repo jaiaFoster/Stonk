@@ -454,8 +454,10 @@ class CanonicalRejectedRowInvariantTests(unittest.TestCase):
         from app.services.strategy_row_normalization_service import normalize_strategy_row
         row = {
             "ticker": "NVDA",
-            "verdict": "WATCH / REVIEW",
-            "calendar_entry_allowed": True,
+            "verdict": "PASS / CALENDAR",
+            "trade_verdict": "PASS",
+            "entry_allowed": True,
+            "recommended_action": "ENTER",
             "daily_opportunity_eligible": True,
         }
         result = normalize_strategy_row(row, "earnings_calendar")
@@ -479,7 +481,7 @@ class CanonicalRejectedRowInvariantTests(unittest.TestCase):
 class LifecycleCardinalityTests(unittest.TestCase):
 
     def test_lifecycle_reconciliation_call_and_put_distinct(self):
-        from app.api.open_positions_api import _lifecycle_row_reconciliation, _structure_dedup_summary
+        from app.services.open_options_position_reconciliation_service import _lifecycle_row_reconciliation, _structure_dedup_summary
 
         structures = [
             {
@@ -500,7 +502,7 @@ class LifecycleCardinalityTests(unittest.TestCase):
         self.assertEqual(dedup["duplicate_group_count"], 0)
 
     def test_lifecycle_reconciliation_key_fields_present(self):
-        from app.api.open_positions_api import _lifecycle_row_reconciliation, _structure_dedup_summary
+        from app.services.open_options_position_reconciliation_service import _lifecycle_row_reconciliation, _structure_dedup_summary
         reconciliation = _lifecycle_row_reconciliation([], [], _structure_dedup_summary([]))
         self.assertIn("option_type", reconciliation["key_fields"])
         self.assertIn("strike", reconciliation["key_fields"])
@@ -508,7 +510,7 @@ class LifecycleCardinalityTests(unittest.TestCase):
         self.assertIn("back_expiration", reconciliation["key_fields"])
 
     def test_structure_dedup_same_ticker_option_type_strike_is_duplicate(self):
-        from app.api.open_positions_api import _structure_dedup_summary
+        from app.services.open_options_position_reconciliation_service import _structure_dedup_summary
         structures = [
             {
                 "underlying": "AAPL", "structure_type": "calendar",

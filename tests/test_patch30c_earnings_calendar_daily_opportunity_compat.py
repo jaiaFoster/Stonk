@@ -1,8 +1,8 @@
 """
 ASA Patch 30C — Earnings Calendar Daily Opportunity Compatibility Tests
 
-Verifies that universalization does NOT change existing Daily Opportunity behavior:
-  - calendar_entry_allowed=True  → eligible
+Verifies current canonical Daily Opportunity behavior:
+  - trade_verdict=PASS + entry_allowed=True + recommended_action=ENTER → eligible
   - calendar_entry_allowed=False → excluded
   - FF always excluded
   - Universal daily_opportunity dict agrees with existing daily_opportunity_eligible bool
@@ -29,8 +29,8 @@ class TestDailyOpportunityEligibility:
         normalize_strategy_row(row, strategy_id)
         return row
 
-    def test_calendar_entry_allowed_true_is_eligible(self):
-        row = {"ticker": "BAC", "action": "EARNINGS CALENDAR CANDIDATE", "calendar_entry_allowed": True}
+    def test_canonical_calendar_entry_is_eligible(self):
+        row = {"ticker": "BAC", "verdict": "PASS / CALENDAR", "trade_verdict": "PASS", "entry_allowed": True, "recommended_action": "ENTER"}
         self._normalize(row, "earnings_calendar")
         assert row.get("daily_opportunity_eligible") is True
 

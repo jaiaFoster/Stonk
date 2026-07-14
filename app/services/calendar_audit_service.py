@@ -26,6 +26,7 @@ class PipelineStage:
     RAW_EVENT = "RAW_EVENT"
     CONSTITUENT_FILTER = "CONSTITUENT_FILTER"
     OPTIONABILITY = "OPTIONABILITY"
+    BUDGET_DEFERRED = "BUDGET_DEFERRED"
     EARNINGS_CONFIDENCE = "EARNINGS_CONFIDENCE"
     CHAIN_REQUEST = "CHAIN_REQUEST"
     CHAIN_RESPONSE = "CHAIN_RESPONSE"
@@ -194,8 +195,11 @@ def build_calendar_audit(
                 entry["exit_reason"] = "not_selected_for_scan"
         elif run_mode == "dev":
             # In dev mode, budget caps can prevent tickers from reaching the quality filter
-            entry["exit_stage"] = PipelineStage.OPTIONABILITY
+            entry["exit_stage"] = PipelineStage.BUDGET_DEFERRED
             entry["exit_reason"] = "DEV_MODE_BUDGET_NOT_SELECTED"
+            entry["evaluation_state"] = "DEFERRED_BUDGET"
+            entry["trade_verdict"] = "NOT_EVALUATED"
+            entry["recommended_action"] = "NONE"
         else:
             entry["exit_stage"] = PipelineStage.CONSTITUENT_FILTER
             entry["exit_reason"] = "constituent_filter_excluded"

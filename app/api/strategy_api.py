@@ -125,11 +125,10 @@ def get_strategy_rows(
     limit: int = 20,
     row_id: str | None = None,
 ) -> dict[str, Any]:
-    """Return universalized rows for a registered strategy from the latest snapshot.
+    """Return universalized rows for a registered strategy from StrategyRowRepository.
 
-    Supports stock_momentum and stock_momentum_unified_test for 30B.
-    Other strategies return an empty-state 200 until their lanes are implemented.
-    No provider calls triggered — reads from stored snapshot only.
+    Patch 33C: strategy row APIs are repository truth. They do not reconstruct
+    rows from legacy report snapshots.
     """
     strategy_id = str(strategy_id or "").strip()
     from app.strategies.registry import STRATEGY_SPEC_REGISTRY
@@ -172,161 +171,17 @@ def get_strategy_rows(
     except Exception:
         pass
 
-    try:
-        from app.services.report_snapshot_service import ReportSnapshotRepository
-        repo = ReportSnapshotRepository()
-        snapshot = repo.latest_success(include_full=True)
-        if not snapshot:
-            return {
-                **_READ_ONLY_BASE,
-                "strategy_id": strategy_id,
-                "rows": [],
-                "count": 0,
-                "empty_state": "no_snapshot",
-                "source": "empty",
-                "note": "No successful snapshot available.",
-            }
-        summary = repo.load_summary(snapshot, full=True)
-        report = summary.get("report_data", {}) or {}
-        tradier = report.get("tradier_snapshot", {}) or {}
-        strategies = tradier.get("_strategy_results", {}) or summary.get("strategy_results", {}) or {}
-
-        if strategy_id in ("stock_momentum", "stock_momentum_unified_test"):
-            sm_key = "stock_momentum"
-            sm = strategies.get(sm_key) or {}
-            raw_rows = sm.get("items") or sm.get("rows") or sm.get("canonical_opportunities") or []
-            cap = min(int(limit or 20), 50)
-            rows = []
-            for row in list(raw_rows)[:cap]:
-                if not isinstance(row, dict):
-                    continue
-                enriched = dict(row)
-                if strategy_id == "stock_momentum_unified_test":
-                    enriched["strategy_id"] = "stock_momentum_unified_test"
-                try:
-                    from app.strategies.stock_momentum_universal import build_stock_momentum_universal_row
-                    build_stock_momentum_universal_row(enriched, run_id=snapshot.get("run_id"))
-                except Exception:
-                    pass
-                rows.append(enriched)
-            return {
-                **_READ_ONLY_BASE,
-                "strategy_id": strategy_id,
-                "rows": rows,
-                "row_count": len(rows),
-                "source_run_id": snapshot.get("run_id"),
-                "schema_version": rows[0].get("schema_version") if rows else None,
-                "source": "legacy_snapshot_fallback",
-                "normalization_summary": {"row_count": len(rows), "error_count": 0},
-            }
-
-        if strategy_id == "earnings_calendar":
-            ec = strategies.get("earnings_calendar") or {}
-            raw_rows = ec.get("rows") or ec.get("items") or ec.get("canonical_opportunities") or []
-            # Also collect lifecycle/open-position rows from the snapshot
-            lifecycle = tradier.get("_calendar_lifecycle_checks") or {}
-            lifecycle_checks = list(lifecycle.get("checks") or [])
-            cap = min(int(limit or 20), 50)
-            rows = []
-            run_id = snapshot.get("run_id")
-            for row in list(raw_rows)[:cap]:
-                if not isinstance(row, dict):
-                    continue
-                enriched = dict(row)
-                try:
-                    from app.strategies.earnings_calendar_universal import build_earnings_calendar_universal_row
-                    build_earnings_calendar_universal_row(enriched, run_id=run_id)
-                except Exception:
-                    pass
-                rows.append(enriched)
-            for check in lifecycle_checks[: max(0, cap - len(rows))]:
-                if not isinstance(check, dict):
-                    continue
-                enriched = dict(check)
-                try:
-                    from app.strategies.earnings_calendar_universal import build_earnings_lifecycle_universal_row
-                    build_earnings_lifecycle_universal_row(enriched, run_id=run_id)
-                except Exception:
-                    pass
-                rows.append(enriched)
-            return {
-                **_READ_ONLY_BASE,
-                "strategy_id": strategy_id,
-                "rows": rows,
-                "row_count": len(rows),
-                "source_run_id": run_id,
-                "schema_version": rows[0].get("schema_version") if rows else None,
-                "source": "legacy_snapshot_fallback",
-                "normalization_summary": {"row_count": len(rows), "error_count": 0},
-            }
-
-        if strategy_id == "skew_momentum_vertical":
-            skew_data = strategies.get("skew_momentum_vertical") or tradier.get("_skew_momentum_vertical_strategy") or {}
-            raw_rows = skew_data.get("items") or skew_data.get("rows") or skew_data.get("canonical_opportunities") or []
-            cap = min(int(limit or 20), 50)
-            rows = []
-            run_id = snapshot.get("run_id")
-            for row in list(raw_rows)[:cap]:
-                if not isinstance(row, dict):
-                    continue
-                enriched = dict(row)
-                try:
-                    from app.strategies.skew_momentum_vertical_universal import build_skew_momentum_vertical_universal_row
-                    build_skew_momentum_vertical_universal_row(enriched, run_id=run_id)
-                except Exception:
-                    pass
-                rows.append(enriched)
-            return {
-                **_READ_ONLY_BASE,
-                "strategy_id": strategy_id,
-                "rows": rows,
-                "row_count": len(rows),
-                "source_run_id": run_id,
-                "schema_version": rows[0].get("schema_version") if rows else None,
-                "source": "legacy_snapshot_fallback",
-                "normalization_summary": {"row_count": len(rows), "error_count": 0},
-            }
-
-        if strategy_id == "forward_factor_calendar":
-            ff_data = strategies.get("forward_factor_calendar") or tradier.get("_forward_factor_strategy") or {}
-            raw_rows = ff_data.get("items") or ff_data.get("rows") or []
-            cap = min(int(limit or 20), 50)
-            rows = []
-            run_id = snapshot.get("run_id")
-            for row in list(raw_rows)[:cap]:
-                if not isinstance(row, dict):
-                    continue
-                enriched = dict(row)
-                try:
-                    from app.strategies.forward_factor_universal import build_forward_factor_universal_row
-                    build_forward_factor_universal_row(enriched, run_id=run_id)
-                except Exception:
-                    pass
-                rows.append(enriched)
-            return {
-                **_READ_ONLY_BASE,
-                "strategy_id": strategy_id,
-                "rows": rows,
-                "row_count": len(rows),
-                "source_run_id": run_id,
-                "schema_version": rows[0].get("schema_version") if rows else None,
-                "dry_run": True,
-                "source": "legacy_snapshot_fallback",
-                "normalization_summary": {"row_count": len(rows), "error_count": 0},
-            }
-
-        # Other strategies: return empty state — future lanes will implement them.
-        return {
-            **_READ_ONLY_BASE,
-            "strategy_id": strategy_id,
-            "rows": [],
-            "row_count": 0,
-            "empty_state": "strategy_not_yet_universalized",
-            "note": f"Universal row output for {strategy_id!r} is not yet implemented.",
-        }
-
-    except Exception as exc:
-        return {**_READ_ONLY_BASE, "strategy_id": strategy_id, "rows": [], "row_count": 0, "error": str(exc)}
+    return {
+        **_READ_ONLY_BASE,
+        "strategy_id": strategy_id,
+        "rows": [],
+        "row_count": 0,
+        "source": "empty",
+        "empty_state": "row_store_empty",
+        "normalization_summary": {"row_count": 0, "error_count": 0, "ok_count": 0},
+        "dry_run": True if strategy_id == "forward_factor_calendar" else None,
+        "note": "No current StrategyRowRepository rows are available; legacy snapshot reconstruction is retired for this endpoint.",
+    }
 
 
 def get_strategy_rankings(

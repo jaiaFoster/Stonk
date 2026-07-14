@@ -485,7 +485,7 @@ def format_payload(
     earnings_events = earnings_events_from_tradier_snapshot(tradier_snapshot)
     watchlist_review = watchlist_review_from_tradier_snapshot(tradier_snapshot)
     earnings_trade_discovery = earnings_trade_discovery_from_tradier_snapshot(tradier_snapshot)
-    unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot)
+    calendar_projection = calendar_projection_from_tradier_snapshot(tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(tradier_snapshot)
     skew_vertical = skew_momentum_vertical_from_tradier_snapshot(tradier_snapshot)
@@ -525,7 +525,7 @@ def format_payload(
     lines.extend(format_daily_opportunity_text(_filter_daily_opportunity_engine(daily_opportunity, zero_tickers)))
 
     lines += ["", "=== ACTIVE CALENDAR TRADES ==="]
-    lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
+    lines.extend(format_calendar_projection_text(calendar_projection))
 
     lines += ["", "=== CALENDAR RANKING V2 ==="]
     lines.extend(format_calendar_ranking_text(calendar_ranking))
@@ -662,7 +662,7 @@ def format_payload(
             )
 
     lines += ["", "=== UNIFIED CALENDAR TRADE ENGINE V1 ==="]
-    lines.extend(format_unified_calendar_engine_text(unified_calendar_engine))
+    lines.extend(format_calendar_projection_text(calendar_projection))
 
     lines += ["", "=== STRUCTURED NEWS ==="]
 
@@ -929,10 +929,10 @@ def _daily_actions(daily_opportunity: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _active_calendar_rows(
-    unified_calendar_engine: dict[str, Any],
+    calendar_projection: dict[str, Any],
     lifecycle_checks: dict[str, Any] | list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    rows = [row for row in (unified_calendar_engine or {}).get("open_trade_rows", []) or [] if isinstance(row, dict)]
+    rows = [row for row in (calendar_projection or {}).get("open_trade_rows", []) or [] if isinstance(row, dict)]
     if rows:
         return rows
     if isinstance(lifecycle_checks, dict):
@@ -996,11 +996,11 @@ def _potential_add_groups(
 
 
 def _blocked_calendar_rows(
-    unified_calendar_engine: dict[str, Any],
+    calendar_projection: dict[str, Any],
     calendar_ranking: dict[str, Any],
 ) -> list[dict[str, Any]]:
     blocked: list[dict[str, Any]] = []
-    for row in (unified_calendar_engine or {}).get("new_trade_rows", []) or []:
+    for row in (calendar_projection or {}).get("new_trade_rows", []) or []:
         if not isinstance(row, dict):
             continue
         verdict = str(row.get("verdict") or row.get("final_verdict") or "").upper()
@@ -1714,13 +1714,13 @@ def _build_skew_vertical_report_export(
 
 def _build_options_strategies_report_export(
     active_rows: list[dict[str, Any]],
-    unified_calendar_engine: dict[str, Any],
+    calendar_projection: dict[str, Any],
     blocked_rows: list[dict[str, Any]],
     skew_vertical: dict[str, Any],
     provider_status: dict[str, Any],
     forward_factor: dict[str, Any],
 ) -> str:
-    calendar_summary = (unified_calendar_engine or {}).get("summary", {}) or {}
+    calendar_summary = (calendar_projection or {}).get("summary", {}) or {}
     skew = _skew_vertical_summary(skew_vertical)
     return "\n".join([
         "Options Strategies Report",
@@ -1741,7 +1741,7 @@ def _build_options_strategies_report_export(
     ])
 
 
-def _build_calendar_report_export(active_rows: list[dict[str, Any]], unified_calendar_engine: dict[str, Any], blocked_rows: list[dict[str, Any]]) -> str:
+def _build_calendar_report_export(active_rows: list[dict[str, Any]], calendar_projection: dict[str, Any], blocked_rows: list[dict[str, Any]]) -> str:
     lines = ["Calendar Report", ""]
     lines.append("Active broker-detected calendars")
     if not active_rows:
@@ -1762,7 +1762,7 @@ def _build_calendar_report_export(active_rows: list[dict[str, Any]], unified_cal
         )
     lines += ["", "Accepted / qualified calendar candidates"]
     accepted = [
-        row for row in (unified_calendar_engine or {}).get("new_trade_rows", []) or []
+        row for row in (calendar_projection or {}).get("new_trade_rows", []) or []
         if isinstance(row, dict) and str(row.get("verdict") or "").upper().startswith("PASS")
     ]
     if not accepted:
@@ -2026,13 +2026,13 @@ def _calendar_reliability_section_html(
     earnings_quality: dict[str, Any],
     calendar_ranking: dict[str, Any],
     earnings_backtest: dict[str, Any],
-    unified_calendar_engine: dict[str, Any],
+    calendar_projection: dict[str, Any],
     pipeline_status: dict[str, Any],
 ) -> str:
     quality_summary = (earnings_quality or {}).get("summary", {}) or {}
     cache_summary = (opportunity_cache or {}).get("summary", {}) or {}
     ranking_summary = (calendar_ranking or {}).get("summary", {}) or {}
-    final_summary = (unified_calendar_engine or {}).get("summary", {}) or {}
+    final_summary = (calendar_projection or {}).get("summary", {}) or {}
     candle_rows = [row for row in (candle_status or {}).values() if isinstance(row, dict)]
     candle_success = sum(1 for row in candle_rows if row.get("provider"))
     scanner_candidates = ranking_summary.get("candidate_count", 0)
@@ -2189,7 +2189,7 @@ def _monitor_debug_section_html(
     stock_momentum_rows: str,
     watchlist_rows: str,
     portfolio_gap_rows: str,
-    unified_calendar_rows: str,
+    calendar_projection_rows: str,
     calendar_ranking_rows: str,
     earnings_mini_backtest_rows: str,
     news_rows: str,
@@ -2237,7 +2237,7 @@ def _monitor_debug_section_html(
             <div class="table-scroll"><h3>Stock Momentum</h3><table><tr><th>Ticker</th><th>Score / Action</th><th>Portfolio</th><th>Trend</th><th>Reasons</th><th>Risks</th><th>Next Check</th></tr>{stock_momentum_rows}</table></div>
             <div class="table-scroll"><h3>Watchlist Review</h3><table><tr><th>Ticker</th><th>Stock Score / Category</th><th>Portfolio</th><th>Watchlist Source</th><th>Earnings</th><th>Earnings / Calendar Overlay</th><th>Reasons / Next</th></tr>{watchlist_rows}</table></div>
             <h3>Portfolio Gap Raw</h3>{portfolio_gap_rows}
-            <div class="table-scroll"><h3>Unified Calendar Engine Raw</h3><table><tr><th>Type</th><th>Ticker / Score</th><th>Earnings / Verdict</th><th>Possible Spread / Current Position</th><th>Requirements</th><th>Entry / Next Action</th></tr>{unified_calendar_rows}</table></div>
+            <div class="table-scroll"><h3>Unified Calendar Engine Raw</h3><table><tr><th>Type</th><th>Ticker / Score</th><th>Earnings / Verdict</th><th>Possible Spread / Current Position</th><th>Requirements</th><th>Entry / Next Action</th></tr>{calendar_projection_rows}</table></div>
             <div class="table-scroll"><h3>Calendar Ranking Raw</h3><table><tr><th>Ticker / Score</th><th>Action</th><th>Entry Timing</th><th>Criteria</th><th>Reasons / Risks</th><th>Next</th></tr>{calendar_ranking_rows}</table></div>
             <div class="table-scroll"><h3>Earnings Mini-Backtest</h3><table><tr><th>Ticker</th><th>Events</th><th>Avg / Max Move</th><th>Gap / Run-up</th><th>Interpretation</th><th>Notes</th></tr>{earnings_mini_backtest_rows}</table></div>
             <div class="table-scroll"><h3>Relevant News</h3><table><tr><th>Ticker</th><th>Score</th><th>Headline</th><th>Source</th><th>Published</th><th>Link</th></tr>{news_rows}</table></div>
@@ -2740,7 +2740,7 @@ def format_html(
         zero_tickers,
     )
     open_options = open_options_from_tradier_snapshot(parsed_tradier_snapshot)
-    unified_calendar_engine = unified_calendar_trade_engine_from_tradier_snapshot(parsed_tradier_snapshot)
+    calendar_projection = calendar_projection_from_tradier_snapshot(parsed_tradier_snapshot)
     lifecycle_checks = calendar_lifecycle_from_tradier_snapshot(parsed_tradier_snapshot)
     portfolio_gap = portfolio_gap_from_tradier_snapshot(parsed_tradier_snapshot)
     stock_momentum = stock_momentum_from_tradier_snapshot(parsed_tradier_snapshot)
@@ -2777,7 +2777,7 @@ def format_html(
     news_rows = format_news_rows(parsed_news)
     tradier_rows = format_tradier_rows(parsed_tradier_snapshot)
     watchlist_rows = format_watchlist_review_rows(watchlist_review_from_tradier_snapshot(parsed_tradier_snapshot))
-    unified_calendar_rows = format_unified_calendar_engine_rows(unified_calendar_engine)
+    calendar_projection_rows = format_calendar_projection_rows(calendar_projection)
     portfolio_gap_rows = format_portfolio_gap_rows(portfolio_gap)
     stock_momentum_rows = format_stock_momentum_rows(stock_momentum)
     calendar_ranking_rows = format_calendar_ranking_rows(calendar_ranking)
@@ -2787,8 +2787,8 @@ def format_html(
     payload_debug_html = collapsible_pre("Full Advisor Payload", payload, "payload", "payload")
     log_debug_html = collapsible_pre("Run Log", "\n".join(parsed_log_lines), None, "log")
     today = date.today().strftime("%B %d, %Y")
-    active_rows = _active_calendar_rows(unified_calendar_engine, lifecycle_checks)
-    blocked_rows = _blocked_calendar_rows(unified_calendar_engine, calendar_ranking)
+    active_rows = _active_calendar_rows(calendar_projection, lifecycle_checks)
+    blocked_rows = _blocked_calendar_rows(calendar_projection, calendar_ranking)
     daily_actions = [item for item in _daily_actions(daily_opportunity) if not _ticker_is_zero_value(item.get("ticker"), zero_tickers)]
     urgent_count = sum(
         1
@@ -2816,9 +2816,9 @@ def format_html(
     )
     exports = {
         "dailyBrief": _build_daily_brief_export(today, provider_status, active_rows, display_recommendations, potential_groups, blocked_rows, portfolio_gap, skew_vertical, strategy_results.get("forward_factor_calendar", {})),
-        "calendarReport": _build_calendar_report_export(active_rows, unified_calendar_engine, blocked_rows),
+        "calendarReport": _build_calendar_report_export(active_rows, calendar_projection, blocked_rows),
         "skewVerticalReport": _build_skew_vertical_report_export(today, provider_status, skew_vertical, skew_vertical_cache),
-        "optionsStrategiesReport": _build_options_strategies_report_export(active_rows, unified_calendar_engine, blocked_rows, skew_vertical, provider_status, strategy_results.get("forward_factor_calendar", {})),
+        "optionsStrategiesReport": _build_options_strategies_report_export(active_rows, calendar_projection, blocked_rows, skew_vertical, provider_status, strategy_results.get("forward_factor_calendar", {})),
         "holdingsReport": _build_holdings_report_export(display_recommendations),
         "potentialAdds": _build_potential_adds_export(potential_groups),
         "dataCoverage": _data_coverage_report(data_coverage),
@@ -2866,7 +2866,7 @@ def format_html(
         earnings_quality,
         calendar_ranking,
         earnings_backtest,
-        unified_calendar_engine,
+        calendar_projection,
         pipeline_status,
     )
     portfolio_infographic_html = _portfolio_infographic_html(portfolio_gap)
@@ -2880,7 +2880,7 @@ def format_html(
         stock_momentum_rows=stock_momentum_rows,
         watchlist_rows=watchlist_rows,
         portfolio_gap_rows=portfolio_gap_rows,
-        unified_calendar_rows=unified_calendar_rows,
+        calendar_projection_rows=calendar_projection_rows,
         calendar_ranking_rows=calendar_ranking_rows,
         earnings_mini_backtest_rows=earnings_mini_backtest_rows,
         news_rows=news_rows,
@@ -4276,10 +4276,10 @@ def format_stock_momentum_rows(strategy: dict[str, Any]) -> str:
         </tr>"""
     return rows
 
-def unified_calendar_trade_engine_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
+def calendar_projection_from_tradier_snapshot(tradier_snapshot: TradierSnapshot | None) -> dict[str, Any]:
     if not tradier_snapshot:
         return {}
-    raw = tradier_snapshot.get("_unified_calendar_trade_engine", {}) or {}
+    raw = tradier_snapshot.get("_calendar_canonical_projection") or tradier_snapshot.get("_unified_calendar_trade_engine", {}) or {}
     return raw if isinstance(raw, dict) else {}
 
 
@@ -4297,7 +4297,7 @@ def earnings_mini_backtest_from_tradier_snapshot(tradier_snapshot: TradierSnapsh
     return raw if isinstance(raw, dict) else {}
 
 
-def format_unified_calendar_engine_text(engine: dict[str, Any]) -> list[str]:
+def format_calendar_projection_text(engine: dict[str, Any]) -> list[str]:
     if not engine:
         return ["Unified calendar engine did not run for this report."]
 
@@ -4351,11 +4351,11 @@ def format_unified_calendar_engine_text(engine: dict[str, Any]) -> list[str]:
     return lines
 
 
-def format_unified_calendar_engine_rows(engine: dict[str, Any]) -> str:
+def format_calendar_projection_rows(engine: dict[str, Any]) -> str:
     if not engine:
         return """
         <tr>
-            <td colspan="6" class="empty">Unified Calendar Trade Engine v1 did not run for this report.</td>
+            <td colspan="6" class="empty">Calendar Canonical Projection did not run for this report.</td>
         </tr>"""
 
     errors = engine.get("errors", []) or []

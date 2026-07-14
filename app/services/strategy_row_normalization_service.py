@@ -460,6 +460,8 @@ def _daily_opportunity_eligible(
         verdict = str(row.get("verdict") or row.get("action") or "").upper()
         if verdict.startswith("FAIL") or verdict.startswith("AVOID") or "NOT AN EARNINGS SETUP" in verdict:
             return False
+        if str(row.get("trade_verdict") or "").upper() == "PASS" and bool(row.get("entry_allowed")) and str(row.get("recommended_action") or "").upper() == "ENTER":
+            return True
         return bool(row.get("calendar_entry_allowed"))
 
     if strategy_id == "skew_momentum_vertical":
@@ -478,6 +480,18 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
     upper = verdict.upper()
     row_type = str(row.get("row_type") or row.get("type") or "")
     status = str(row.get("entry_window_status") or "")
+
+    if row.get("decision_class") and row.get("action_type") and row.get("eligibility_status"):
+        return {
+            "decision_class": row.get("decision_class"),
+            "action_type": row.get("action_type"),
+            "actionability": row.get("actionability") or "review_only",
+            "eligibility_status": row.get("eligibility_status"),
+            "eligibility_reason": row.get("eligibility_reason") or "",
+            "exclusion_reason": row.get("exclusion_reason") or "",
+            "priority_tier": row.get("priority_tier") or "normal",
+            "review_status": row.get("review_status") or "ready",
+        }
 
     if strategy_id == "forward_factor_calendar":
         # 31B.8: PASS/WATCH rows surface as research signals in Daily Opportunity (clearly labeled dry-run).
@@ -547,21 +561,29 @@ def _decision_semantics(row: dict[str, Any], strategy_id: str) -> dict[str, Any]
         return _rejected_semantics("hard_fail", "Stock momentum row did not qualify.")
 
     if strategy_id == "earnings_calendar":
-        if row_type == "rejected_candidate" or upper.startswith("FAIL") or _has_hard_blocker(row):
+        lifecycle = str(row.get("lifecycle_stage") or "")
+        trade_verdict = str(row.get("trade_verdict") or "").upper()
+        recommended = str(row.get("recommended_action") or "").upper()
+        eval_state = str(row.get("evaluation_state") or "")
+        if lifecycle == "OPEN_POSITION" or row_type in {"open_calendar", "lifecycle_check"}:
+            return _eligible_semantics("lifecycle", "calendar_position_action", "actionable", "high", "monitor", "Active calendar lifecycle row.")
+        if row_type == "rejected_candidate" or _has_hard_blocker(row):
             return _rejected_semantics(_calendar_exclusion_reason(row, upper, status), "Earnings calendar row is blocked by a hard rejection gate.")
-        if row_type in {"open_calendar", "lifecycle_check"} or upper.startswith(("HOLD", "EXIT", "CUT", "TAKE PROFIT", "RECHECK")):
-            return _eligible_semantics("lifecycle", "active_calendar", "actionable", "high", "monitor", "Active calendar lifecycle row.")
+        if eval_state == "DEFERRED_BUDGET":
+            return _excluded_semantics("deferred_budget", "none", "non_actionable", "budget_deferred", "blocked", "Calendar evaluation was deferred by provider/dev budget.")
+        if trade_verdict == "PASS" and bool(row.get("entry_allowed")) and recommended == "ENTER":
+            return _eligible_semantics("entry", "calendar_entry", "review_only", "normal", "ready", "Calendar entry candidate passed canonical lifecycle gates.")
         if status == "MONITOR_PRE_WINDOW":
-            return _excluded_semantics("monitor", "monitor", "monitor_only", "pre_window", "monitor", "Calendar candidate is before the entry window.")
-        if status in {"ENTRY_WINDOW_CLOSED", "SHORT_DTE_TOO_LOW", "FRONT_LEG_TOO_DECAYED", "NO_PRE_EARNINGS_SHORT_EXPIRY"}:
-            return _rejected_semantics("entry_window_closed", "No valid pre-earnings short expiration with sufficient DTE/time value.")
-        if status == "SHORT_LEG_SPANS_EARNINGS":
-            return _rejected_semantics("short_leg_spans_earnings", "Short leg spans or follows earnings.")
-        if status in {"DATA_NEEDED", "DATE_CONFLICT_REVIEW"}:
-            return _excluded_semantics("monitor", "monitor", "monitor_only", status.lower(), "needs_data" if status == "DATA_NEEDED" else "needs_confirmation", "Calendar row needs more data or date confirmation.")
-        if bool(row.get("calendar_entry_allowed")) or upper.startswith("PASS"):
-            return _eligible_semantics("entry", "calendar_entry", "review_only", "normal", "ready", "Calendar entry candidate passed row gates.")
-        return _rejected_semantics("hard_fail", "Earnings calendar row did not qualify.")
+            return _excluded_semantics("monitor", "none", "monitor_only", "pre_window", "monitor", "Calendar opportunity is before the approved entry-evaluation window.")
+        if lifecycle == "SURFACED" and recommended in {"MONITOR", "PREPARE"}:
+            return _eligible_semantics("monitor", "calendar_monitor", "monitor_only", "low", "monitor", "Calendar opportunity is surfaced for monitoring before entry evaluation.")
+        if lifecycle in {"DISCOVERED", "DEVELOPING"}:
+            return _excluded_semantics("monitor", "none", "monitor_only", "pre_window", "monitor", "Calendar opportunity is before the surfaced monitor window.")
+        if trade_verdict in {"BLOCKED", "FAIL"} or upper.startswith("FAIL"):
+            return _rejected_semantics(_calendar_exclusion_reason(row, upper, status), "Calendar opportunity is blocked by canonical decision service.")
+        if eval_state in {"DATA_INCOMPLETE", "STRUCTURE_UNAVAILABLE", "EXPECTED_MISSING", "NOT_REQUESTED"}:
+            return _excluded_semantics("monitor", "none", "monitor_only", (status or eval_state).lower(), "needs_data", "Calendar row is not entry-evaluable yet.")
+        return _rejected_semantics("not_daily_opportunity_eligible", "Earnings calendar row is not eligible under canonical lifecycle semantics.")
 
     if strategy_id == "skew_momentum_vertical":
         if upper.startswith("PASS"):

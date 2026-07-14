@@ -102,7 +102,7 @@ def test_daily_opportunity_restores_stock_watch_parity_from_row_store():
     assert response["strategy_counts"]["forward_factor_calendar"]["eligible"] == 0
     assert response["dry_run_exclusions"]["forward_factor_calendar"]["excluded_reason"] == "dry_run"
     action_types = {action["ticker"]: action["type"] for action in response["actions"]}
-    assert action_types["SBUX"] == "active_calendar"
+    assert action_types["SBUX"] == "calendar_position_action"
     assert action_types["GE"] == "stock_watch"
     assert action_types["SOXL"] == "tactical_stock_watch"
     assert "BYND" not in action_types
@@ -135,7 +135,7 @@ def test_open_positions_uses_row_store_with_lifecycle_string_structures():
     snapshot_repo.assert_not_called()
 
 
-def test_open_positions_legacy_fallback_calendar_truth_and_masking():
+def test_open_positions_no_legacy_fallback_when_row_store_empty():
     from app.api.open_positions_api import build_open_positions_response
 
     fake_snapshot = {"run_id": "legacy-run", "completed_at": "2026-07-09T18:00:00+00:00"}
@@ -175,13 +175,11 @@ def test_open_positions_legacy_fallback_calendar_truth_and_masking():
         snapshot_repo.return_value.load_summary.return_value = fake_summary
         response = build_open_positions_response()
 
-    assert response["source"] == "legacy_snapshot_fallback"
-    assert response["fallback_used"] is True
-    assert response["active_calendar_count"] == 1
-    assert response["has_open_calendars"] is True
-    assert response["dedup_summary"]["duplicate_warning"] is True
-    assert response["lifecycle_rows"][0]["raw"]["account_number"] == "***0267"
-    assert "/accounts/***0267/" in response["lifecycle_rows"][0]["raw"]["account"]
+    assert response["source"] == "empty"
+    assert response["fallback_used"] is False
+    assert response["active_calendar_count"] == 0
+    assert response["has_open_calendars"] is False
+    snapshot_repo.assert_not_called()
 
 
 def test_robinhood_log_account_mask_helper():

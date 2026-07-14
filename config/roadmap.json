@@ -1,9 +1,9 @@
 {
-  "schema_version": "33B.v1",
-  "patch": "33B",
-  "patch_title": "Calendar Lifecycle Orchestration, Durable Opportunity State, and Finalization Truth",
+  "schema_version": "33C.1.v1",
+  "patch": "33C.1",
+  "patch_title": "Delete the Legacy Calendar Pipeline and Enforce Canonical Opportunity Ownership",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 33B",
+  "current_sprint": "Patch 33C.1",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
@@ -11,8 +11,14 @@
     "provenance_db": "data_provenance.db",
     "history_db": "strategy_opportunity_history.db",
     "calendar_scan_source": "CalendarScanResult current-run barrier",
-    "calendar_lifecycle_projection": "StrategyRowRepository lifecycle fields",
-    "run_finalization": "RunFinalizationCoordinator before snapshot save"
+    "calendar_lifecycle_projection": "CalendarDecisionService + CalendarOpportunityProjectionService canonical fields only",
+    "run_finalization": "RunFinalizationCoordinator before snapshot save",
+    "calendar_decision_owner": "app/services/calendar_decision_service.py",
+    "open_position_grouping_owner": "app/services/open_options_position_reconciliation_service.py",
+    "calendar_api_source": "StrategyRowRepository only for normal strategy/daily/open-position APIs",
+    "calendar_legacy_pipeline": "deleted from live execution",
+    "calendar_account_risk_facts": "calendar_risk_fact_service.py",
+    "calendar_trade_type_facts": "calendar_trade_type_service.py"
   },
   "built_in_strategies": [
     {
@@ -207,6 +213,61 @@
       "relevant_patch": "33A"
     },
     {
+      "id": "TKT-CALENDAR-LEGACY-RETIREMENT",
+      "title": "Retire legacy calendar business-state paths from normal APIs",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "calendar_architecture",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 33C removes strategy/daily/open-position legacy snapshot reconstruction; verify live endpoint packet after deploy",
+      "relevant_patch": "33C"
+    },
+    {
+      "id": "TKT-CALENDAR-VERDICT-OWNER",
+      "title": "CalendarDecisionService is sole final calendar decision owner",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "calendar_architecture",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 33C migrates live callers away from Calendar Verdict Service finalizers",
+      "relevant_patch": "33C"
+    },
+    {
+      "id": "TKT-CALENDAR-API-CUTOVER",
+      "title": "Calendar APIs use repository-backed canonical state",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "calendar_architecture",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 33C makes strategy rows, Daily Opportunity, and Open Positions row-store truth paths",
+      "relevant_patch": "33C"
+    },
+    {
+      "id": "TKT-DOUBLE-CALENDAR-CANONICAL-GROUPING",
+      "title": "Canonical double-calendar parent grouping from open lifecycle rows",
+      "priority": "P1",
+      "status": "in_progress",
+      "category": "open_positions",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 33C adds OpenOptionsPositionReconciliationService child/parent grouping",
+      "relevant_patch": "33C"
+    },
+    {
+      "id": "TKT-CALENDAR-ARCHITECTURAL-GUARDS",
+      "title": "Source-scan guards prevent duplicate calendar business owners",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "developer_tooling",
+      "first_seen": "2026-07-13",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 33C adds architecture tests for API reconstruction and legacy finalizer callers",
+      "relevant_patch": "33C"
+    },
+    {
       "id": "TKT-ROADMAP-AUTOSYNC",
       "title": "Roadmap metadata autosync check",
       "priority": "P2",
@@ -214,8 +275,8 @@
       "category": "developer_tooling",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch metadata updated to 33B",
-      "relevant_patch": "33B"
+      "next_action": "Patch metadata updated to 33C",
+      "relevant_patch": "33C"
     },
     {
       "id": "TKT-DATA-CONFIDENCE-UI",
@@ -318,10 +379,10 @@
   ],
   "validation_status": {
     "last_run": "2026-07-13",
-    "patch": "33B",
-    "result": "in_progress",
-    "focused_tests_passed": 113,
-    "full_suite_passed": null
+    "patch": "33C.1",
+    "result": "local_full_suite_passed",
+    "focused_tests_passed": 419,
+    "full_suite_passed": "3233 passed, 1 skipped, 2 subtests passed"
   },
   "known_data_confidence_issues": [
     "Alpha Vantage CSV endpoint cannot provide earnings session/hour data \u2014 by design, labeled ok_no_session",

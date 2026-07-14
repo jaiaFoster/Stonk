@@ -127,32 +127,18 @@ def test_strategy_rows_api_reads_row_store_before_legacy_snapshot():
         assert result["rows"][0]["daily_opportunity_eligible"] is False
 
 
-def test_strategy_rows_api_labels_legacy_fallback_when_row_store_empty():
+def test_strategy_rows_api_returns_empty_without_legacy_fallback_when_row_store_empty():
     from app.api.strategy_api import get_strategy_rows
 
     with TemporaryDirectory() as tmp:
         db = str(Path(tmp) / "empty.sqlite3")
-        fake_snapshot = {"run_id": "run-fallback"}
-        fake_summary = {
-            "report_data": {
-                "tradier_snapshot": {
-                    "_strategy_results": {
-                        "stock_momentum": {
-                            "rows": [{"ticker": "NVDA", "action": "CONSIDER ADDING", "score": 90}]
-                        }
-                    }
-                }
-            }
-        }
         with patch("app.services.strategy_row_repository.config.STRATEGY_ROW_DB_PATH", db), \
              patch("app.services.report_snapshot_service.ReportSnapshotRepository") as snapshot_repo:
-            inst = snapshot_repo.return_value
-            inst.latest_success.return_value = fake_snapshot
-            inst.load_summary.return_value = fake_summary
             result = get_strategy_rows("stock_momentum")
-        assert result["source"] == "legacy_snapshot_fallback"
-        assert result["source_run_id"] == "run-fallback"
-        assert result["row_count"] == 1
+        assert result["source"] == "empty"
+        assert result["empty_state"] == "row_store_empty"
+        assert result["row_count"] == 0
+        snapshot_repo.assert_not_called()
 
 
 def test_calendar_entry_window_blocks_july16_july8_july10_july17_case(monkeypatch):
