@@ -188,36 +188,26 @@ class TestBarrierOrdering:
 
 
 class TestCalendarScanStateIsolation:
-    """_CALENDAR_SCAN_STATE is read under lock; the barrier does not bypass the lock."""
+    """Calendar scanner state is run-scoped; no process-global candidate cache remains."""
 
-    def test_scan_state_is_accessible(self):
-        """_CALENDAR_SCAN_STATE sentinel exists and has the expected shape."""
-        from app.services.analysis_service import _CALENDAR_SCAN_STATE, _CALENDAR_SCAN_LOCK
-        with _CALENDAR_SCAN_LOCK:
-            state_copy = dict(_CALENDAR_SCAN_STATE)
-        assert "candidates" in state_copy
-        assert "status" in state_copy
-        assert "completed_at" in state_copy
+    def test_legacy_process_global_scan_state_removed(self):
+        import app.services.analysis_service as analysis_service
 
-    def test_scan_state_read_is_thread_safe(self):
-        """Concurrent reads of _CALENDAR_SCAN_STATE under the lock must not deadlock."""
-        from app.services.analysis_service import _CALENDAR_SCAN_STATE, _CALENDAR_SCAN_LOCK
-        errors: list[str] = []
+        assert not hasattr(analysis_service, "_CALENDAR_SCAN_STATE")
+        assert not hasattr(analysis_service, "_CALENDAR_SCAN_LOCK")
 
-        def _read_state():
-            try:
-                with _CALENDAR_SCAN_LOCK:
-                    _ = list(_CALENDAR_SCAN_STATE["candidates"])
-            except Exception as exc:
-                errors.append(str(exc))
+    def test_run_scoped_scan_result_has_expected_shape(self):
+        from app.services.calendar_scan_result_service import complete_scan_result, new_scan_result
 
-        threads = [threading.Thread(target=_read_state, daemon=True) for _ in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(timeout=2.0)
+        result = new_scan_result("run-33b", "scan-1")
+        complete_scan_result(result, [{"ticker": "SBUX"}])
 
-        assert not errors, f"Thread-safety errors: {errors}"
+        payload = result.to_dict()
+        assert payload["run_id"] == "run-33b"
+        assert payload["scan_id"] == "scan-1"
+        assert payload["status"] == "COMPLETE"
+        assert len(payload["candidates"]) == 1
+        assert payload["candidates"][0]["scan_source"] == "current_run"
 
     def test_barrier_config_timeout_respected(self):
         """CALENDAR_SCAN_BARRIER_TIMEOUT_SECONDS config is consumed as a float."""

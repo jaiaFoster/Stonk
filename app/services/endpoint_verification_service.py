@@ -69,6 +69,7 @@ def run_endpoint_verification(
         checks.append(_check_dashboard(completed_run_id))
         checks.append(_check_daily(completed_run_id))
         checks.append(_check_open_positions())
+        checks.append(_check_strategy_lifecycle(completed_run_id))
         for strategy_id in ("earnings_calendar", "skew_momentum_vertical", "forward_factor_calendar", "stock_momentum"):
             checks.append(_check_strategy_rows(strategy_id, completed_run_id))
         checks.append(_check_catalog())
@@ -163,6 +164,9 @@ def _check_open_positions() -> _Check:
     fields = {
         "source": data.get("source"),
         "active_calendars": active,
+        "child_calendars": len(data.get("calendar_structures") or []),
+        "parent_double_calendars": len(data.get("double_calendar_structures") or []),
+        "unmatched_legs": data.get("unmatched_leg_count"),
         "has_open_calendars": has_open,
         "provider_calls_triggered": data.get("provider_calls_triggered"),
     }
@@ -172,9 +176,30 @@ def _check_open_positions() -> _Check:
         return _Check("open_positions", "FAIL", fields, assertion="HAS_OPEN_CALENDARS_FALSE")
     if data.get("source") not in {"strategy_row_store", "open_position_store", "empty"}:
         return _Check("open_positions", "WARN", fields, warning="legacy_or_unknown_source")
-    if active == 1 and has_open:
-        return _Check("open_positions", "WARN", fields, warning="lifecycle_completeness_deferred")
+    recon = data.get("lifecycle_reconciliation") or {}
+    if active > 0 and recon and recon.get("cardinality_ok") is False:
+        return _Check("open_positions", "WARN", fields, warning="lifecycle_cardinality_mismatch")
     return _Check("open_positions", "PASS", fields)
+
+
+def _check_strategy_lifecycle(run_id: str | None) -> _Check:
+    from app.services.strategy_row_repository import StrategyRowRepository
+
+    stored = StrategyRowRepository().read_latest("earnings_calendar", limit=200)
+    rows = [row for row in stored.get("rows") or [] if isinstance(row, dict)]
+    lifecycle_rows = [row for row in rows if row.get("lifecycle_stage") or row.get("evaluation_state")]
+    fields = {
+        "source": "strategy_row_store" if rows else "empty",
+        "latest_run_id": stored.get("run_id"),
+        "rows": len(rows),
+        "lifecycle_rows": len(lifecycle_rows),
+        "provider_calls_triggered": False,
+    }
+    if run_id and stored.get("run_id") != run_id:
+        return _Check("strategy_lifecycle", "FAIL", fields, assertion="RUN_ID_MISMATCH")
+    if rows and not lifecycle_rows:
+        return _Check("strategy_lifecycle", "FAIL", fields, assertion="LIFECYCLE_FIELDS_MISSING")
+    return _Check("strategy_lifecycle", "PASS", fields)
 
 
 def _check_strategy_rows(strategy_id: str, run_id: str | None) -> _Check:
@@ -210,6 +235,13 @@ def _check_strategy_rows(strategy_id: str, run_id: str | None) -> _Check:
         fields["invalid_eligible_rejected_rows"] = len(invalid)
         if invalid:
             return _Check(strategy_id, "FAIL", fields, assertion="REJECTED_ROW_MARKED_ELIGIBLE")
+        lifecycle_missing = [
+            row for row in rows
+            if not row.get("lifecycle_stage") and not row.get("evaluation_state")
+        ]
+        fields["lifecycle_fields_missing"] = len(lifecycle_missing)
+        if lifecycle_missing:
+            return _Check(strategy_id, "FAIL", fields, assertion="LIFECYCLE_FIELDS_MISSING")
     if strategy_id == "forward_factor_calendar":
         # 32C: PASS/WATCH → "conditional", NEAR MISS → "near_miss", FAIL/diagnostic → "dry_run_excluded".
         # All rows must have dry_run=True and can_trade_live != True.

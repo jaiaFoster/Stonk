@@ -252,6 +252,18 @@ def _row_profile(row: dict[str, Any], strategy_id: str) -> str:
     row_type = str(r.get("row_type") or "")
     ff_stage = str(r.get("ff_candidate_stage") or "")
     calendar_stage = str(r.get("calendar_stage") or "")
+    lifecycle_stage = str(r.get("lifecycle_stage") or "")
+    evaluation_state = str(r.get("evaluation_state") or "")
+    trade_verdict = str(r.get("trade_verdict") or r.get("verdict") or "")
+
+    lifecycle_incomplete_states = {
+        "NOT_REQUESTED", "EXPECTED_MISSING", "DEFERRED_BUDGET", "DATA_INCOMPLETE", "BUILDING", "ERROR"
+    }
+    lifecycle_monitor_stages = {"DISCOVERED", "DEVELOPING", "SURFACED"}
+    if evaluation_state in lifecycle_incomplete_states:
+        return "candidate"
+    if lifecycle_stage in lifecycle_monitor_stages and trade_verdict in {"", "NOT_EVALUATED"}:
+        return "candidate"
 
     # Skipped rows: dev-mode budget caps, quality filter exclusions
     skip_codes = {"DEV_MODE_BUDGET_NOT_SELECTED", "QUALITY_FILTER_BUDGET_NOT_SELECTED",

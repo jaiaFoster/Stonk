@@ -232,8 +232,34 @@ def _seed_verification_run(db_path: str, run_id: str, *, bad_calendar_semantics:
         "error_count": 0,
     })
     earnings_rows = [
-        normalize_strategy_row({"ticker": "SBUX", "type": "open_calendar", "verdict": "HOLD / MONITOR"}, "earnings_calendar"),
-        normalize_strategy_row({"ticker": "ABT", "row_type": "rejected_candidate", "verdict": "FAIL / ENTRY_WINDOW_CLOSED", "entry_window_status": "ENTRY_WINDOW_CLOSED"}, "earnings_calendar"),
+        normalize_strategy_row({
+            "ticker": "SBUX",
+            "type": "open_calendar",
+            "verdict": "HOLD / MONITOR",
+            "opportunity_id": "earnings_calendar:SBUX:2026-08-21",
+            "lifecycle_stage": "OPEN_POSITION",
+            "evaluation_state": "FULLY_EVALUATED",
+            "trade_verdict": "PASS",
+            "recommended_action": "HOLD",
+            "calendar_stage": "OPEN_POSITION",
+            "surface_eligible": True,
+            "entry_allowed": False,
+        }, "earnings_calendar"),
+        normalize_strategy_row({
+            "ticker": "ABT",
+            "row_type": "rejected_candidate",
+            "verdict": "FAIL / ENTRY_WINDOW_CLOSED",
+            "entry_window_status": "ENTRY_WINDOW_CLOSED",
+            "opportunity_id": "earnings_calendar:ABT:2026-07-16",
+            "lifecycle_stage": "ACTIONABLE",
+            "evaluation_state": "STRUCTURE_UNAVAILABLE",
+            "trade_verdict": "BLOCKED",
+            "recommended_action": "NONE",
+            "calendar_stage": "LATE_WINDOW",
+            "surface_eligible": True,
+            "entry_evaluation_eligible": True,
+            "entry_allowed": False,
+        }, "earnings_calendar"),
     ]
     if bad_calendar_semantics:
         earnings_rows.append({

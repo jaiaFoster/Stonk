@@ -13,8 +13,8 @@ The pipeline internals are now cleaner and more explicit:
 from __future__ import annotations
 
 import json
-import threading
 import traceback
+import uuid as _uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from time import perf_counter
@@ -23,7 +23,16 @@ from typing import Any, Callable
 from app import config
 from app.providers.news_provider import get_news_for_tickers
 from app.services.calendar_lifecycle_service import evaluate_calendar_lifecycle
+from app.services.calendar_opportunity_projection_service import (
+    build_calendar_row_reconciliation,
+    enrich_calendar_engine_rows,
+)
 from app.services.calendar_ranking_service import build_calendar_ranking
+from app.services.calendar_scan_result_service import (
+    complete_scan_result,
+    fail_scan_result,
+    new_scan_result,
+)
 from app.services.calendar_spread_service import scan_calendar_spreads_for_positions
 from app.services.daily_opportunity_engine_service import build_daily_opportunity_engine
 from app.services.earnings_calendar_strategy_service import evaluate_earnings_calendar_candidates
@@ -60,6 +69,7 @@ from app.services.portfolio_gap_service import build_portfolio_gap_analysis
 from app.services.portfolio_service import get_portfolio_positions_with_status
 from app.services.report_service import format_payload
 from app.services.report_snapshot_service import ReportSnapshotRepository
+from app.services.run_finalization_coordinator import persist_strategy_artifacts
 from app.services.run_data_context_service import create_run_data_context
 from app.services.data_coverage_service import build_data_coverage
 from app.services.data_requirement_planner import DataRequirementPlanner
@@ -80,7 +90,7 @@ from app.strategies.registry import collect_requirements
 from app.utils.log_safety import sanitize_for_log
 from app.services.earnings_reconciliation_service import run_earnings_reconciliation
 from app.services.calendar_audit_service import run_calendar_audit
-from app.services.pipeline_provenance_service import wire_pipeline_provenance
+from app.models.calendar_evolution_policy import load_calendar_evolution_policy
 
 
 PipelineResult = tuple[
@@ -217,32 +227,6 @@ EMPTY_CALENDAR_OPPORTUNITY_CACHE = {
     "errors": [],
     "summary": {"write_count": 0, "recent_count": 0},
 }
-
-# Background calendar scan state — persists across pipeline runs in this worker process.
-# Gunicorn config: 1 worker, 2 threads — module-level state is shared across threads safely.
-_CALENDAR_SCAN_LOCK = threading.Lock()
-_CALENDAR_SCAN_STATE: dict[str, Any] = {
-    "status": "never_run",
-    "candidates": [],
-    "completed_at": None,
-    "scan_id": None,
-}
-
-
-def _run_calendar_scan_bg(scan_fn: Callable[[], list[dict[str, Any]]], scan_id: str | None = None) -> None:
-    """Background thread: run calendar scan and update shared state."""
-    try:
-        result = scan_fn()
-    except Exception:
-        result = []
-    with _CALENDAR_SCAN_LOCK:
-        _CALENDAR_SCAN_STATE.update({
-            "status": "complete",
-            "candidates": result,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-            "scan_id": scan_id,
-        })
-
 
 def _enrich_open_options_with_underlying_prices(
     open_options: dict[str, Any] | None,
@@ -603,8 +587,24 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     try:
         snapshot = config_snapshot(clean_mode)
         pipeline_status["config_snapshot"] = snapshot
+        calendar_policy = load_calendar_evolution_policy()
+        pipeline_status["calendar_lifecycle_policy"] = {
+            **calendar_policy.to_dict(),
+            "validation": "valid",
+        }
         for line in ["robinhood imported OK", "news imported OK", "market data imported OK", "tradier imported OK", *config_log_lines(snapshot)]:
             log_print(line)
+        log_print(
+            "STRATEGY_LIFECYCLE_POLICY "
+            "strategy=earnings_calendar "
+            f"discovery={calendar_policy.discovery_start_event_dte}..{calendar_policy.discovery_end_event_dte} "
+            f"build_start={calendar_policy.build_start_event_dte} "
+            f"surface_start={calendar_policy.surface_start_event_dte} "
+            f"entry_ideal={calendar_policy.ideal_entry_min_event_dte}..{calendar_policy.ideal_entry_max_event_dte} "
+            f"late={calendar_policy.late_entry_event_dte} "
+            f"source={calendar_policy.source_by_field} "
+            "validation=valid"
+        )
         complete_step(pipeline_status, "config", "Configuration loaded.")
     except Exception as exc:
         log_print(f"IMPORT ERROR config: {exc}\n{traceback.format_exc()}")
@@ -889,29 +889,52 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             allowed_tickers=discovery_tickers,
         )
 
-    # Calendar scan deferred to background thread — main pipeline does not block.
-    # Results from the previous run's background scan are used immediately.
-    # 33A: Each scan gets a unique scan_id; candidates are tagged to prevent stale reuse.
-    import uuid as _uuid
+    # Patch 33B: calendar scan is current-run, run-scoped, and completed before
+    # ranking/verdict/unified calendar consumers execute. Prior-run mutable
+    # background state is no longer a hot-path source.
     _new_scan_id = f"scan_{run_context.run_id}_{_uuid.uuid4().hex[:8]}"
-    with _CALENDAR_SCAN_LOCK:
-        calendar_candidates = list(_CALENDAR_SCAN_STATE["candidates"])
-        _scan_prior_status = _CALENDAR_SCAN_STATE["status"]
-        _scan_completed_at = _CALENDAR_SCAN_STATE["completed_at"]
-        _prior_scan_id = _CALENDAR_SCAN_STATE.get("scan_id")
-    _calendar_scan_status = "pending" if _scan_prior_status == "never_run" else "stale"
-    # Tag prior-scan candidates as historical so they can be distinguished from fresh ones.
-    for _cand in calendar_candidates:
-        if isinstance(_cand, dict):
-            _cand.setdefault("scan_id", _prior_scan_id or "prior")
-            _cand.setdefault("scan_source", "prior_run")
-    # TKT-027: apply price freshness gate using current quotes from tradier_snapshot.
-    calendar_candidates = _apply_price_freshness_gate(calendar_candidates, tradier_snapshot)
-    begin_step(pipeline_status, "calendar_spread_scan", "Calendar spread scan deferred to background thread...")
-    log_print(f"Calendar scan: background mode; prior status={_scan_prior_status}, candidates={len(calendar_candidates)}, scan_id={_new_scan_id}. Launching new scan.")
-    skip_step(pipeline_status, "calendar_spread_scan", f"Deferred to background; prior_status={_scan_prior_status}; candidates_available={len(calendar_candidates)}; scan_id={_new_scan_id}")
-    _bg = threading.Thread(target=_run_calendar_scan_bg, args=(run_calendar_scan, _new_scan_id), daemon=True)
-    _bg.start()
+    _calendar_scan_result = new_scan_result(run_context.run_id, _new_scan_id)
+    begin_step(pipeline_status, "calendar_spread_scan", "Running Calendar Spread Screener v1...")
+    _scan_started = perf_counter()
+    discovery_ticker_count = len([str(t).strip() for t in (earnings_discovery_quality or {}).get("tickers", []) if str(t).strip()])
+    log_print(
+        f"CALENDAR_SCAN_START run_id={run_context.run_id} scan_id={_new_scan_id} "
+        f"tickers={discovery_ticker_count}"
+    )
+    try:
+        calendar_candidates = run_calendar_scan()
+        calendar_candidates = _apply_price_freshness_gate(calendar_candidates, tradier_snapshot)
+        _calendar_scan_result = complete_scan_result(
+            _calendar_scan_result,
+            calendar_candidates,
+            reason="SCAN_COMPLETE" if calendar_candidates else "SCAN_COMPLETE_EMPTY",
+        )
+        _calendar_scan_status = _calendar_scan_result.status
+        complete_step(
+            pipeline_status,
+            "calendar_spread_scan",
+            f"Current-run scan {_calendar_scan_status}; candidates={len(calendar_candidates)}; scan_id={_new_scan_id}",
+        )
+    except Exception as _scan_exc:
+        _calendar_scan_result = fail_scan_result(_calendar_scan_result, _scan_exc)
+        calendar_candidates = []
+        _calendar_scan_status = _calendar_scan_result.status
+        fail_step(
+            pipeline_status,
+            "calendar_spread_scan",
+            f"Calendar scan failed for current run: {_scan_exc}",
+            {"scan_id": _new_scan_id},
+        )
+    _scan_wait_ms = round((perf_counter() - _scan_started) * 1000)
+    log_print(
+        f"CALENDAR_SCAN_COMPLETE run_id={run_context.run_id} scan_id={_new_scan_id} "
+        f"status={_calendar_scan_status} candidates={len(calendar_candidates)} "
+        f"reason={_calendar_scan_result.reason}"
+    )
+    log_print(
+        f"CALENDAR_SCAN_BARRIER run_id={run_context.run_id} scan_id={_new_scan_id} "
+        f"wait_ms={_scan_wait_ms} status={_calendar_scan_status} candidates={len(calendar_candidates)}"
+    )
     candle_status = run_optional_step(
         "calendar_candle_rescue",
         "Running Calendar Candidate Candle Rescue...",
@@ -927,14 +950,18 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         "selected_providers": sorted({str(item.get("provider")) for item in candle_status.values() if isinstance(item, dict) and item.get("provider")}),
     }
     tradier_snapshot["_calendar_scan_status"] = _calendar_scan_status
+    tradier_snapshot["_calendar_scan_result"] = _calendar_scan_result.to_dict()
     tradier_snapshot["_calendar_spread_candidates"] = {
         "items": calendar_candidates,
         "has_data": bool(calendar_candidates),
         "source": "tradier",
         "universe_source": "earnings_discovery_v1",
-        "scan_completed_at": _scan_completed_at,
+        "scan_completed_at": _calendar_scan_result.completed_at,
         "current_scan_id": _new_scan_id,
-        "prior_scan_id": _prior_scan_id,
+        "prior_scan_id": None,
+        "scan_status": _calendar_scan_status,
+        "scan_reason": _calendar_scan_result.reason,
+        "run_id": run_context.run_id,
     }
     tradier_snapshot["_candle_status"] = candle_status
 
@@ -1071,6 +1098,25 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         ),
         EMPTY_UNIFIED_CALENDAR,
         lambda result: f"Unified calendar engine produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} new-trade row(s).",
+    )
+    unified_calendar_engine = enrich_calendar_engine_rows(
+        unified_calendar_engine,
+        policy=calendar_policy,
+        evaluation_date=run_context.created_at.date() if hasattr(run_context.created_at, "date") else None,
+    )
+    _calendar_recon = unified_calendar_engine.get("calendar_row_reconciliation") or {}
+    log_print(
+        "CALENDAR_ROW_RECONCILIATION "
+        f"generated={_calendar_recon.get('generated_rows', 0)} "
+        f"normalized={_calendar_recon.get('normalized_rows', 0)} "
+        f"duplicates={_calendar_recon.get('duplicate_rows', 0)} "
+        f"invalid={_calendar_recon.get('invalid_rows', 0)} "
+        f"persisted={_calendar_recon.get('persisted_rows')} "
+        f"api_visible={_calendar_recon.get('api_rows')} "
+        f"daily_visible={_calendar_recon.get('daily_opportunity_rows', 0)} "
+        f"history={_calendar_recon.get('history_rows')} "
+        f"journal={_calendar_recon.get('journal_rows')} "
+        f"excluded={_calendar_recon.get('excluded_rows_by_reason', {})}"
     )
     earnings_mini_backtest = run_optional_step(
         "earnings_mini_backtest",
@@ -1281,6 +1327,49 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         log_print(f"Shared foundation persistence warning: {exc}")
         fail_step(pipeline_status, "strategy_registry_persistence", f"Shared persistence failed: {exc}")
 
+    finalization_status = persist_strategy_artifacts(
+        run_context=run_context,
+        run_mode=clean_mode,
+        normalized_strategy_results=normalized_strategy_results,
+        tradier_snapshot=tradier_snapshot,
+        earnings_events=earnings_events,
+        positions=positions,
+        log_print=log_print,
+    )
+    if finalization_status.get("required_failures"):
+        pipeline_status["report_quality"] = "SUCCESS_DEGRADED"
+        pipeline_status.setdefault("degraded_evidence", {})["run_finalization"] = finalization_status.get("required_failures")
+        log_print("report_quality degraded to SUCCESS_DEGRADED: required run-finalization persistence failed.")
+    try:
+        _ec_rows = (normalized_strategy_results.get("earnings_calendar") or {}).get("canonical_opportunities") or []
+        _ec_persisted = ((tradier_snapshot.get("_strategy_row_store") or {}).get("by_strategy") or {}).get("earnings_calendar")
+        _ec_history = (tradier_snapshot.get("_opportunity_history_write") or {}).get("rows_written")
+        _ec_journal = (tradier_snapshot.get("_journal_write_status") or {}).get("observations_written")
+        _calendar_recon = build_calendar_row_reconciliation(
+            unified_calendar_engine,
+            persisted_rows=_ec_persisted,
+            history_rows=_ec_history,
+            journal_rows=_ec_journal,
+        )
+        _calendar_recon["canonical_rows"] = len(_ec_rows)
+        unified_calendar_engine["calendar_row_reconciliation"] = _calendar_recon
+        tradier_snapshot["_calendar_row_reconciliation"] = _calendar_recon
+        log_print(
+            "CALENDAR_ROW_RECONCILIATION "
+            f"generated={_calendar_recon.get('generated_rows', 0)} "
+            f"normalized={_calendar_recon.get('normalized_rows', 0)} "
+            f"duplicates={_calendar_recon.get('duplicate_rows', 0)} "
+            f"invalid={_calendar_recon.get('invalid_rows', 0)} "
+            f"persisted={_calendar_recon.get('persisted_rows')} "
+            f"api_visible={_calendar_recon.get('api_rows')} "
+            f"daily_visible={_calendar_recon.get('daily_opportunity_rows', 0)} "
+            f"history={_calendar_recon.get('history_rows')} "
+            f"journal={_calendar_recon.get('journal_rows')} "
+            f"excluded={_calendar_recon.get('excluded_rows_by_reason', {})}"
+        )
+    except Exception as _recon_exc:
+        log_print(f"CALENDAR_ROW_RECONCILIATION error={_recon_exc}")
+
     begin_step(pipeline_status, "format_payload", "Formatting payload")
     log_print("Formatting payload...")
     try:
@@ -1320,19 +1409,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             log_print(compact_payload_log(payload_profile))
         else:
             payload_profile = {}
-        # CalendarTaskBarrier (31B.F): join background scan thread before finalization so
-        # the current run can use its results if the scan completed in time.
-        _calendar_barrier_timeout = float(getattr(config, "CALENDAR_SCAN_BARRIER_TIMEOUT_SECONDS", 5.0))
-        try:
-            _bg.join(timeout=_calendar_barrier_timeout)
-            if _bg.is_alive():
-                log_print(f"CalendarTaskBarrier: scan still running after {_calendar_barrier_timeout}s timeout — current run uses prior results.")
-            else:
-                log_print("CalendarTaskBarrier: scan thread joined successfully before finalization.")
-        except NameError:
-            pass
-        except Exception as _barrier_exc:
-            log_print(f"CalendarTaskBarrier: join error (non-fatal): {_barrier_exc}")
         attach_status()
         try:
             report_repository = ReportSnapshotRepository(log_print=log_print)
@@ -1429,112 +1505,6 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             )
             RunManifestRepository().save(manifest)
             tradier_snapshot["_run_manifest"] = manifest
-            # 30F: persist compact universal strategy rows for API/UI hot paths.
-            try:
-                from app.services.strategy_row_repository import StrategyRowRepository
-                strategy_row_write = StrategyRowRepository().write_run(run_context.run_id, normalized_strategy_results)
-                tradier_snapshot["_strategy_row_store"] = strategy_row_write
-                log_print(
-                    "StrategyRowRepository: wrote "
-                    f"{strategy_row_write.get('write_count', 0)} row(s) "
-                    f"{strategy_row_write.get('by_strategy', {})}"
-                )
-            except Exception as exc:
-                log_print(f"StrategyRowRepository warning: {exc}")
-            # Patch 32B: Pipeline provenance wiring — non-blocking.
-            try:
-                from app.providers.earnings_provider import configured_provider_names as _cpn32b
-                _prov_summary = wire_pipeline_provenance(
-                    run_id=run_context.run_id,
-                    strategy_id="earnings_calendar",
-                    tradier_snapshot=tradier_snapshot,
-                    earnings_events=earnings_events,
-                    positions=positions,
-                    configured_providers=_cpn32b(),
-                    log_print=log_print,
-                    db_enabled=getattr(config, "DATA_CONFIDENCE_ENABLED", True),
-                )
-                tradier_snapshot["_pipeline_provenance_summary"] = _prov_summary
-            except Exception as _prov_exc:
-                log_print(f"PipelineProvenance: write failed (non-fatal): {_prov_exc}")
-
-            # Patch 32B: Data confidence run report — non-blocking.
-            try:
-                from app.services.automated_data_validation_service import run_data_confidence_validation
-                from app.db.data_confidence_run_reports import write_run_report as _write_run_report
-                _all_rows = []
-                for _sid, _sresult in (normalized_strategy_results or {}).items():
-                    _all_rows.extend(list((_sresult or {}).get("rows") or (_sresult or {}).get("items") or []))
-                if getattr(config, "DATA_CONFIDENCE_VALIDATION_LOG_ENABLED", True):
-                    _suite_result = run_data_confidence_validation(
-                        strategy_rows=_all_rows[:200],
-                        strategy_id="pipeline",
-                        earnings_events={t: (e.get("event") or e) for t, e in earnings_events.items()},
-                        log_print=log_print,
-                    )
-                    _write_run_report(run_context.run_id, "pipeline", _suite_result)
-            except Exception as _val_exc:
-                log_print(f"DataConfidenceRunReport: write failed (non-fatal): {_val_exc}")
-
-            # 33A: Opportunity evolution history write — non-blocking.
-            try:
-                if getattr(config, "OPPORTUNITY_HISTORY_ENABLED", True):
-                    from app.db.strategy_opportunity_history import write_run as _write_opp_hist
-                    _run_date_hist = str(run_context.created_at or "")[:10]
-                    _hist_result = _write_opp_hist(
-                        run_id=run_context.run_id,
-                        strategy_results=normalized_strategy_results,
-                        run_date=_run_date_hist,
-                    )
-                    log_print(
-                        f"OpportunityHistory: run_id={run_context.run_id} "
-                        f"rows_written={_hist_result.get('rows_written', 0)} "
-                        f"first_observations={_hist_result.get('first_observations', 0)} "
-                        f"updated_opportunities={_hist_result.get('rows_written', 0) - _hist_result.get('first_observations', 0)} "
-                        f"stage_transitions={_hist_result.get('stage_transitions', 0)} "
-                        f"verdict_transitions={_hist_result.get('verdict_transitions', 0)}"
-                    )
-                    tradier_snapshot["_opportunity_history_write"] = _hist_result
-                    # Opportunistic cleanup
-                    try:
-                        from app.db.strategy_opportunity_history import cleanup_old_observations as _hist_cleanup
-                        _hist_cleanup()
-                    except Exception:
-                        pass
-            except Exception as _hist_exc:
-                log_print(f"OpportunityHistory: write failed (non-fatal): {_hist_exc}")
-
-            # 30B: Universal strategy observation journal write — non-blocking.
-            try:
-                from app.db.strategy_observations import write_run as _write_obs_run
-                from app.services.strategy_observation_journal_service import (
-                    build_observations_from_strategy_results as _build_obs,
-                )
-                _run_date = str(run_context.created_at or "")[:10]
-                _obs = _build_obs(normalized_strategy_results, run_context.run_id, _run_date)
-                _written = _write_obs_run(run_context.run_id, _run_date, _obs)
-                log_print(
-                    f"StrategyObservationJournal: wrote {_written} observation(s) for run {run_context.run_id}"
-                )
-                tradier_snapshot["_journal_write_status"] = {
-                    "status": "ok",
-                    "observations_written": _written,
-                    "total_built": len(_obs),
-                }
-                # Opportunistic retention cleanup — non-blocking.
-                try:
-                    from app.db.strategy_observations import cleanup_old_observations as _obs_cleanup
-                    _obs_cleanup(config.STRATEGY_OBSERVATION_RETENTION_DAYS)
-                except Exception:
-                    pass
-            except Exception as _obs_exc:
-                log_print(
-                    f"StrategyObservationJournal: write failed (non-fatal): {_obs_exc}"
-                )
-                tradier_snapshot["_journal_write_status"] = {
-                    "status": "error",
-                    "error": str(_obs_exc)[:200],
-                }
         except Exception as exc:
             log_print(f"Report snapshot persistence warning: {exc}")
     except Exception as exc:

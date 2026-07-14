@@ -22,8 +22,6 @@ Tests:
 from __future__ import annotations
 
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -38,35 +36,24 @@ class TestCalendarPayloadAxed(unittest.TestCase):
 
     def _build_tradier_snapshot(self) -> dict:
         """Run enough of analysis_service internals to populate tradier_snapshot keys."""
-        from app.services.analysis_service import (
-            _CALENDAR_SCAN_LOCK, _CALENDAR_SCAN_STATE,
-        )
-        # Reset scan state so calendar_scan_status = "pending"
-        with _CALENDAR_SCAN_LOCK:
-            _CALENDAR_SCAN_STATE.update({"status": "never_run", "candidates": [], "completed_at": None})
+        from app.services.calendar_scan_result_service import new_scan_result
 
         snapshot: dict = {}
-
-        # Simulate what analysis_service does after the background scan deferral
-        from app.services.analysis_service import (
-            _CALENDAR_SCAN_LOCK as _LOCK,
-            _CALENDAR_SCAN_STATE as _STATE,
-        )
-        with _LOCK:
-            snapshot["_calendar_scan_status"] = "pending" if _STATE["status"] == "never_run" else "stale"
+        result = new_scan_result("run-27ac", "scan-1")
+        snapshot["_calendar_scan_result"] = result.to_dict()
+        snapshot["_calendar_scan_status"] = result.status
         return snapshot
 
     def test_calendar_scan_status_present(self):
         snap = self._build_tradier_snapshot()
         self.assertIn("_calendar_scan_status", snap)
+        self.assertIn("_calendar_scan_result", snap)
 
     def test_calendar_scan_status_pending_on_first_run(self):
-        from app.services.analysis_service import _CALENDAR_SCAN_LOCK, _CALENDAR_SCAN_STATE
-        with _CALENDAR_SCAN_LOCK:
-            _CALENDAR_SCAN_STATE.update({"status": "never_run", "candidates": [], "completed_at": None})
-        with _CALENDAR_SCAN_LOCK:
-            status = "pending" if _CALENDAR_SCAN_STATE["status"] == "never_run" else "stale"
-        self.assertEqual(status, "pending")
+        from app.services.calendar_scan_result_service import new_scan_result
+        result = new_scan_result("run-27ac", "scan-1")
+        self.assertEqual(result.status, "RUNNING")
+        self.assertEqual(result.candidates, [])
 
     def test_calendar_opportunity_cache_not_in_snapshot_keys(self):
         # The snapshot key should not be set by analysis_service.
@@ -227,51 +214,33 @@ class TestStrategyAliasResolution(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# 12-14: background scan state
+# 12-14: run-scoped calendar scan result
 # ---------------------------------------------------------------------------
 
 class TestBackgroundScanState(unittest.TestCase):
-    def test_initial_state_is_never_run(self):
-        from app.services import analysis_service
-        # Reset to simulate fresh worker
-        with analysis_service._CALENDAR_SCAN_LOCK:
-            analysis_service._CALENDAR_SCAN_STATE.update({
-                "status": "never_run", "candidates": [], "completed_at": None
-            })
-        with analysis_service._CALENDAR_SCAN_LOCK:
-            s = dict(analysis_service._CALENDAR_SCAN_STATE)
-        self.assertEqual(s["status"], "never_run")
-        self.assertEqual(s["candidates"], [])
+    def test_initial_result_is_running(self):
+        from app.services.calendar_scan_result_service import new_scan_result
+        result = new_scan_result("run-27ac", "scan-1")
+        self.assertEqual(result.status, "RUNNING")
+        self.assertEqual(result.candidates, [])
 
-    def test_bg_scan_updates_state_on_completion(self):
-        from app.services.analysis_service import _run_calendar_scan_bg, _CALENDAR_SCAN_LOCK, _CALENDAR_SCAN_STATE
-        with _CALENDAR_SCAN_LOCK:
-            _CALENDAR_SCAN_STATE.update({"status": "never_run", "candidates": [], "completed_at": None})
-
+    def test_scan_result_updates_on_completion(self):
+        from app.services.calendar_scan_result_service import complete_scan_result, new_scan_result
+        result = new_scan_result("run-27ac", "scan-1")
         fake_result = [{"ticker": "AAPL"}, {"ticker": "NVDA"}]
-        t = threading.Thread(target=_run_calendar_scan_bg, args=(lambda: fake_result,), daemon=True)
-        t.start()
-        t.join(timeout=3)
+        complete_scan_result(result, fake_result)
 
-        with _CALENDAR_SCAN_LOCK:
-            s = dict(_CALENDAR_SCAN_STATE)
-        self.assertEqual(s["status"], "complete")
-        self.assertEqual(len(s["candidates"]), 2)
-        self.assertIsNotNone(s["completed_at"])
+        self.assertEqual(result.status, "COMPLETE")
+        self.assertEqual(len(result.candidates), 2)
+        self.assertIsNotNone(result.completed_at)
+        self.assertEqual(result.candidates[0]["scan_source"], "current_run")
 
-    def test_bg_scan_stores_empty_list_on_exception(self):
-        from app.services.analysis_service import _run_calendar_scan_bg, _CALENDAR_SCAN_LOCK, _CALENDAR_SCAN_STATE
-        with _CALENDAR_SCAN_LOCK:
-            _CALENDAR_SCAN_STATE.update({"status": "never_run", "candidates": [], "completed_at": None})
+    def test_scan_result_records_failure(self):
+        from app.services.calendar_scan_result_service import fail_scan_result, new_scan_result
+        result = new_scan_result("run-27ac", "scan-1")
+        fail_scan_result(result, RuntimeError("scan failed"))
 
-        def bad_scan():
-            raise RuntimeError("scan failed")
-
-        t = threading.Thread(target=_run_calendar_scan_bg, args=(bad_scan,), daemon=True)
-        t.start()
-        t.join(timeout=3)
-
-        with _CALENDAR_SCAN_LOCK:
-            s = dict(_CALENDAR_SCAN_STATE)
-        self.assertEqual(s["status"], "complete")
-        self.assertEqual(s["candidates"], [])
+        self.assertEqual(result.status, "FAILED")
+        self.assertEqual(result.candidates, [])
+        self.assertEqual(result.reason, "SCAN_FAILED")
+        self.assertIn("scan failed", result.error)

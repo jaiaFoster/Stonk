@@ -58,7 +58,7 @@ class SkewMomentumVerticalIntegrationTests(unittest.TestCase):
 
     def test_config_check_exposes_preflight_and_strategy_two(self):
         config_check = build_config_check()
-        self.assertEqual(config_check["limits"]["earnings_discovery_window_days"], "+4..+21")
+        self.assertEqual(config_check["limits"]["earnings_discovery_window_days"], "+0..+35")
         self.assertIn("skew_vertical_dte_range", config_check["limits"])
         self.assertIn("skew_momentum_vertical", config_check["enabled_modules"])
 
@@ -165,8 +165,8 @@ class SkewMomentumVerticalIntegrationTests(unittest.TestCase):
     def test_runtime_config_log_uses_effective_21_day_window(self):
         snapshot = config_snapshot("prod")
         lines = config_log_lines(snapshot)
-        self.assertEqual(snapshot["earnings_discovery_window"], "+4..+21 days")
-        self.assertIn("EARNINGS_DISCOVERY_WINDOW: +4..+21 days", lines)
+        self.assertEqual(snapshot["earnings_discovery_window"], "+0..+35 days")
+        self.assertIn("EARNINGS_DISCOVERY_WINDOW: +0..+35 days", lines)
 
     def test_config_check_discloses_stale_railway_window_override(self):
         with patch.object(config, "EARNINGS_DISCOVERY_END_DAYS_REQUESTED", 14), patch.object(config, "EARNINGS_DISCOVERY_END_DAYS", 21):

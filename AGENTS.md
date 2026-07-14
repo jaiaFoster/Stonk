@@ -1,14 +1,14 @@
 <!-- ROADMAP_META
-patch: 33A.1
+patch: 33B
 last_updated: 2026-07-13
 roadmap_json: config/roadmap.json
 -->
 
-# ASA Agent Reference — Patch 33A.1
+# ASA Agent Reference — Patch 33B
 
-**Patch title:** Strategy Opportunity Lifecycle Kernel and Earnings Calendar Business Logic Repair
+**Patch title:** Calendar Lifecycle Orchestration, Durable Opportunity State, and Finalization Truth
 **Sprint status:** in_progress
-**Machine-readable roadmap:** `config/roadmap.json` (schema version 33A.1.v1)
+**Machine-readable roadmap:** `config/roadmap.json` (schema version 33B.v1)
 
 ---
 
@@ -39,6 +39,9 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/models/calendar_evolution_policy.py` | CalendarEvolutionPolicy — immutable timing thresholds (Patch 33A.1) |
 | `app/services/strategy_opportunity_lifecycle_service.py` | Generic lifecycle invariant validation and canonical construction (Patch 33A.1) |
 | `app/services/calendar_opportunity_lifecycle_adapter.py` | Earnings-calendar lifecycle classifier and opportunity_id builder (Patch 33A.1) |
+| `app/services/calendar_scan_result_service.py` | Run-scoped calendar scan results and scanner status contract (Patch 33B) |
+| `app/services/calendar_opportunity_projection_service.py` | Calendar row projection into opportunity/lifecycle/structure fields (Patch 33B) |
+| `app/services/run_finalization_coordinator.py` | Required strategy artifact persistence before snapshot/manifest finalization (Patch 33B) |
 | `app/api/` | Blueprints for advisor, admin, user, knowledge, plaid, auth, telemetry, custom strategy |
 
 Provider call isolation: no `/api/dev/*` endpoint may trigger a live provider call unless
@@ -57,7 +60,29 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 ---
 
-## Current Sprint — Patch 33A.1
+## Current Sprint — Patch 33B
+
+**Focus areas:**
+- Current-run calendar scan orchestration: no normal calendar consumer may use prior-run background scanner output.
+- `CalendarScanResult` records `run_id`, `scan_id`, status, reason, timestamps, and current-run candidates.
+- Calendar scanner completes before candle rescue, ranking, unified calendar engine, calendar audit, mini-backtest, Daily Opportunity projection, and persistence.
+- `CalendarOpportunityProjectionService` adds stable parent `opportunity_id`, lifecycle stage, evaluation state, trade verdict, recommended action, calendar stage, and structure identity to calendar rows.
+- `StrategyRowRepository` has additive lifecycle/opportunity columns so persisted/API rows expose lifecycle truth directly.
+- `RunFinalizationCoordinator` persists StrategyRowRepository, opportunity history, observation journal, provenance, and data-confidence validation before report snapshot save.
+- `/api/dev/strategy-lifecycle` reads row store first and returns policy, lifecycle counts, scan status, reconciliation, and finalization status.
+- Data-confidence row profiles are lifecycle-aware for incomplete DISCOVERED/DEVELOPING/DEFERRED rows.
+
+**Patch 33B root causes fixed:**
+- Scanner launched in a background thread but ranking/unified calendar consumed stale prior-run candidates before the scan finished.
+- The old barrier joined after calendar consumers had already run.
+- Snapshot/manifest save occurred before strategy rows/history/journal persistence.
+- Lifecycle fields existed in row memory but were not durable first-class row-store/API fields.
+
+**Compatibility note:** `ReportSnapshotRepository.save_success()` still combines snapshot save and canonical pointer update. Patch 33B preserves that repository contract but calls it only after required strategy artifacts are persisted.
+
+---
+
+## Previous Sprint — Patch 33A.1
 
 **Focus areas:**
 - Generic Strategy Opportunity Lifecycle kernel (LifecycleStage, EvaluationState, Verdict, RecommendedAction)
@@ -291,10 +316,10 @@ python -m pytest tests/test_patch33a_workstreams.py tests/test_patch33a1_strateg
 
 ```
 last_run:            2026-07-13
-patch:               33A.1
+patch:               33B
 result:              in_progress
-focused_tests_passed: 149 (33A: 59, 33A.1 kernel: 38, 33A.1 calendar: 27, 33A.1 integration: 25)
-full_suite_passed:   null
+focused_tests_passed: 114 (33B lifecycle/finalization regression packet)
+full_suite_passed:   3228 passed, 1 skipped, 2 subtests passed
 ```
 
 ---
