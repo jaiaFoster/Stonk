@@ -14,7 +14,7 @@ def test_normalizer_adds_canonical_semantics_for_representative_rows():
         "earnings_calendar",
     )
     assert lifecycle["decision_class"] == "lifecycle"
-    assert lifecycle["action_type"] == "active_calendar"
+    assert lifecycle["action_type"] == "calendar_position_action"
     assert lifecycle["eligibility_status"] == "eligible"
     assert lifecycle["semantic_source"] == "row"
 
@@ -111,7 +111,7 @@ def test_collect_results_persists_row_owned_semantics_through_write_path():
     earnings_by_ticker = {row["ticker"]: row for row in earnings}
     assert earnings_by_ticker["SBUX"]["semantic_source"] == "row"
     assert earnings_by_ticker["SBUX"]["decision_class"] == "lifecycle"
-    assert earnings_by_ticker["SBUX"]["action_type"] == "active_calendar"
+    assert earnings_by_ticker["SBUX"]["action_type"] == "calendar_position_action"
     assert earnings_by_ticker["ABT"]["semantic_source"] == "row"
     assert earnings_by_ticker["ABT"]["decision_class"] == "rejected"
     assert earnings_by_ticker["ABT"]["eligibility_status"] == "excluded"
@@ -174,7 +174,7 @@ def test_daily_opportunity_traceability_limit_and_exclusions():
     assert first["source_table"] == "strategy_rows"
     assert first["source_strategy_id"] == "earnings_calendar"
     assert first["decision_class"] == "lifecycle"
-    assert first["action_type"] == "active_calendar"
+    assert first["action_type"] == "calendar_position_action"
     assert first["semantic_source"] == "row"
     assert first["strategy_row_url"].startswith("/api/strategies/earnings_calendar/rows?row_id=")
     assert "display" in first and "primary_reason" in first["display"]

@@ -4,8 +4,8 @@ ASA Patch 30E — Payload Budget Tests
 Verifies:
   - Compact manifest is sub-50KB with realistic data
   - summary_json col targets sub-50KB (was ~1MB)
-  - daily_opportunity_api prefers row store and labels legacy fallback
-  - open_positions_api prefers row store and labels legacy fallback
+  - daily_opportunity_api reads row store and retires legacy fallback
+  - open_positions_api reads row store and retires legacy fallback
   - No raw provider data in compact summary_json
 """
 from __future__ import annotations
@@ -79,11 +79,11 @@ class TestDailyOpportunityApiRowStoreFirst:
         source = inspect.getsource(daily_opportunity_api)
         assert "_daily_opportunity_from_row_store" in source
 
-    def test_daily_opportunity_api_labels_legacy_fallback(self):
+    def test_daily_opportunity_api_retires_legacy_fallback(self):
         import inspect
         from app.api import daily_opportunity_api
         source = inspect.getsource(daily_opportunity_api)
-        assert "legacy_snapshot_fallback" in source
+        assert "legacy_snapshot_fallback" not in source
 
     def test_daily_opportunity_returns_dict_when_no_snapshot(self):
         from app.api.daily_opportunity_api import build_daily_opportunity_response
@@ -120,7 +120,8 @@ class TestDailyOpportunityApiRowStoreFirst:
                 result = build_daily_opportunity_response()
         assert "actions" in result
         assert isinstance(result["actions"], list)
-        assert result["source"] == "legacy_snapshot_fallback"
+        assert result["source"] == "empty"
+        MockRepo.assert_not_called()
 
 
 # ─── open_positions_api row-store first, labeled fallback ─────────────────────
@@ -132,11 +133,11 @@ class TestOpenPositionsApiRowStoreFirst:
         source = inspect.getsource(open_positions_api)
         assert "_open_positions_from_row_store" in source
 
-    def test_open_positions_api_labels_legacy_fallback(self):
+    def test_open_positions_api_retires_legacy_fallback(self):
         import inspect
         from app.api import open_positions_api
         source = inspect.getsource(open_positions_api)
-        assert "legacy_snapshot_fallback" in source
+        assert "legacy_snapshot_fallback" not in source
 
     def test_open_positions_returns_dict_when_no_snapshot(self):
         from app.api.open_positions_api import build_open_positions_response
@@ -172,7 +173,8 @@ class TestOpenPositionsApiRowStoreFirst:
                 instance.load_summary.return_value = fake_summary
                 result = build_open_positions_response()
         assert "options_positions" in result
-        assert result["source"] == "legacy_snapshot_fallback"
+        assert result["source"] == "empty"
+        MockRepo.assert_not_called()
 
 
 # ─── CAVEMAN config invariants ────────────────────────────────────────────────

@@ -1348,6 +1348,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         _calendar_recon = build_calendar_row_reconciliation(
             unified_calendar_engine,
             persisted_rows=_ec_persisted,
+            api_visible_rows=len(_ec_rows),
             history_rows=_ec_history,
             journal_rows=_ec_journal,
         )

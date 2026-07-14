@@ -166,6 +166,7 @@ def _check_open_positions() -> _Check:
         "active_calendars": active,
         "child_calendars": len(data.get("calendar_structures") or []),
         "parent_double_calendars": len(data.get("double_calendar_structures") or []),
+        "active_parent_calendars": data.get("active_parent_calendar_count"),
         "unmatched_legs": data.get("unmatched_leg_count"),
         "has_open_calendars": has_open,
         "provider_calls_triggered": data.get("provider_calls_triggered"),
@@ -179,6 +180,8 @@ def _check_open_positions() -> _Check:
     recon = data.get("lifecycle_reconciliation") or {}
     if active > 0 and recon and recon.get("cardinality_ok") is False:
         return _Check("open_positions", "WARN", fields, warning="lifecycle_cardinality_mismatch")
+    if len(data.get("calendar_structures") or []) >= 2 and not data.get("double_calendar_structures"):
+        return _Check("open_positions", "WARN", fields, warning="double_calendar_parent_missing")
     return _Check("open_positions", "PASS", fields)
 
 

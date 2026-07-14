@@ -17,8 +17,6 @@ from datetime import date, datetime
 from typing import Any, Callable
 
 from app import config
-from app.services.calendar_verdict_service import attach_final_verdicts_to_ranking
-
 LogFn = Callable[[str], None]
 
 
@@ -62,17 +60,10 @@ def build_calendar_ranking(
         "ideal_entry_count": sum(1 for row in rows if row.get("entry_timing") == "IDEAL"),
         "late_count": sum(1 for row in rows if row.get("entry_timing") == "LATE"),
     }
-    attach_final_verdicts_to_ranking(result, account_context=account_context)
-
     logger(
         "Calendar Ranking v2 ranked "
         f"{len(rows)} candidate(s); {result['summary']['pass_count']} pass all criteria; "
         f"{len(eligible)} backtest-eligible."
-    )
-    logger(
-        "Calendar Verdict Service: finalized "
-        f"{len(rows)} candidate(s); Hard-fail overrides applied: {result['summary'].get('hard_fail_count', 0)}; "
-        f"Trade-type classification completed: {len(rows)}."
     )
     return result
 
