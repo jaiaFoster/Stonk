@@ -123,17 +123,17 @@ def enumerate_expiration_pairs(
             else:
                 gap = back.dte - front.dte
                 if gap <= 0:
-                    codes.append("INVALID_TIME_ORDER")
+                    codes.append("BACK_BEFORE_FRONT")
                 if pair_rule.min_gap_days is not None and gap < pair_rule.min_gap_days:
-                    codes.append("EXPIRATION_GAP_TOO_NARROW")
+                    codes.append("PAIR_GAP_TOO_SMALL")
                 if pair_rule.max_gap_days is not None and gap > pair_rule.max_gap_days:
-                    codes.append("EXPIRATION_GAP_TOO_WIDE")
+                    codes.append("PAIR_GAP_TOO_LARGE")
             front_date = _coerce_date(front.expiration)
             back_date = _coerce_date(back.expiration)
             if event and front_date and pair_rule.front_must_expire_before_event and front_date >= event:
                 codes.append("SHORT_LEG_SPANS_EARNINGS")
             if event and back_date and pair_rule.back_must_expire_after_event and back_date <= event:
-                codes.append("BACK_LEG_BEFORE_EVENT")
+                codes.append("BACK_BEFORE_EVENT")
             if event and front_date and back_date and pair_rule.event_must_be_between and not (front_date < event < back_date):
                 codes.append("EVENT_NOT_BETWEEN_LEGS")
             attempt = {
@@ -198,20 +198,20 @@ def _record_rejection_codes(
     if rec.rejection_code:
         return [rec.rejection_code]
     if rec.dte is None:
-        codes.append("MALFORMED_EXPIRATION")
+            codes.append("MALFORMED_EXPIRATION")
     else:
         if req.min_dte is not None and rec.dte < req.min_dte:
-            codes.append("SHORT_DTE_TOO_LOW" if req.role == "front" else "BACK_DTE_TOO_LOW")
+            codes.append("FRONT_BELOW_MIN_DTE" if req.role == "front" else "BACK_BELOW_MIN_DTE")
         if req.max_dte is not None and rec.dte > req.max_dte:
-            codes.append("PRE_WINDOW" if req.role == "front" else "BACK_DTE_TOO_HIGH")
+            codes.append("FRONT_ABOVE_MAX_DTE" if req.role == "front" else "BACK_ABOVE_MAX_DTE")
     if rec.expiration_type not in req.allowed_types():
         codes.append("EXPIRATION_TYPE_NOT_ALLOWED")
     exp = _coerce_date(rec.expiration)
     if event and exp:
         if req.relation_to_event == "before" and exp >= event:
-            codes.append("SHORT_LEG_SPANS_EARNINGS")
+            codes.append("FRONT_SPANS_EVENT" if exp == event else "FRONT_AFTER_EVENT")
         elif req.relation_to_event == "after" and exp <= event:
-            codes.append("BACK_LEG_BEFORE_EVENT")
+            codes.append("BACK_BEFORE_EVENT")
         if req.min_days_before_event is not None and exp < event:
             days = (event - exp).days
             if days < req.min_days_before_event:

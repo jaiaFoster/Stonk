@@ -3,6 +3,22 @@ from __future__ import annotations
 from datetime import date
 
 
+class _FakeTradier:
+    is_configured = True
+
+    def get_quotes(self, tickers, greeks=False):
+        return {ticker: {"last": 50, "volume": 2_000_000, "average_volume": 2_000_000} for ticker in tickers}
+
+    def get_expirations(self, ticker):
+        return ["2026-07-10", "2026-07-17", "2026-07-24", "2026-08-21"]
+
+
+class _FrozenDate(date):
+    @classmethod
+    def today(cls):
+        return cls(2026, 7, 9)
+
+
 def test_expiration_normalization_classifies_weekly_monthly_quarterly_and_malformed():
     from app.services.expiration_enumeration_service import normalize_expiration_records
 
@@ -43,7 +59,7 @@ def test_pair_enumeration_tries_later_valid_pair_when_nearest_is_invalid():
         event_date=date(2026, 7, 30),
     )
     assert any(row["front_expiration"] == "2026-07-24" and row["back_expiration"] == "2026-08-21" for row in result["valid_pairs"])
-    assert result["coverage"]["failure_by_code"]["SHORT_DTE_TOO_LOW"] >= 1
+    assert result["coverage"]["failure_by_code"]["FRONT_BELOW_MIN_DTE"] >= 1
 
 
 def test_pair_enumeration_blocks_post_event_short_leg_with_machine_code():
@@ -61,7 +77,7 @@ def test_pair_enumeration_blocks_post_event_short_leg_with_machine_code():
         event_date=date(2026, 7, 14),
     )
     assert result["valid_pairs"] == []
-    assert "SHORT_LEG_SPANS_EARNINGS" in result["coverage"]["failure_by_code"]
+    assert "FRONT_AFTER_EVENT" in result["coverage"]["failure_by_code"]
 
 
 def test_strategy_definition_loader_accepts_builtin_and_rejects_unsafe_calculation():
@@ -117,7 +133,7 @@ def test_calendar_projection_attaches_declarative_provenance_and_coverage():
             "entry_window_status": "ENTRY_WINDOW_CLOSED",
             "entry_window_reason": "No valid pre-earnings short expiration with sufficient DTE/time value.",
             "rejected_expirations": [
-                {"expiration": "2026-07-10", "primary_rejection_code": "SHORT_DTE_TOO_LOW"},
+                {"expiration": "2026-07-10", "primary_rejection_code": "FRONT_BELOW_MIN_DTE"},
                 {"expiration": "2026-07-17", "primary_rejection_code": "SHORT_LEG_SPANS_EARNINGS"},
             ],
         }]},
@@ -148,10 +164,125 @@ def test_calendar_coverage_funnel_reports_path_counts():
         calendar_projection={"new_trade_rows": [{
             "ticker": "GE",
             "entry_window_status": "ENTRY_WINDOW_CLOSED",
-            "rejected_expirations": [{"primary_rejection_code": "SHORT_DTE_TOO_LOW"}],
+            "rejected_expirations": [{"primary_rejection_code": "FRONT_BELOW_MIN_DTE"}],
         }]},
     )
     assert coverage["raw_events"] == 2
     assert coverage["quality_eligible"] == 1
     assert coverage["quality_rejected"] == 1
-    assert coverage["failure_by_code"]["SHORT_DTE_TOO_LOW"] == 1
+    assert coverage["failure_by_code"]["FRONT_BELOW_MIN_DTE"] == 1
+
+
+def test_quality_filter_runs_declarative_enumeration_without_structural_reject(monkeypatch):
+    from app.services import earnings_discovery_quality_service as svc
+
+    monkeypatch.setattr(svc, "TradierProvider", lambda: _FakeTradier())
+    monkeypatch.setattr(svc, "date", _FrozenDate)
+    monkeypatch.setattr(svc.config, "EARNINGS_DISCOVERY_CONSTITUENT_PRESCREEN", False)
+
+    logs: list[str] = []
+    result = svc.filter_earnings_discovery_for_calendar_scan(
+        {"items": [{
+            "ticker": "ABT",
+            "earnings_date": "2026-07-30",
+            "date": "2026-07-30",
+            "is_timestamp_confirmed": True,
+            "sources_seen": ["finnhub", "alpha_vantage"],
+            "earnings_date_confidence": "confirmed",
+        }]},
+        log_print=logs.append,
+        run_mode="prod",
+    )
+
+    assert result["tickers"] == ["ABT"]
+    row = result["items"][0]
+    assert row["passes_precheck"] is True
+    assert row["expiration_enumeration_result"] == "POLICY_VALID_PAIRS"
+    assert row["front_expiration"] == "2026-07-24"
+    assert any("CALENDAR_EXPIRATION_AUDIT ticker=ABT" in line for line in logs)
+
+
+def test_quality_filter_does_not_fail_stable_candidate_when_no_pair(monkeypatch):
+    from app.services import earnings_discovery_quality_service as svc
+
+    class NoPairTradier(_FakeTradier):
+        def get_expirations(self, ticker):
+            return ["2026-07-10", "2026-07-17"]
+
+    monkeypatch.setattr(svc, "TradierProvider", lambda: NoPairTradier())
+    monkeypatch.setattr(svc, "date", _FrozenDate)
+    monkeypatch.setattr(svc.config, "EARNINGS_DISCOVERY_CONSTITUENT_PRESCREEN", False)
+
+    result = svc.filter_earnings_discovery_for_calendar_scan(
+        {"items": [{
+            "ticker": "ABT",
+            "earnings_date": "2026-07-30",
+            "date": "2026-07-30",
+            "is_timestamp_confirmed": True,
+            "sources_seen": ["finnhub", "alpha_vantage"],
+            "earnings_date_confidence": "confirmed",
+        }]},
+        log_print=lambda msg: None,
+        run_mode="prod",
+    )
+
+    row = result["items"][0]
+    assert row["passes_precheck"] is True
+    assert result["tickers"] == ["ABT"]
+    assert row["expiration_enumeration_result"] == "STRUCTURE_UNAVAILABLE"
+    statuses = {check["name"]: check["status"] for check in row["checks"]}
+    assert statuses["Option expirations"] == "WARN"
+
+
+def test_open_position_projection_emits_double_calendar_parent():
+    from app.models.calendar_evolution_policy import load_calendar_evolution_policy
+    from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
+
+    lifecycle_checks = {"checks": [
+        {
+            "ticker": "SBUX",
+            "option_type": "call",
+            "strike": 110,
+            "front_expiration": "2026-08-21",
+            "back_expiration": "2026-09-18",
+            "action": "HOLD / MONITOR",
+        },
+        {
+            "ticker": "SBUX",
+            "option_type": "put",
+            "strike": 100,
+            "front_expiration": "2026-08-21",
+            "back_expiration": "2026-09-18",
+            "action": "HOLD / MONITOR",
+        },
+    ]}
+    result = build_calendar_canonical_projection(
+        earnings_trade_discovery={"items": []},
+        earnings_discovery_quality={"items": []},
+        calendar_candidates=[],
+        earnings_calendar_strategy={"items": []},
+        calendar_ranking={"items": []},
+        account_context={},
+        open_options={},
+        lifecycle_checks=lifecycle_checks,
+        policy=load_calendar_evolution_policy(),
+        evaluation_date=date(2026, 7, 9),
+        run_mode="prod",
+    )
+    open_rows = result["open_trade_rows"]
+    assert sum(1 for row in open_rows if row["row_model"] == "OPEN_POSITION_PARENT") == 1
+    assert sum(1 for row in open_rows if row["row_model"] == "OPEN_POSITION_CHILD") == 2
+    assert result["calendar_row_reconciliation"]["open_position_parents_generated"] == 1
+    assert result["calendar_row_reconciliation"]["open_position_children_generated"] == 2
+
+
+def test_data_confidence_failure_codes_share_canonical_failure_collection():
+    from app.services.automated_data_validation_service import log_data_confidence_validation, run_validation_suite
+
+    rows = [{"row_type": "generic_without_action_or_score", "ticker": "BROKEN"}]
+    result = run_validation_suite(rows, "fixture_strategy")
+    assert result["true_failures"] > 0
+    assert result["failure_codes"]
+    line = log_data_confidence_validation(result, log_print=lambda msg, **kwargs: None)
+    assert "failed=2" in line
+    assert "failure_codes=[]" not in line

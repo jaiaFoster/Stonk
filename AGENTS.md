@@ -1,14 +1,14 @@
 <!-- ROADMAP_META
-patch: 34A
+patch: 34A.1
 last_updated: 2026-07-13
 roadmap_json: config/roadmap.json
 -->
 
-# ASA Agent Reference — Patch 34A
+# ASA Agent Reference — Patch 34A.1
 
-**Patch title:** Calendar Coverage Expansion and Declarative Strategy Engine Foundations
+**Patch title:** Complete Declarative Expiration Enumeration and Resolve Priority Reliability Backlog
 **Sprint status:** in_progress
-**Machine-readable roadmap:** `config/roadmap.json` (schema version 34A.v1)
+**Machine-readable roadmap:** `config/roadmap.json` (schema version 34A.1.v1)
 
 ---
 
@@ -70,12 +70,15 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 ---
 
-## Current Sprint — Patch 34A
+## Current Sprint — Patch 34A.1
 
 **Focus areas:**
-- Calendar scanner must enumerate all available expirations before rejecting a ticker; weekly and monthly expirations are first-class inputs.
-- Expiration pair selection records every rejection with machine-readable codes such as `SHORT_DTE_TOO_LOW`, `SHORT_LEG_SPANS_EARNINGS`, and `EXPIRATION_GAP_TOO_NARROW`.
-- Calendar coverage accounting must report raw events, quality filter outcomes, optionable/budget counts, valid pairs, rejected pairs, and failure codes.
+- Calendar quality filter owns stable eligibility only; expiration/structure rejection belongs to declarative enumeration and canonical rows.
+- Every checked Earnings Calendar ticker must emit `CALENDAR_EXPIRATION_AUDIT` or explicit `NOT_RUN`.
+- `CALENDAR_PROJECTION_RECONCILIATION` and `CALENDAR_ENDPOINT_RECONCILIATION` are separate logs.
+- Data-confidence failure counts and failure codes must come from one canonical hard-failure collection.
+- Daily Opportunity parity compares action identity sets, not just counts.
+- Open-position double-calendar parent rows should be emitted before persistence where feasible.
 - Strategy definitions are trusted local JSON only. They may reference catalog field IDs and allowlisted calculation IDs, but never arbitrary Python code.
 - Earnings Calendar has a checked-in `34A.strategy_definition.v1` definition as the first migration target; live strategy math remains code-owned.
 - Forward Factor remains dry-run and excluded from trade execution/Daily Opportunity promotion unless a later approved patch says otherwise.
@@ -138,8 +141,12 @@ architecture table to reflect changes actually made.
 | TKT-DISCOVERY-HORIZON-FIX | Fix EARNINGS_DISCOVERY_END_DAYS hardcoded to 21 | P0 | completed | config | Done in Patch 33A.1 — now reads Railway env, default 35 |
 | TKT-CALENDAR-PREWINDOW | Calendar PRE_WINDOW stage and early discovery | P0 | in_progress | calendar | Wire lifecycle_rows_from_discovery into scanner output |
 | TKT-LEGACY-SUMMARY-DEPRECATION | Remove legacy report summary from normal hot path | P0 | in_progress | performance | Add LEGACY_REPORT_SUMMARY_ARCHIVE_ENABLED=False config flag |
-| TKT-CALENDAR-ENTRY-WINDOW | Calendar entry-window transition and expiration enumeration | P1 | in_progress | calendar | Add explicit expiration list enumeration before pair selection |
-| TKT-ADV-006 | Weekly expiration discovery / expiration stepping failure | P1 | in_progress | calendar | Audit TRADIER_CHAIN_EXPIRATIONS_PER_TICKER=1 effect on calendar discovery |
+| TKT-CALENDAR-ENTRY-WINDOW | Calendar entry-window transition and expiration enumeration | P1 | completed | calendar | Patch 34A.1 keeps quality filter from rejecting by structure and logs `CALENDAR_EXPIRATION_AUDIT` for checked tickers |
+| TKT-ADV-006 | Weekly expiration discovery / expiration stepping failure | P1 | completed | calendar | Patch 34A.1 validates later weekly/monthly expirations before rejecting nearest-expiry failures |
+| TKT-DATA-CONFIDENCE-RECONCILIATION | Unify hard-failure records, counts, and codes | P1 | completed | data_confidence | Patch 34A.1 derives counts and codes from hard_failure_records |
+| TKT-OPEN-POSITION-PARENT-PROJECTION | Persist double-calendar parent before API projection | P1 | partial | open_positions | Patch 34A.1 emits parent rows before persistence; account alias dedup remains separate |
+| TKT-DAILY-OPPORTUNITY-PARITY | Reconcile in-run and repository-backed action sets | P1 | completed | daily_opportunity | Patch 34A.1 compares action identity sets, not just counts |
+| TKT-ENDPOINT-ROW-RECONCILIATION | Produce final endpoint-backed row accounting | P1 | completed | strategy_rows | Patch 34A.1 splits projection and endpoint reconciliation logs |
 | TKT-ADV-013 | Open positions active calendar count and lifecycle disconnect | P1 | in_progress | open_positions | Add parent double-calendar structure grouping |
 | TKT-OPEN-OPTIONS-DEDUP | Open options account alias deduplication | P1 | in_progress | open_positions | Connect canonical account identity to dedup logic |
 | TKT-DOUBLE-CALENDAR-PARENT | SBUX four-leg double calendar missing parent structure | P1 | in_progress | open_positions | Add parent structure detection for call+put calendars on same ticker |

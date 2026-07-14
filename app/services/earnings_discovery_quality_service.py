@@ -13,7 +13,15 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
 from app import config
+from app.models.strategy_definition import ExpirationPairRule, ExpirationRequirement
 from app.providers.tradier_provider import TradierProvider
+from app.services.expiration_enumeration_service import (
+    EXPIRATION_ENUMERATION_POLICY_VERSION,
+    enumerate_expiration_pairs as enumerate_declarative_expiration_pairs,
+    normalize_expiration_records,
+)
+from app.services.strategy_calculation_registry import CALCULATION_REGISTRY_VERSION
+from app.services.strategy_definition_loader_service import load_builtin_strategy_definitions
 from app.utils.log_safety import sanitize_for_log
 
 LogFn = Callable[[str], None]
@@ -166,69 +174,45 @@ def filter_earnings_discovery_for_calendar_scan(
         row["expiration_pair_diagnostics"] = {}
         try:
             expirations = provider.get_expirations(ticker)
-            entry_gate = _entry_window_gate(expirations, item)
-            row.update(entry_gate)
             row["expiration_count"] = len(expirations)
-            pair = _select_calendar_expiration_pair(expirations, event=item)
-            if pair:
-                row["front_expiration"] = pair[0]
-                row["back_expiration"] = pair[1]
-                row["front_dte"] = _dte(pair[0])
-                row["back_dte"] = _dte(pair[1])
-                is_near_miss = len(pair) > 2 and pair[2]
-                row["expiration_pair"] = _canonical_expiration_pair(pair, item)
-                row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
-                row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "PASS"
-                row["expiration_pair_diagnostics"] = {
-                    "expiration_pair_status": "near_miss" if is_near_miss else "pass",
-                    "actual_front_expiration_found": pair[0],
-                    "actual_back_expiration_found": pair[1],
-                    "front_before_earnings": row["expiration_pair"].get("front_before_earnings"),
-                    "gap_days": row["expiration_pair"].get("gap_days"),
-                    "min_expiration_gap_days": int(getattr(config, "CALENDAR_MIN_EXPIRATION_GAP_DAYS", 14) or 14),
-                    **_entry_window_diagnostics(entry_gate),
+            audit = _declarative_expiration_audit(ticker, expirations, item, logger)
+            row.update(audit.get("row_fields") or {})
+            row["expiration_pair_diagnostics"] = audit
+            row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
+            row["pipeline_trace"]["stages"]["declarative_expiration_enumeration"] = "PASS"
+            if audit.get("valid_pairs"):
+                first_pair = audit["valid_pairs"][0]
+                row["front_expiration"] = first_pair.get("front_expiration")
+                row["back_expiration"] = first_pair.get("back_expiration")
+                row["front_dte"] = first_pair.get("front_dte")
+                row["back_dte"] = first_pair.get("back_dte")
+                row["expiration_pair"] = {
+                    "front_expiration": first_pair.get("front_expiration"),
+                    "back_expiration": first_pair.get("back_expiration"),
+                    "front_dte": first_pair.get("front_dte"),
+                    "back_dte": first_pair.get("back_dte"),
+                    "earnings_date": item.get("earnings_date") or item.get("date"),
+                    "selection_method": "declarative_expiration_enumerator",
                 }
-                _append_entry_window_check(row, entry_gate)
-                if is_near_miss:
-                    earnings_dt = _parse_date(item.get("earnings_date") or item.get("date"))
-                    front_dt = _parse_date(pair[0])
-                    gap_days = (front_dt - earnings_dt).days if earnings_dt and front_dt else "?"
-                    row["expiry_near_miss"] = True
-                    row["expiry_gap_note"] = f"Nearest expiry {pair[0]} is {gap_days}d after earnings — holiday or weekly gap. Manual evaluation recommended."
-                    row["expiration_pair_diagnostics"]["expiration_pair_reject_reason"] = "front_leg_after_earnings_near_miss"
-                    row["checks"].append(_check("Option expirations", "WARN", f"Near-miss: {pair[0]} / {pair[1]} — front leg expires after earnings ({gap_days}d gap)."))
-                else:
-                    row["checks"].append(_check("Option expirations", "PASS", f"Matched {pair[0]} / {pair[1]} calendar window."))
+                row["checks"].append(_check("Option expirations", "PASS", f"Declarative enumeration found {len(audit.get('valid_pairs') or [])} policy-valid pair(s)."))
             else:
-                row.setdefault("pipeline_trace", {"stages": {}, "stage_details": {}})
-                row["pipeline_trace"]["stages"]["precheck_expiration_pair_selected"] = "FAIL"
-                near_miss_exp = None if _entry_window_blocks_near_miss(entry_gate) else _find_near_miss_expiry(expirations, item)
-                fail_reason = "no_valid_expiration_pair"
-                if near_miss_exp:
-                    row["expiry_near_miss"] = True
-                    row["expiry_gap_note"] = near_miss_exp["note"]
-                    fail_reason = "near_miss_expiry_gap"
-                    row["checks"].append(_check("Option expirations", "WARN", near_miss_exp["check_detail"]))
-                else:
-                    opt_status = "WARN" if entry_gate.get("entry_window_status") == "DATA_NEEDED" else "FAIL"
-                    row["checks"].append(_check("Option expirations", opt_status, entry_gate.get("entry_window_reason") or "No front/back expiration pair matched scanner settings."))
-                row["expiration_pair_diagnostics"] = {
-                    "expiration_pair_status": "near_miss" if near_miss_exp else "fail",
-                    "expiration_pair_reject_reason": entry_gate.get("entry_window_status") or fail_reason,
-                    "actual_front_expiration_found": None,
-                    "actual_back_expiration_found": None,
-                    "tried_expirations": expirations[:10],
-                    "min_expiration_gap_days": int(getattr(config, "CALENDAR_MIN_EXPIRATION_GAP_DAYS", 14) or 14),
-                    "near_miss_expiry": near_miss_exp.get("note") if near_miss_exp else None,
-                    **_entry_window_diagnostics(entry_gate),
-                }
-                _append_entry_window_check(row, entry_gate)
+                row["checks"].append(_check("Option expirations", "WARN", "Declarative enumeration found no policy-valid pair; ticker remains eligible for canonical diagnostic rows."))
         except Exception as e:
             safe_error = sanitize_for_log(e, [config.TRADIER_ACCESS_TOKEN, config.RUN_TOKEN])
             row["expiry_exception"] = repr(safe_error)
             row["expiration_pair_diagnostics"] = {"expiration_pair_status": "error", "error": str(safe_error)}
-            row["checks"].append(_check("Option expirations", "FAIL", f"Expiration lookup failed: {safe_error}"))
+            row["checks"].append(_check("Option expirations", "WARN", f"Expiration lookup failed; structure enumeration deferred: {safe_error}"))
             row["errors"].append(str(safe_error))
+            logger(
+                "CALENDAR_EXPIRATION_AUDIT "
+                f"ticker={ticker} "
+                f"event_date={item.get('earnings_date') or item.get('date')} "
+                f"definition_id=earnings_calendar "
+                f"provider_listed=0 normalized=0 strategy_relevant=0 front_eligible=0 back_eligible=0 "
+                f"pairs_considered=0 pairs_policy_valid=0 pairs_chain_requested=0 pairs_chain_available=0 "
+                f"structures_generated=0 budget_state=APPROVED result=NOT_RUN "
+                f"reason=EXPIRATION_LOOKUP_FAILED"
+            )
 
         _finalize_quality_row(row)
         rows.append(row)
@@ -450,6 +434,164 @@ def _select_calendar_expiration_pair(expirations: list[str], event: dict[str, An
             return front, back
 
     return _select_generic_calendar_pair(parsed)
+
+
+def _declarative_expiration_audit(
+    ticker: str,
+    expirations: list[str],
+    event: dict[str, Any],
+    logger: LogFn,
+) -> dict[str, Any]:
+    """Run the declarative expiration enumerator without deciding quality eligibility."""
+    definitions = load_builtin_strategy_definitions()
+    definition = definitions.get("earnings_calendar")
+    if not definition:
+        raise RuntimeError("earnings_calendar strategy definition missing")
+    raw = definition.raw
+    logger(
+        "STRATEGY_DEFINITION_PROVENANCE "
+        f"strategy_id=earnings_calendar "
+        f"definition_version={definition.version} "
+        f"structure_template_id={((raw.get('structures') or [{}])[0]).get('template_id')} "
+        f"enumeration_policy_version={EXPIRATION_ENUMERATION_POLICY_VERSION} "
+        f"calculation_registry_version={CALCULATION_REGISTRY_VERSION} "
+        f"expiration_rules_source=strategy_definition "
+        f"leg_rules_source=strategy_definition "
+        f"pair_rules_source=strategy_definition"
+    )
+    exp_reqs = raw.get("expiration_requirements") or {}
+    requirements = {
+        "front": _expiration_requirement_from_json(exp_reqs.get("front") or {"role": "front"}),
+        "back": _expiration_requirement_from_json(exp_reqs.get("back") or {"role": "back"}),
+    }
+    structure = (raw.get("structures") or [{}])[0]
+    pair_rule = _pair_rule_from_json(structure.get("expiration_pair_rule") or {})
+    event_date = event.get("earnings_date") or event.get("date")
+    normalized = normalize_expiration_records(expirations, provider="tradier")
+    result = enumerate_declarative_expiration_pairs(
+        normalized,
+        requirements,
+        pair_rule,
+        event_date=event_date,
+        max_pairs=int(getattr(config, "CALENDAR_MAX_EXPIRATION_PAIRS_PER_TICKER", 3) or 3),
+    )
+    coverage = result.get("coverage") or {}
+    top_codes = coverage.get("failure_by_code") or {}
+    audit = {
+        "strategy_id": "earnings_calendar",
+        "ticker": ticker,
+        "event_date": event_date,
+        "definition_id": definition.strategy_id,
+        "definition_version": definition.version,
+        "schema_version": definition.schema_version,
+        "provider_listed_expirations": list(expirations or []),
+        "normalized_expirations": [rec.to_dict() for rec in normalized],
+        "strategy_relevant_expirations": [rec.to_dict() for rec in normalized if rec.rejection_code is None],
+        "front_candidates": result.get("front_candidates") or [],
+        "back_candidates": result.get("back_candidates") or [],
+        "pair_attempts": result.get("pair_attempts") or [],
+        "valid_pairs": result.get("valid_pairs") or [],
+        "rejection_records": _rejection_records_from_enumeration(ticker, result),
+        "provider_budget_state": "APPROVED",
+        "data_completeness": "COMPLETE" if expirations else "MISSING",
+        "result": "POLICY_VALID_PAIRS" if result.get("valid_pairs") else "STRUCTURE_UNAVAILABLE",
+        "top_rejection_codes": top_codes,
+        "coverage": coverage,
+        "policy_version": EXPIRATION_ENUMERATION_POLICY_VERSION,
+    }
+    logger(
+        "CALENDAR_EXPIRATION_AUDIT "
+        f"ticker={ticker} "
+        f"event_date={event_date} "
+        f"definition_id=earnings_calendar "
+        f"definition_version={definition.version} "
+        f"provider_listed={len(expirations or [])} "
+        f"normalized={len([rec for rec in normalized if rec.rejection_code is None])} "
+        f"strategy_relevant={len(audit['strategy_relevant_expirations'])} "
+        f"front_eligible={len(audit['front_candidates'])} "
+        f"back_eligible={len(audit['back_candidates'])} "
+        f"pairs_considered={len(audit['pair_attempts'])} "
+        f"pairs_policy_valid={len(audit['valid_pairs'])} "
+        f"pairs_chain_requested=0 "
+        f"pairs_chain_available=0 "
+        f"structures_generated=0 "
+        f"budget_state=APPROVED "
+        f"result={audit['result']} "
+        f"top_rejection_codes={top_codes}"
+    )
+    audit["row_fields"] = {
+        "available_expirations": audit["normalized_expirations"],
+        "available_pre_earnings_expirations": audit["front_candidates"],
+        "rejected_expirations": audit["rejection_records"],
+        "expiration_enumeration_result": audit["result"],
+        "blocker_code": "NO_SAFE_PRE_EARNINGS_SHORT_EXPIRATION" if not audit["valid_pairs"] else None,
+        "blocker_detail": "No policy-valid front/back pair after declarative enumeration." if not audit["valid_pairs"] else None,
+        "strategy_definition_id": definition.strategy_id,
+        "strategy_definition_version": definition.version,
+        "structure_template_id": structure.get("template_id"),
+        "enumeration_policy_version": EXPIRATION_ENUMERATION_POLICY_VERSION,
+    }
+    return audit
+
+
+def _expiration_requirement_from_json(value: dict[str, Any]) -> ExpirationRequirement:
+    return ExpirationRequirement(
+        role=str(value.get("role") or "front"),
+        min_dte=value.get("min_dte"),
+        max_dte=value.get("max_dte"),
+        relation_to_event=str(value.get("relation_to_event") or "any"),
+        min_days_before_event=value.get("min_days_before_event"),
+        min_days_after_event=value.get("min_days_after_event"),
+        allow_weekly=bool(value.get("allow_weekly", True)),
+        allow_monthly=bool(value.get("allow_monthly", True)),
+        allow_quarterly=bool(value.get("allow_quarterly", True)),
+        allow_leaps=bool(value.get("allow_leaps", False)),
+    )
+
+
+def _pair_rule_from_json(value: dict[str, Any]) -> ExpirationPairRule:
+    return ExpirationPairRule(
+        front_role=str(value.get("front_role") or "front"),
+        back_role=str(value.get("back_role") or "back"),
+        min_gap_days=value.get("min_gap_days"),
+        max_gap_days=value.get("max_gap_days"),
+        event_must_be_between=bool(value.get("event_must_be_between")),
+        front_must_expire_before_event=bool(value.get("front_must_expire_before_event")),
+        back_must_expire_after_event=bool(value.get("back_must_expire_after_event")),
+    )
+
+
+def _rejection_records_from_enumeration(ticker: str, result: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for bucket, stage in (("front_rejections", "front_expiration"), ("back_rejections", "back_expiration")):
+        for item in result.get(bucket) or []:
+            records.append({
+                "ticker": ticker,
+                "stage": stage,
+                "code": item.get("primary_rejection_code"),
+                "expiration_role": item.get("role"),
+                "front_expiration": item.get("expiration") if item.get("role") == "front" else None,
+                "back_expiration": item.get("expiration") if item.get("role") == "back" else None,
+                "strike": None,
+                "provider": "tradier",
+                "details": item,
+            })
+    for item in result.get("pair_attempts") or []:
+        if item.get("valid"):
+            continue
+        for code in item.get("rejection_codes") or []:
+            records.append({
+                "ticker": ticker,
+                "stage": "expiration_pair",
+                "code": code,
+                "expiration_role": "pair",
+                "front_expiration": item.get("front_expiration"),
+                "back_expiration": item.get("back_expiration"),
+                "strike": None,
+                "provider": "tradier",
+                "details": item,
+            })
+    return records
 
 
 def _canonical_expiration_pair(pair: tuple, event: dict[str, Any]) -> dict[str, Any]:

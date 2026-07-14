@@ -70,6 +70,9 @@ _SURVIVAL_FIELDS = (
     "entry_allowed", "terminal", "policy_version", "policy_source", "disposition_code",
     "disposition_reason", "current_structure_id", "structure_id", "structure_version",
     "previous_structure_id", "structure_changed", "structure_change_reason",
+    "strategy_definition_id", "strategy_definition_version", "structure_template_id",
+    "enumeration_policy_version", "coverage_accounting", "expiration_enumeration_result",
+    "expiration_pair_diagnostics",
 )
 
 

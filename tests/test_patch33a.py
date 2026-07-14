@@ -511,7 +511,7 @@ class TestRoadmapJson(unittest.TestCase):
 
     def test_roadmap_patch_matches_current_patch(self):
         data = self._load()
-        self.assertEqual(data["patch"], "34A")
+        self.assertEqual(data["patch"], "34A.1")
 
     def test_roadmap_tickets_have_required_fields(self):
         data = self._load()
@@ -596,7 +596,7 @@ class TestDevRoadmapEndpoint(unittest.TestCase):
         if resp.status_code == 200:
             data = resp.get_json()
             self.assertIn("current_patch", data)
-            self.assertEqual(data["current_patch"], "34A")
+            self.assertEqual(data["current_patch"], "34A.1")
 
 
 if __name__ == "__main__":
