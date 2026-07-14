@@ -43,8 +43,15 @@ def config_snapshot(run_mode: str) -> dict[str, Any]:
         "earnings_provider_order": list(config.EARNINGS_PROVIDER_ORDER),
         "earnings_merge_provider_events": config.EARNINGS_MERGE_PROVIDER_EVENTS,
         "earnings_discovery_window": f"+{config.EARNINGS_DISCOVERY_START_DAYS}..+{config.EARNINGS_DISCOVERY_END_DAYS} days",
-        "earnings_discovery_end_days_requested": config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED,
-        "earnings_discovery_end_override_adjusted": config.EARNINGS_DISCOVERY_END_DAYS_REQUESTED != config.EARNINGS_DISCOVERY_END_DAYS,
+        "earnings_discovery_end_days_effective": config.EARNINGS_DISCOVERY_END_DAYS,
+        "earnings_discovery_end_days_requested": getattr(
+            config, "EARNINGS_DISCOVERY_END_DAYS_REQUESTED", config.EARNINGS_DISCOVERY_END_DAYS
+        ),
+        "earnings_discovery_end_override_adjusted": getattr(
+            config, "EARNINGS_DISCOVERY_END_DAYS_REQUESTED", config.EARNINGS_DISCOVERY_END_DAYS
+        ) != config.EARNINGS_DISCOVERY_END_DAYS,
+        "calendar_structure_build_start_event_dte": getattr(config, "CALENDAR_STRUCTURE_BUILD_START_EVENT_DTE", 24),
+        "calendar_surface_start_event_dte": getattr(config, "CALENDAR_SURFACE_START_EVENT_DTE", 14),
         "earnings_discovery_raw_event_limit": config.EARNINGS_DISCOVERY_RAW_EVENT_LIMIT,
         "earnings_discovery_dev_raw_event_limit": config.EARNINGS_DISCOVERY_DEV_RAW_EVENT_LIMIT,
         "earnings_discovery_max_optionable_to_check": config.EARNINGS_DISCOVERY_MAX_OPTIONABLE_TO_CHECK,
