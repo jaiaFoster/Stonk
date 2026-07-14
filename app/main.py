@@ -3196,33 +3196,34 @@ def _run_job(job_id: str, run_mode: str = "prod", job_lock: threading.Lock | Non
             RUN_JOBS[job_id]["status"] = "complete"
             RUN_JOBS[job_id]["message"] = "Run complete. Loading report."
             try:
-                from app.services.endpoint_verification_service import maybe_run_endpoint_verification
+                if not (tradier_snapshot or {}).get("_endpoint_verification"):
+                    from app.services.endpoint_verification_service import maybe_run_endpoint_verification
 
-                completed_run_id = (
-                    (tradier_snapshot or {}).get("_run_manifest", {}) or {}
-                ).get("run_id") or ((tradier_snapshot or {}).get("_pipeline_status", {}) or {}).get("run_id")
-                report_quality = (
-                    (tradier_snapshot or {}).get("_run_manifest", {}) or {}
-                ).get("report_quality") or ((tradier_snapshot or {}).get("_pipeline_status", {}) or {}).get("report_quality")
+                    completed_run_id = (
+                        (tradier_snapshot or {}).get("_run_manifest", {}) or {}
+                    ).get("run_id") or ((tradier_snapshot or {}).get("_pipeline_status", {}) or {}).get("run_id")
+                    report_quality = (
+                        (tradier_snapshot or {}).get("_run_manifest", {}) or {}
+                    ).get("report_quality") or ((tradier_snapshot or {}).get("_pipeline_status", {}) or {}).get("report_quality")
 
-                def _verify_log(message: str) -> None:
-                    print(message, flush=True)
-                    try:
-                        log.append(message)
-                    except Exception:
-                        pass
+                    def _verify_log(message: str) -> None:
+                        print(message, flush=True)
+                        try:
+                            log.append(message)
+                        except Exception:
+                            pass
 
-                verification = maybe_run_endpoint_verification(
-                    completed_run_id=completed_run_id,
-                    run_mode=run_mode,
-                    report_quality=report_quality,
-                    log_print=_verify_log,
-                )
-                if verification is not None:
-                    try:
-                        (tradier_snapshot or {})["_endpoint_verification"] = verification
-                    except Exception:
-                        pass
+                    verification = maybe_run_endpoint_verification(
+                        completed_run_id=completed_run_id,
+                        run_mode=run_mode,
+                        report_quality=report_quality,
+                        log_print=_verify_log,
+                    )
+                    if verification is not None:
+                        try:
+                            (tradier_snapshot or {})["_endpoint_verification"] = verification
+                        except Exception:
+                            pass
             except Exception as verify_exc:
                 safe_message = str(verify_exc).replace("\n", " ")[:160]
                 print(f"[VERIFY][WARN] endpoint_verification warning=verification_failed message={safe_message}", flush=True)

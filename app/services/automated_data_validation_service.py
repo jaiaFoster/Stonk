@@ -411,7 +411,7 @@ def log_data_confidence_validation(
         log = log_print or print
         total = int(suite_result.get("total_reports") or 0)
         passed = int(suite_result.get("passed_reports") or 0)
-        failed = int(suite_result.get("true_failures") or suite_result.get("failed_reports") or 0)
+        failed = int(suite_result.get("true_failures") if "true_failures" in suite_result else (suite_result.get("total_errors") or 0))
         warnings = int(suite_result.get("total_warnings") or 0)
         not_applicable = int(suite_result.get("not_applicable") or 0)
         expected_missing = int(suite_result.get("expected_missing") or 0)
@@ -419,7 +419,8 @@ def log_data_confidence_validation(
         failure_codes: list[str] = []
         for report in (suite_result.get("reports") or [])[:50]:
             for result in (report.get("results") or []):
-                if not result.get("passed"):
+                level = str(result.get("level") or "").lower()
+                if not result.get("passed") and (level == LEVEL_ERROR or (not level and "true_failures" not in suite_result)):
                     code = str(result.get("rule_id") or "unknown")
                     if code not in failure_codes:
                         failure_codes.append(code)

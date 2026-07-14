@@ -115,9 +115,9 @@ def build_calendar_canonical_projection(
     audit = _decision_audit(new_rows, open_rows)
     logger(
         "CALENDAR_CANONICAL_PROJECTION "
-        f"parent_opportunities={len(new_rows)} "
-        f"open_parents={len(open_rows)} "
-        f"open_children={len(open_rows)} "
+        f"opportunity_parents={len(new_rows)} "
+        f"open_position_parents=0 "
+        f"open_position_children={len(open_rows)} "
         f"diagnostics={sum((row.get('structure_attempt_summary') or {}).get('attempt_count', 0) for row in new_rows)}"
     )
     logger(
@@ -145,6 +145,7 @@ def validate_calendar_canonical_rows(rows: list[dict[str, Any]]) -> dict[str, An
         row_id = row.get("row_id")
         row_model = str(row.get("row_model") or row.get("row_type") or "")
         entry_eval = bool(row.get("entry_evaluation_eligible"))
+        entry_allowed = bool(row.get("entry_allowed"))
         state = str(row.get("evaluation_state") or "")
         verdict = str(row.get("trade_verdict") or "")
         action = str(row.get("recommended_action") or "")
@@ -155,8 +156,31 @@ def validate_calendar_canonical_rows(rows: list[dict[str, Any]]) -> dict[str, An
             seen_parent_ids.add(opp_id)
         if row_model == "OPPORTUNITY_PARENT" and not entry_eval and verdict != Verdict.NOT_EVALUATED:
             violations.append({"code": "NON_ENTRY_ROW_HAS_FINAL_VERDICT", "ticker": ticker, "row_id": row_id, "trade_verdict": verdict})
+        if entry_allowed and not entry_eval:
+            violations.append({"code": "ENTRY_ALLOWED_WITHOUT_ENTRY_EVALUATION", "ticker": ticker, "row_id": row_id, "evaluation_state": state, "trade_verdict": verdict, "recommended_action": action})
+        if entry_allowed and state != EvaluationState.FULLY_EVALUATED:
+            violations.append({"code": "ENTRY_ALLOWED_NOT_FULLY_EVALUATED", "ticker": ticker, "row_id": row_id, "evaluation_state": state, "trade_verdict": verdict})
+        if entry_allowed and verdict != Verdict.PASS:
+            violations.append({"code": "ENTRY_ALLOWED_NON_PASS_VERDICT", "ticker": ticker, "row_id": row_id, "trade_verdict": verdict})
+        if entry_allowed and action != "ENTER":
+            violations.append({"code": "ENTRY_ALLOWED_NON_ENTER_ACTION", "ticker": ticker, "row_id": row_id, "recommended_action": action})
+        if verdict == Verdict.NOT_EVALUATED and entry_allowed:
+            violations.append({"code": "NOT_EVALUATED_ENTRY_ALLOWED", "ticker": ticker, "row_id": row_id})
+        if state == EvaluationState.STRUCTURE_UNAVAILABLE and entry_allowed:
+            violations.append({"code": "STRUCTURE_UNAVAILABLE_ENTRY_ALLOWED", "ticker": ticker, "row_id": row_id})
+        if state == EvaluationState.DEFERRED_BUDGET:
+            if verdict != Verdict.NOT_EVALUATED:
+                violations.append({"code": "DEFERRED_BUDGET_FINAL_VERDICT", "ticker": ticker, "row_id": row_id, "trade_verdict": verdict})
+            if entry_allowed:
+                violations.append({"code": "DEFERRED_BUDGET_ENTRY_ALLOWED", "ticker": ticker, "row_id": row_id})
+            if action not in {"NONE", "MONITOR"}:
+                violations.append({"code": "DEFERRED_BUDGET_BAD_ACTION", "ticker": ticker, "row_id": row_id, "recommended_action": action})
         if verdict in {Verdict.PASS, Verdict.WATCH, Verdict.NEAR_MISS, Verdict.FAIL} and state != EvaluationState.FULLY_EVALUATED:
             violations.append({"code": "FINAL_VERDICT_NOT_FULLY_EVALUATED", "ticker": ticker, "row_id": row_id, "evaluation_state": state, "trade_verdict": verdict})
+        if verdict in {Verdict.PASS, Verdict.WATCH, Verdict.NEAR_MISS, Verdict.FAIL} and not entry_eval:
+            violations.append({"code": "FINAL_VERDICT_NOT_ENTRY_EVALUABLE", "ticker": ticker, "row_id": row_id, "trade_verdict": verdict})
+        if row.get("lifecycle_stage") == LifecycleStage.OPEN_POSITION and action not in {"HOLD", "EXIT", "REVIEW"}:
+            violations.append({"code": "OPEN_POSITION_BAD_ACTION", "ticker": ticker, "row_id": row_id, "recommended_action": action})
         if not action:
             violations.append({"code": "ACTION_MISSING", "ticker": ticker, "row_id": row_id})
         if row_model == "OPPORTUNITY_PARENT" and row.get("current_structure_id") and row_id != row.get("opportunity_id"):
@@ -345,8 +369,11 @@ def build_calendar_row_reconciliation(
             if row.get("can_enter_daily_opportunity"):
                 daily_visible += 1
     return {
+        "opportunity_parents_generated": len(parent_rows),
+        "open_position_parents_generated": 0,
+        "open_position_children_generated": len(open_rows),
         "parent_generated": len(parent_rows),
-        "open_parent_generated": len(open_rows),
+        "open_parent_generated": 0,
         "open_child_generated": len(open_rows),
         "structure_records": sum(1 for row in parent_rows if row.get("current_structure_id")),
         "diagnostic_records": sum(int((row.get("structure_attempt_summary") or {}).get("attempt_count") or 0) for row in parent_rows),
@@ -358,6 +385,10 @@ def build_calendar_row_reconciliation(
         "api_rows": api_visible_rows if api_visible_rows is not None else 0,
         "api_visible_parents": api_visible_rows if api_visible_rows is not None else 0,
         "api_visible_children": 0,
+        "earnings_calendar_api_rows": api_visible_rows if api_visible_rows is not None else 0,
+        "strategy_lifecycle_api_rows": 0,
+        "open_positions_api_parent_rows": 0,
+        "open_positions_api_child_rows": 0,
         "daily_opportunity_rows": daily_visible,
         "history_rows": history_rows if history_rows is not None else 0,
         "journal_rows": journal_rows if journal_rows is not None else 0,

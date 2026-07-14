@@ -23,6 +23,7 @@ class _Check:
     fields: dict[str, Any] = field(default_factory=dict)
     warning: str | None = None
     assertion: str | None = None
+    category: str = "DIAGNOSTIC"
 
 
 def maybe_run_endpoint_verification(
@@ -84,15 +85,17 @@ def run_endpoint_verification(
         passed = sum(1 for check in checks if check.status == "PASS")
         warned = sum(1 for check in checks if check.status == "WARN")
         failed = sum(1 for check in checks if check.status == "FAIL")
+        required_failed = sum(1 for check in checks if check.status == "FAIL" and check.category.startswith("REQUIRED"))
         duration_ms = int((perf_counter() - started) * 1000)
         verification_status = "FAILED" if failed else ("WARNING" if warned else "PASS")
-        log(f"[VERIFY][SUMMARY] passed={passed} warned={warned} failed={failed} duration_ms={duration_ms}")
+        log(f"[VERIFY][SUMMARY] passed={passed} warned={warned} failed={failed} required_failed={required_failed} duration_ms={duration_ms}")
         log("=== ENDPOINT VERIFICATION END ===")
         return {
             "verification_status": verification_status,
             "passed_count": passed,
             "warning_count": warned,
             "failed_count": failed,
+            "required_failed_count": required_failed,
             "duration_ms": duration_ms,
             "checks": [_safe_check_dict(check) for check in checks],
         }
@@ -117,10 +120,10 @@ def _check_dashboard(run_id: str | None) -> _Check:
         "provider_calls_triggered": data.get("provider_calls_triggered"),
     }
     if data.get("provider_calls_triggered") is not False:
-        return _Check("dashboard", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED")
+        return _Check("dashboard", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED", category="REQUIRED_READ_ONLY")
     if run_id and data.get("run_id") != run_id:
-        return _Check("dashboard", "FAIL", fields, assertion="RUN_ID_MISMATCH")
-    return _Check("dashboard", "PASS", fields)
+        return _Check("dashboard", "FAIL", fields, assertion="RUN_ID_MISMATCH", category="REQUIRED_SEMANTIC")
+    return _Check("dashboard", "PASS", fields, category="REQUIRED_READ_ONLY")
 
 
 def _check_daily(run_id: str | None) -> _Check:
@@ -140,19 +143,19 @@ def _check_daily(run_id: str | None) -> _Check:
         "latest_run_id": data.get("latest_run_id"),
     }
     if data.get("provider_calls_triggered") is not False:
-        return _Check("daily_opportunity", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED")
+        return _Check("daily_opportunity", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED", category="REQUIRED_READ_ONLY")
     if data.get("source") != "strategy_row_store" or data.get("fallback_used") is not False:
-        return _Check("daily_opportunity", "FAIL", fields, assertion="ROW_STORE_NOT_PRIMARY")
+        return _Check("daily_opportunity", "FAIL", fields, assertion="ROW_STORE_NOT_PRIMARY", category="REQUIRED_READ_ONLY")
     if run_id and data.get("latest_run_id") != run_id:
-        return _Check("daily_opportunity", "FAIL", fields, assertion="RUN_ID_MISMATCH")
+        return _Check("daily_opportunity", "FAIL", fields, assertion="RUN_ID_MISMATCH", category="REQUIRED_SEMANTIC")
     if int(data.get("inferred_semantics_count") or 0) != 0:
-        return _Check("daily_opportunity", "FAIL", fields, assertion="SEMANTICS_INFERRED")
+        return _Check("daily_opportunity", "FAIL", fields, assertion="SEMANTICS_INFERRED", category="REQUIRED_SEMANTIC")
     # 32C: FF PASS/WATCH appear as research signals (not exclusions); excluded rows must still have dry_run reason.
     _ff_rows_seen = int(dry.get("rows_seen", 0))
     _ff_excluded_reason = dry.get("excluded_reason")
     if _ff_rows_seen > 0 and _ff_excluded_reason not in {None, "dry_run", "near_miss", "dry_run_excluded"}:
-        return _Check("daily_opportunity", "FAIL", fields, assertion="FF_DRY_RUN_EXCLUSION_INVALID")
-    return _Check("daily_opportunity", "PASS", fields)
+        return _Check("daily_opportunity", "FAIL", fields, assertion="FF_DRY_RUN_EXCLUSION_INVALID", category="REQUIRED_SEMANTIC")
+    return _Check("daily_opportunity", "PASS", fields, category="REQUIRED_READ_ONLY")
 
 
 def _check_open_positions() -> _Check:
@@ -172,9 +175,9 @@ def _check_open_positions() -> _Check:
         "provider_calls_triggered": data.get("provider_calls_triggered"),
     }
     if data.get("provider_calls_triggered") is not False:
-        return _Check("open_positions", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED")
+        return _Check("open_positions", "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED", category="REQUIRED_READ_ONLY")
     if active > 0 and not has_open:
-        return _Check("open_positions", "FAIL", fields, assertion="HAS_OPEN_CALENDARS_FALSE")
+        return _Check("open_positions", "FAIL", fields, assertion="HAS_OPEN_CALENDARS_FALSE", category="REQUIRED_SEMANTIC")
     if data.get("source") not in {"strategy_row_store", "open_position_store", "empty"}:
         return _Check("open_positions", "WARN", fields, warning="legacy_or_unknown_source")
     recon = data.get("lifecycle_reconciliation") or {}
@@ -182,7 +185,7 @@ def _check_open_positions() -> _Check:
         return _Check("open_positions", "WARN", fields, warning="lifecycle_cardinality_mismatch")
     if len(data.get("calendar_structures") or []) >= 2 and not data.get("double_calendar_structures"):
         return _Check("open_positions", "WARN", fields, warning="double_calendar_parent_missing")
-    return _Check("open_positions", "PASS", fields)
+    return _Check("open_positions", "PASS", fields, category="REQUIRED_READ_ONLY")
 
 
 def _check_strategy_lifecycle(run_id: str | None) -> _Check:
@@ -199,10 +202,10 @@ def _check_strategy_lifecycle(run_id: str | None) -> _Check:
         "provider_calls_triggered": False,
     }
     if run_id and stored.get("run_id") != run_id:
-        return _Check("strategy_lifecycle", "FAIL", fields, assertion="RUN_ID_MISMATCH")
+        return _Check("strategy_lifecycle", "FAIL", fields, assertion="RUN_ID_MISMATCH", category="REQUIRED_SEMANTIC")
     if rows and not lifecycle_rows:
-        return _Check("strategy_lifecycle", "FAIL", fields, assertion="LIFECYCLE_FIELDS_MISSING")
-    return _Check("strategy_lifecycle", "PASS", fields)
+        return _Check("strategy_lifecycle", "FAIL", fields, assertion="LIFECYCLE_FIELDS_MISSING", category="REQUIRED_SEMANTIC")
+    return _Check("strategy_lifecycle", "PASS", fields, category="REQUIRED_SEMANTIC")
 
 
 def _check_strategy_rows(strategy_id: str, run_id: str | None) -> _Check:
@@ -217,34 +220,38 @@ def _check_strategy_rows(strategy_id: str, run_id: str | None) -> _Check:
         "provider_calls_triggered": data.get("provider_calls_triggered"),
     }
     if data.get("provider_calls_triggered") is not False:
-        return _Check(strategy_id, "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED")
+        return _Check(strategy_id, "FAIL", fields, assertion="PROVIDER_CALLS_TRIGGERED", category="REQUIRED_READ_ONLY")
     if data.get("source") != "strategy_row_store":
-        return _Check(strategy_id, "FAIL", fields, assertion="ROW_STORE_NOT_PRIMARY")
+        return _Check(strategy_id, "FAIL", fields, assertion="ROW_STORE_NOT_PRIMARY", category="REQUIRED_READ_ONLY")
     if run_id and data.get("latest_run_id") != run_id:
-        return _Check(strategy_id, "FAIL", fields, assertion="RUN_ID_MISMATCH")
+        return _Check(strategy_id, "FAIL", fields, assertion="RUN_ID_MISMATCH", category="REQUIRED_SEMANTIC")
     if int(data.get("row_count") or 0) != len(rows):
-        return _Check(strategy_id, "FAIL", fields, assertion="ROW_COUNT_MISMATCH")
+        return _Check(strategy_id, "FAIL", fields, assertion="ROW_COUNT_MISMATCH", category="REQUIRED_SEMANTIC")
     if strategy_id == "earnings_calendar":
-        invalid = [
-            row for row in rows
-            if str(row.get("row_type") or "") == "rejected_candidate"
-            and (
-                row.get("eligibility_status") == "eligible"
-                or row.get("action_type") not in {None, "", "none"}
-                or row.get("decision_class") != "rejected"
-            )
-        ]
+        invalid = []
+        for row in rows:
+            state = str(row.get("evaluation_state") or "")
+            verdict = str(row.get("trade_verdict") or "")
+            entry_allowed = bool(row.get("entry_allowed"))
+            entry_eval = bool(row.get("entry_evaluation_eligible"))
+            action = str(row.get("recommended_action") or "")
+            if state == "STRUCTURE_UNAVAILABLE" and entry_allowed:
+                invalid.append(row)
+            elif verdict in {"FAIL", "BLOCKED"} and entry_allowed:
+                invalid.append(row)
+            elif entry_allowed and (not entry_eval or state != "FULLY_EVALUATED" or verdict != "PASS" or action != "ENTER"):
+                invalid.append(row)
         fields["rejected"] = sum(1 for row in rows if str(row.get("row_type") or "") == "rejected_candidate")
-        fields["invalid_eligible_rejected_rows"] = len(invalid)
+        fields["invalid_entry_permission_rows"] = len(invalid)
         if invalid:
-            return _Check(strategy_id, "FAIL", fields, assertion="REJECTED_ROW_MARKED_ELIGIBLE")
+            return _Check(strategy_id, "FAIL", fields, assertion="CALENDAR_ENTRY_PERMISSION_INVALID", category="REQUIRED_SEMANTIC")
         lifecycle_missing = [
             row for row in rows
             if not row.get("lifecycle_stage") and not row.get("evaluation_state")
         ]
         fields["lifecycle_fields_missing"] = len(lifecycle_missing)
         if lifecycle_missing:
-            return _Check(strategy_id, "FAIL", fields, assertion="LIFECYCLE_FIELDS_MISSING")
+            return _Check(strategy_id, "FAIL", fields, assertion="LIFECYCLE_FIELDS_MISSING", category="REQUIRED_SEMANTIC")
     if strategy_id == "forward_factor_calendar":
         # 32C: PASS/WATCH → "conditional", NEAR MISS → "near_miss", FAIL/diagnostic → "dry_run_excluded".
         # All rows must have dry_run=True and can_trade_live != True.
@@ -256,15 +263,15 @@ def _check_strategy_rows(strategy_id: str, run_id: str | None) -> _Check:
         fields["ff_near_miss"] = sum(1 for row in rows if row.get("eligibility_status") == "near_miss")
         fields["ff_excluded"] = sum(1 for row in rows if row.get("eligibility_status") == "dry_run_excluded")
         if bad_status:
-            return _Check(strategy_id, "FAIL", fields, assertion="FF_UNKNOWN_ELIGIBILITY_STATUS")
+            return _Check(strategy_id, "FAIL", fields, assertion="FF_UNKNOWN_ELIGIBILITY_STATUS", category="REQUIRED_SEMANTIC")
         if bad_live:
-            return _Check(strategy_id, "FAIL", fields, assertion="FF_CAN_TRADE_LIVE_ACTIVE")
+            return _Check(strategy_id, "FAIL", fields, assertion="FF_CAN_TRADE_LIVE_ACTIVE", category="REQUIRED_SEMANTIC")
     if strategy_id == "stock_momentum":
         non_row = sum(1 for row in rows if row.get("semantic_source") != "row")
         fields["semantic_source_row"] = len(rows) - non_row
         if non_row:
-            return _Check(strategy_id, "FAIL", fields, assertion="STOCK_SEMANTIC_SOURCE_NOT_ROW")
-    return _Check(strategy_id, "PASS", fields)
+            return _Check(strategy_id, "FAIL", fields, assertion="STOCK_SEMANTIC_SOURCE_NOT_ROW", category="REQUIRED_SEMANTIC")
+    return _Check(strategy_id, "PASS", fields, category="REQUIRED_SEMANTIC")
 
 
 def _check_catalog() -> _Check:
@@ -371,6 +378,7 @@ def _safe_check_dict(check: _Check) -> dict[str, Any]:
         "fields": check.fields,
         "warning": check.warning,
         "assertion": check.assertion,
+        "category": check.category,
     }
 
 

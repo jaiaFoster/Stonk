@@ -1,9 +1,9 @@
 {
-  "schema_version": "33C.1.v1",
-  "patch": "33C.1",
-  "patch_title": "Delete the Legacy Calendar Pipeline and Enforce Canonical Opportunity Ownership",
+  "schema_version": "33C.2.v1",
+  "patch": "33C.2",
+  "patch_title": "Canonical Status Semantics, Explicit Eligibility, and Verified Snapshot Promotion",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 33C.1",
+  "current_sprint": "Patch 33C.2",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
@@ -11,14 +11,15 @@
     "provenance_db": "data_provenance.db",
     "history_db": "strategy_opportunity_history.db",
     "calendar_scan_source": "CalendarScanResult current-run barrier",
-    "calendar_lifecycle_projection": "CalendarDecisionService + CalendarOpportunityProjectionService canonical fields only",
-    "run_finalization": "RunFinalizationCoordinator before snapshot save",
+    "calendar_lifecycle_projection": "CalendarDecisionService + CalendarOpportunityProjectionService canonical fields, semantic validation before persistence",
+    "run_finalization": "RunFinalizationCoordinator validates semantics and persists artifacts before verified snapshot promotion",
     "calendar_decision_owner": "app/services/calendar_decision_service.py",
     "open_position_grouping_owner": "app/services/open_options_position_reconciliation_service.py",
     "calendar_api_source": "StrategyRowRepository only for normal strategy/daily/open-position APIs",
     "calendar_legacy_pipeline": "deleted from live execution",
     "calendar_account_risk_facts": "calendar_risk_fact_service.py",
-    "calendar_trade_type_facts": "calendar_trade_type_service.py"
+    "calendar_trade_type_facts": "calendar_trade_type_service.py",
+    "snapshot_promotion": "Required endpoint verification gates canonical snapshot promotion"
   },
   "built_in_strategies": [
     {

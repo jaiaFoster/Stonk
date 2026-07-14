@@ -8,6 +8,7 @@ The policy validates its own ordering invariants at construction time.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -118,7 +119,7 @@ def load_calendar_evolution_policy() -> CalendarEvolutionPolicy:
 
     def _src(key: str, default_val: int) -> tuple[int, str]:
         env_val = getattr(config, key, None)
-        if env_val is not None and int(env_val) != default_val:
+        if key in os.environ:
             return int(env_val), f"railway_env:{key}"
         return int(env_val) if env_val is not None else default_val, f"approved_default:{key}"
 

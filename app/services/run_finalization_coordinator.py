@@ -35,8 +35,38 @@ def persist_strategy_artifacts(
 
     log(f"RUN_FINALIZATION stage=strategy_artifact_persistence_start run_id={run_id}")
 
+    # Required semantic validation must happen before hot row-store persistence.
+    try:
+        from app.services.calendar_opportunity_projection_service import validate_calendar_canonical_rows
+        calendar_rows = list(((normalized_strategy_results or {}).get("earnings_calendar") or {}).get("canonical_opportunities") or [])
+        calendar_rows.extend(list(((normalized_strategy_results or {}).get("earnings_calendar") or {}).get("active_rows") or []))
+        semantic_validation = validate_calendar_canonical_rows([row for row in calendar_rows if isinstance(row, dict)])
+        tradier_snapshot["_calendar_semantic_validation"] = semantic_validation
+        status["calendar_semantic_validation"] = semantic_validation
+        status["stages"].append("calendar_semantic_validation")
+        if semantic_validation.get("invariant_violations"):
+            status["required_failures"].append({
+                "stage": "calendar_semantic_validation",
+                "error": "canonical calendar row invariant violation",
+                "violation_count": semantic_validation.get("violation_count", 0),
+                "violations": semantic_validation.get("invariant_violations", [])[:10],
+            })
+            log(
+                "CALENDAR_SEMANTIC_VALIDATION "
+                f"checked={semantic_validation.get('checked_rows', 0)} "
+                f"violations={semantic_validation.get('violation_count', 0)} "
+                f"codes={[v.get('code') for v in (semantic_validation.get('invariant_violations') or [])[:10]]}"
+            )
+        else:
+            log(f"CALENDAR_SEMANTIC_VALIDATION checked={semantic_validation.get('checked_rows', 0)} violations=0")
+    except Exception as exc:
+        status["required_failures"].append({"stage": "calendar_semantic_validation", "error": str(exc)[:240]})
+        log(f"CALENDAR_SEMANTIC_VALIDATION ERROR: {exc}")
+
     # 4. Persist Strategy Row Repository (required for hot APIs).
     try:
+        if any(failure.get("stage") == "calendar_semantic_validation" for failure in status["required_failures"]):
+            raise RuntimeError("calendar semantic validation failed before row-store persistence")
         from app.services.strategy_row_repository import StrategyRowRepository
         strategy_row_write = StrategyRowRepository().write_run(run_id, normalized_strategy_results)
         tradier_snapshot["_strategy_row_store"] = strategy_row_write
@@ -134,10 +164,16 @@ def persist_strategy_artifacts(
             _write_run_report(run_id, "pipeline", _suite_result)
             tradier_snapshot["_data_confidence_validation"] = _suite_result
             status["data_confidence_validation"] = {
-                "failed": _suite_result.get("true_failures") or _suite_result.get("failed_reports") or 0,
+                "failed": _suite_result.get("true_failures") or 0,
                 "warned": _suite_result.get("total_warnings") or 0,
             }
             status["stages"].append("data_confidence_validation")
+            if int(_suite_result.get("true_failures") or 0) > 0:
+                status["required_failures"].append({
+                    "stage": "data_confidence_validation",
+                    "error": "hard data-confidence validation failures",
+                    "failed": int(_suite_result.get("true_failures") or 0),
+                })
     except Exception as exc:
         status["optional_failures"].append({"stage": "data_confidence_validation", "error": str(exc)[:240]})
         log(f"DataConfidenceRunReport: write failed (non-fatal): {exc}")
