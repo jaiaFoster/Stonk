@@ -1,14 +1,14 @@
 <!-- ROADMAP_META
-patch: 33C.2
+patch: 34A
 last_updated: 2026-07-13
 roadmap_json: config/roadmap.json
 -->
 
-# ASA Agent Reference — Patch 33C.2
+# ASA Agent Reference — Patch 34A
 
-**Patch title:** Canonical Status Semantics, Explicit Eligibility, and Verified Snapshot Promotion
+**Patch title:** Calendar Coverage Expansion and Declarative Strategy Engine Foundations
 **Sprint status:** in_progress
-**Machine-readable roadmap:** `config/roadmap.json` (schema version 33C.2.v1)
+**Machine-readable roadmap:** `config/roadmap.json` (schema version 34A.v1)
 
 ---
 
@@ -35,6 +35,12 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/services/` | Pipeline and diagnostic services |
 | `app/services/options_structure_builder.py` | Universal Options Structure Builder (Patch 33A) |
 | `app/models/options_structure_spec.py` | Declarative spec model for structure construction (Patch 33A) |
+| `app/models/strategy_definition.py` | Versioned trusted strategy-definition contracts (Patch 34A) |
+| `app/services/expiration_enumeration_service.py` | Reusable expiration normalization, classification, and pair enumeration (Patch 34A) |
+| `app/services/strategy_definition_loader_service.py` | Trusted local JSON strategy-definition loader and validator (Patch 34A) |
+| `app/services/strategy_calculation_registry.py` | Allowlisted calculation IDs for declarative strategy definitions (Patch 34A) |
+| `app/services/calendar_coverage_telemetry_service.py` | Compact calendar coverage funnel accounting (Patch 34A) |
+| `config/strategies/earnings_calendar.v1.json` | Checked-in declarative Earnings Calendar strategy definition (Patch 34A) |
 | `app/models/strategy_opportunity_lifecycle.py` | Generic lifecycle enums and models (Patch 33A.1) |
 | `app/models/calendar_evolution_policy.py` | CalendarEvolutionPolicy — immutable timing thresholds (Patch 33A.1) |
 | `app/services/strategy_opportunity_lifecycle_service.py` | Generic lifecycle invariant validation and canonical construction (Patch 33A.1) |
@@ -64,23 +70,21 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 ---
 
-## Current Sprint — Patch 33C.2
+## Current Sprint — Patch 34A
 
 **Focus areas:**
-- Strategy Registry summaries use canonical `evaluation_state` and `trade_verdict`; `NOT_EVALUATED` is not a failure.
-- Calendar rows use explicit eligibility dimensions. Generic compatibility fields may be derived, but entry behavior depends on `entry_allowed`.
-- `STRUCTURE_UNAVAILABLE`, `DEFERRED_BUDGET`, and pre-window rows must never become entry-allowed.
-- Calendar semantic validation runs before StrategyRowRepository persistence; invariant failures block hot-row writes and mark the run invalid.
-- Endpoint verification runs before canonical snapshot promotion. Required failures produce `FAILED_VALIDATION` and preserve the prior canonical snapshot.
-- Data-confidence `failed` counts represent hard failures only and must reconcile with hard failure codes.
-- Calendar reconciliation logs use explicit opportunity parent, open-position parent, and open-position child terminology.
-- Policy source attribution reports `railway_env:<VAR>` when an environment variable is present, even if it equals the approved default.
+- Calendar scanner must enumerate all available expirations before rejecting a ticker; weekly and monthly expirations are first-class inputs.
+- Expiration pair selection records every rejection with machine-readable codes such as `SHORT_DTE_TOO_LOW`, `SHORT_LEG_SPANS_EARNINGS`, and `EXPIRATION_GAP_TOO_NARROW`.
+- Calendar coverage accounting must report raw events, quality filter outcomes, optionable/budget counts, valid pairs, rejected pairs, and failure codes.
+- Strategy definitions are trusted local JSON only. They may reference catalog field IDs and allowlisted calculation IDs, but never arbitrary Python code.
+- Earnings Calendar has a checked-in `34A.strategy_definition.v1` definition as the first migration target; live strategy math remains code-owned.
+- Forward Factor remains dry-run and excluded from trade execution/Daily Opportunity promotion unless a later approved patch says otherwise.
 
 **Canonical Calendar Pipeline:** raw earnings events → parent opportunity creation → lifecycle classification → data-requirement planning → structure building → quantitative facts → `CalendarDecisionService` → `CalendarOpportunityProjectionService` → `StrategyRowRepository` → repository-backed APIs.
 
 **Legacy retirement rules:** no permanent dual-read or dual-write calendar path; no API-side business reconstruction; no legacy fallback that labels stale/prior-run rows as current; retained compatibility adapters must be read-only and derive from canonical state.
 
-**Previous sprint note:** Patch 33B added current-run scan barrier and durable first-class lifecycle fields. Patch 33C introduced canonical services; Patch 33C.1 deleted the remaining legacy live pipeline; Patch 33C.2 hardens canonical status and promotion semantics.
+**Previous sprint note:** Patch 33B added current-run scan barrier and durable first-class lifecycle fields. Patch 33C introduced canonical services; Patch 33C.1 deleted the remaining legacy live pipeline; Patch 33C.2 hardened canonical status and promotion semantics.
 
 ---
 

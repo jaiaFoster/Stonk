@@ -171,6 +171,11 @@ def _build_details(row: dict[str, Any]) -> dict[str, Any]:
         "date_confidence": str(row.get("date_confidence") or row.get("earnings_date_confidence") or "unknown"),
         "event_window_status": _event_window_status_label(row),
         # Expiration / structure
+        "strategy_definition_id": row.get("strategy_definition_id"),
+        "strategy_definition_version": row.get("strategy_definition_version"),
+        "structure_template_id": row.get("structure_template_id"),
+        "enumeration_policy_version": row.get("enumeration_policy_version"),
+        "coverage_accounting": row.get("coverage_accounting"),
         "underlying_price": row.get("underlying_price"),
         "option_type": row.get("option_type"),
         "front_expiration": row.get("front_expiration"),
@@ -239,6 +244,10 @@ def _build_lifecycle_details(check: dict[str, Any]) -> dict[str, Any]:
         "date_confidence": "not_applicable",
         "event_window_status": "open_position",
         # Expiration / structure
+        "strategy_definition_id": check.get("strategy_definition_id"),
+        "strategy_definition_version": check.get("strategy_definition_version"),
+        "structure_template_id": check.get("structure_template_id"),
+        "enumeration_policy_version": check.get("enumeration_policy_version"),
         "underlying_price": check.get("underlying_price"),
         "option_type": check.get("option_type"),
         "front_expiration": check.get("front_expiration"),

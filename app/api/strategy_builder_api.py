@@ -11,10 +11,13 @@ from app.services.strategy_data_catalog_service import (
     requirements_for_fields,
     validate_rule_definition,
 )
+from app.services.strategy_definition_loader_service import strategy_definition_summary
 
 
 def catalog(filters: dict[str, Any] | None = None) -> dict[str, Any]:
-    return build_catalog_response(filters)
+    response = build_catalog_response(filters)
+    response["strategy_definition_summary"] = strategy_definition_summary()
+    return response
 
 
 def fields(filters: dict[str, Any] | None = None) -> dict[str, Any]:

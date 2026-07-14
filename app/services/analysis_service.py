@@ -27,6 +27,10 @@ from app.services.calendar_opportunity_projection_service import (
     build_calendar_canonical_projection,
     build_calendar_row_reconciliation,
 )
+from app.services.calendar_coverage_telemetry_service import (
+    build_calendar_coverage_funnel,
+    format_calendar_coverage_log,
+)
 from app.services.calendar_ranking_service import build_calendar_ranking
 from app.services.calendar_scan_result_service import (
     complete_scan_result,
@@ -1102,6 +1106,14 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         lambda result: f"Calendar canonical projection produced {((result or {}).get('summary', {}) or {}).get('new_trade_count', 0)} parent row(s).",
     )
     tradier_snapshot["_calendar_canonical_projection"] = calendar_projection
+    calendar_coverage_funnel = build_calendar_coverage_funnel(
+        earnings_trade_discovery=earnings_trade_discovery,
+        earnings_discovery_quality=earnings_discovery_quality,
+        calendar_candidates=calendar_candidates,
+        calendar_projection=calendar_projection,
+    )
+    tradier_snapshot["_calendar_coverage_funnel"] = calendar_coverage_funnel
+    log_print(format_calendar_coverage_log(calendar_coverage_funnel))
     _calendar_recon = calendar_projection.get("calendar_row_reconciliation") or {}
     log_print(
         "CALENDAR_ROW_RECONCILIATION "
