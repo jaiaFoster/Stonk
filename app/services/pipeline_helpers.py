@@ -148,7 +148,6 @@ def config_log_lines(snapshot: dict[str, Any]) -> list[str]:
         f"CALENDAR_LIFECYCLE_ENABLED: {getattr(config, 'CALENDAR_LIFECYCLE_ENABLED', None)}",
         f"CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT: {getattr(config, 'CALENDAR_LIFECYCLE_PROFIT_TARGET_PCT', None)}",
         f"EARNINGS_CALENDAR_STRATEGY_ENABLED: {getattr(config, 'EARNINGS_CALENDAR_STRATEGY_ENABLED', None)}",
-        f"UNIFIED_CALENDAR_ENGINE_ENABLED: {getattr(config, 'UNIFIED_CALENDAR_ENGINE_ENABLED', None)}",
         f"REPORT_SHOW_CALENDAR_DEBUG_SECTIONS: {snapshot.get('report_show_calendar_debug_sections')}",
         f"WATCHLIST_ENABLED: {snapshot.get('watchlist_enabled')}",
         f"WATCHLIST_SOURCE: {getattr(config, 'WATCHLIST_SOURCE', None)}",

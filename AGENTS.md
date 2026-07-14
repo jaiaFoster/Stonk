@@ -1,14 +1,14 @@
 <!-- ROADMAP_META
-patch: 33C
+patch: 33C.1
 last_updated: 2026-07-13
 roadmap_json: config/roadmap.json
 -->
 
-# ASA Agent Reference — Patch 33C
+# ASA Agent Reference — Patch 33C.1
 
-**Patch title:** Calendar Legacy Path Retirement and Canonical Pipeline Cutover
+**Patch title:** Delete the Legacy Calendar Pipeline and Enforce Canonical Opportunity Ownership
 **Sprint status:** in_progress
-**Machine-readable roadmap:** `config/roadmap.json` (schema version 33C.v1)
+**Machine-readable roadmap:** `config/roadmap.json` (schema version 33C.1.v1)
 
 ---
 
@@ -40,9 +40,11 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/services/strategy_opportunity_lifecycle_service.py` | Generic lifecycle invariant validation and canonical construction (Patch 33A.1) |
 | `app/services/calendar_opportunity_lifecycle_adapter.py` | Earnings-calendar lifecycle classifier and opportunity_id builder (Patch 33A.1) |
 | `app/services/calendar_scan_result_service.py` | Run-scoped calendar scan results and scanner status contract (Patch 33B) |
-| `app/services/calendar_decision_service.py` | Sole owner of final calendar decision fields: evaluation state, trade verdict, recommended action, and entry permission (Patch 33C) |
-| `app/services/calendar_opportunity_projection_service.py` | Sole calendar row projection path; parent rows own nested structure attempts (Patch 33C) |
-| `app/services/open_options_position_reconciliation_service.py` | Sole open child-calendar and double-calendar parent grouping service (Patch 33C) |
+| `app/services/calendar_decision_service.py` | Sole owner of final calendar decision fields: evaluation state, trade verdict, recommended action, and entry permission (Patch 33C.1) |
+| `app/services/calendar_opportunity_projection_service.py` | Sole calendar row projection path; parent rows own nested structure attempts (Patch 33C.1) |
+| `app/services/open_options_position_reconciliation_service.py` | Sole open child-calendar and double-calendar parent grouping service (Patch 33C.1) |
+| `app/services/calendar_risk_fact_service.py` | Pure account-risk fact helper; no verdict/action ownership (Patch 33C.1) |
+| `app/services/calendar_trade_type_service.py` | Pure calendar trade-type fact helper; no verdict/action ownership (Patch 33C.1) |
 | `app/services/run_finalization_coordinator.py` | Required strategy artifact persistence before snapshot/manifest finalization (Patch 33B) |
 | `app/api/` | Blueprints for advisor, admin, user, knowledge, plaid, auth, telemetry, custom strategy |
 
@@ -62,9 +64,10 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 ---
 
-## Current Sprint — Patch 33C
+## Current Sprint — Patch 33C.1
 
 **Focus areas:**
+- Legacy Earnings Calendar business-state services are deleted from live execution: no Unified Calendar Trade Engine, no Calendar Verdict Service finalizer, no `UNIFIED_CALENDAR_ENGINE_ENABLED` flag.
 - Calendar business-state ownership is centralized: lifecycle adapter classifies stage, decision service assigns final trade decision, projection service writes parent rows, and open-position reconciliation service groups child/parent structures.
 - Strategy rows, Daily Opportunity, and Open Positions APIs read canonical row-store state. They must not silently rebuild calendar business state from report snapshots.
 - Calendar projection emits one parent opportunity row per ticker and earnings event; rejected expiration/strike attempts stay nested in `structure_attempt_summary`.
@@ -75,7 +78,7 @@ explicitly documented (e.g., `/api/dev/trigger-run`).
 
 **Legacy retirement rules:** no permanent dual-read or dual-write calendar path; no API-side business reconstruction; no legacy fallback that labels stale/prior-run rows as current; retained compatibility adapters must be read-only and derive from canonical state.
 
-**Previous sprint note:** Patch 33B added current-run scan barrier and durable first-class lifecycle fields. Patch 33C retires competing calendar meaning owners around that foundation.
+**Previous sprint note:** Patch 33B added current-run scan barrier and durable first-class lifecycle fields. Patch 33C introduced canonical services; Patch 33C.1 deletes the remaining legacy live pipeline and enforces canonical ownership.
 
 ---
 

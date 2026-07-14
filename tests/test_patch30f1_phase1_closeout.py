@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
+from app.models.calendar_evolution_policy import load_calendar_evolution_policy
 
 
 def test_payload_profile_treats_legacy_summary_as_archive_not_hot_warning():
@@ -44,7 +45,7 @@ def test_payload_warnings_recompute_from_compact_hot_path_even_if_old_status_war
 def test_calendar_rejected_candidate_persists_as_explainability_row():
     from app.services.strategy_execution_service import collect_strategy_results
     from app.services.strategy_row_repository import StrategyRowRepository
-    from app.services.unified_calendar_trade_engine_service import build_unified_calendar_trade_engine
+    from app.services.calendar_opportunity_projection_service import build_calendar_canonical_projection
 
     quality_row = {
         "ticker": "NFLX",
@@ -71,7 +72,7 @@ def test_calendar_rejected_candidate_persists_as_explainability_row():
         "proposed_short_expiration": "2026-07-10",
         "proposed_long_expiration": "2026-07-17",
     }
-    engine = build_unified_calendar_trade_engine(
+    engine = build_calendar_canonical_projection(
         earnings_trade_discovery={"items": []},
         earnings_discovery_quality={"items": [quality_row]},
         calendar_candidates=[],
@@ -80,6 +81,7 @@ def test_calendar_rejected_candidate_persists_as_explainability_row():
         account_context={},
         open_options={},
         lifecycle_checks={},
+        policy=load_calendar_evolution_policy(),
         log_print=lambda _msg: None,
     )
     assert engine["new_trade_rows"]

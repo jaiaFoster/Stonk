@@ -1,9 +1,9 @@
 {
-  "schema_version": "33C.v1",
-  "patch": "33C",
-  "patch_title": "Calendar Legacy Path Retirement and Canonical Pipeline Cutover",
+  "schema_version": "33C.1.v1",
+  "patch": "33C.1",
+  "patch_title": "Delete the Legacy Calendar Pipeline and Enforce Canonical Opportunity Ownership",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 33C",
+  "current_sprint": "Patch 33C.1",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
@@ -11,11 +11,14 @@
     "provenance_db": "data_provenance.db",
     "history_db": "strategy_opportunity_history.db",
     "calendar_scan_source": "CalendarScanResult current-run barrier",
-    "calendar_lifecycle_projection": "CalendarDecisionService + CalendarOpportunityProjectionService canonical fields",
+    "calendar_lifecycle_projection": "CalendarDecisionService + CalendarOpportunityProjectionService canonical fields only",
     "run_finalization": "RunFinalizationCoordinator before snapshot save",
     "calendar_decision_owner": "app/services/calendar_decision_service.py",
     "open_position_grouping_owner": "app/services/open_options_position_reconciliation_service.py",
-    "calendar_api_source": "StrategyRowRepository only for normal strategy/daily/open-position APIs"
+    "calendar_api_source": "StrategyRowRepository only for normal strategy/daily/open-position APIs",
+    "calendar_legacy_pipeline": "deleted from live execution",
+    "calendar_account_risk_facts": "calendar_risk_fact_service.py",
+    "calendar_trade_type_facts": "calendar_trade_type_service.py"
   },
   "built_in_strategies": [
     {
@@ -376,10 +379,10 @@
   ],
   "validation_status": {
     "last_run": "2026-07-13",
-    "patch": "33C",
-    "result": "in_progress",
-    "focused_tests_passed": 54,
-    "full_suite_passed": null
+    "patch": "33C.1",
+    "result": "local_full_suite_passed",
+    "focused_tests_passed": 419,
+    "full_suite_passed": "3233 passed, 1 skipped, 2 subtests passed"
   },
   "known_data_confidence_issues": [
     "Alpha Vantage CSV endpoint cannot provide earnings session/hour data \u2014 by design, labeled ok_no_session",

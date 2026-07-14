@@ -33,7 +33,7 @@ def build_payload_size_profile(
     snapshot: dict[str, Any], log: list[str], report_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     strategy = snapshot.get("_strategy_results", {}) or {}
-    calendar_data = snapshot.get("_unified_calendar_engine") or snapshot.get("_calendar_ranking")
+    calendar_data = snapshot.get("_calendar_canonical_projection") or snapshot.get("_calendar_ranking")
     skew_data = strategy.get("skew_momentum_vertical") or snapshot.get("_skew_momentum_vertical_strategy")
     ff_data = strategy.get("forward_factor_calendar") or snapshot.get("_forward_factor_strategy")
     stock_data = strategy.get("stock_momentum") or snapshot.get("_stock_momentum_strategy")

@@ -590,7 +590,6 @@ CALENDAR_LIFECYCLE_FETCH_UNDERLYING_QUOTES = _bool_env("CALENDAR_LIFECYCLE_FETCH
 # User-facing orchestration layer that combines earnings discovery, candidate
 # spread screening, earnings-calendar scoring, open-position detection, and
 # lifecycle next actions into one calendar-trade workflow section.
-UNIFIED_CALENDAR_ENGINE_ENABLED = _bool_env("UNIFIED_CALENDAR_ENGINE_ENABLED", True)
 # Main report should show the unified calendar engine by default. Set this true
 # only when debugging the lower-level calendar modules.
 REPORT_SHOW_CALENDAR_DEBUG_SECTIONS = _bool_env("REPORT_SHOW_CALENDAR_DEBUG_SECTIONS", False)
