@@ -1,9 +1,9 @@
 {
-  "schema_version": "33C.2.v1",
-  "patch": "33C.2",
-  "patch_title": "Canonical Status Semantics, Explicit Eligibility, and Verified Snapshot Promotion",
+  "schema_version": "34A.v1",
+  "patch": "34A",
+  "patch_title": "Calendar Coverage Expansion and Declarative Strategy Engine Foundations",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 33C.2",
+  "current_sprint": "Patch 34A",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
@@ -16,10 +16,16 @@
     "calendar_decision_owner": "app/services/calendar_decision_service.py",
     "open_position_grouping_owner": "app/services/open_options_position_reconciliation_service.py",
     "calendar_api_source": "StrategyRowRepository only for normal strategy/daily/open-position APIs",
-    "calendar_legacy_pipeline": "deleted from live execution",
+    "calendar_legacy_pipeline": "deleted from live execution; 34A keeps compatibility read-only only",
     "calendar_account_risk_facts": "calendar_risk_fact_service.py",
     "calendar_trade_type_facts": "calendar_trade_type_service.py",
-    "snapshot_promotion": "Required endpoint verification gates canonical snapshot promotion"
+    "snapshot_promotion": "Required endpoint verification gates canonical snapshot promotion",
+    "expiration_enumeration_owner": "app/services/expiration_enumeration_service.py",
+    "strategy_definition_schema": "app/models/strategy_definition.py",
+    "strategy_definition_loader": "app/services/strategy_definition_loader_service.py",
+    "strategy_calculation_registry": "app/services/strategy_calculation_registry.py",
+    "calendar_coverage_funnel": "app/services/calendar_coverage_telemetry_service.py",
+    "builtin_earnings_calendar_definition": "config/strategies/earnings_calendar.v1.json"
   },
   "built_in_strategies": [
     {
@@ -122,7 +128,7 @@
       "category": "calendar",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Done in Patch 33B \u2014 current-run scan barrier and lifecycle projection persist pre-window rows",
+      "next_action": "Pre-window lifecycle exists; Patch 34A adds coverage accounting.",
       "relevant_patch": "33B"
     },
     {
@@ -133,7 +139,7 @@
       "category": "calendar",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Add explicit expiration list enumeration before pair selection",
+      "next_action": "Patch 34A adds reusable expiration enumeration and full pair rejection audit.",
       "relevant_patch": "33A"
     },
     {
@@ -144,18 +150,18 @@
       "category": "calendar",
       "first_seen": "2026-07-01",
       "last_updated": "2026-07-13",
-      "next_action": "Audit TRADIER_CHAIN_EXPIRATIONS_PER_TICKER=1 effect on calendar discovery",
+      "next_action": "Patch 34A validates weekly/monthly expiration enumeration and multi-expiration pair selection.",
       "relevant_patch": "33A"
     },
     {
       "id": "TKT-ADV-013",
       "title": "Open positions active calendar count and lifecycle disconnect",
       "priority": "P1",
-      "status": "in_progress",
+      "status": "completed",
       "category": "open_positions",
       "first_seen": "2026-07-01",
       "last_updated": "2026-07-13",
-      "next_action": "Add parent double-calendar structure grouping",
+      "next_action": "Canonical open-position grouping path exists; issue #173 tracks parent projection refinements.",
       "relevant_patch": "33A"
     },
     {
@@ -173,11 +179,11 @@
       "id": "TKT-DOUBLE-CALENDAR-PARENT",
       "title": "SBUX four-leg double calendar missing parent structure",
       "priority": "P1",
-      "status": "in_progress",
+      "status": "completed",
       "category": "open_positions",
       "first_seen": "2026-07-01",
       "last_updated": "2026-07-13",
-      "next_action": "Add parent structure detection for call+put calendars on same ticker",
+      "next_action": "Canonical open-position grouping path exists; issue #173 tracks parent projection refinements.",
       "relevant_patch": "33A"
     },
     {
@@ -217,55 +223,55 @@
       "id": "TKT-CALENDAR-LEGACY-RETIREMENT",
       "title": "Retire legacy calendar business-state paths from normal APIs",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "completed",
       "category": "calendar_architecture",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 33C removes strategy/daily/open-position legacy snapshot reconstruction; verify live endpoint packet after deploy",
+      "next_action": "Closed by Patch 33C.1/33C.2 canonical cutover; keep regression guards active.",
       "relevant_patch": "33C"
     },
     {
       "id": "TKT-CALENDAR-VERDICT-OWNER",
       "title": "CalendarDecisionService is sole final calendar decision owner",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "completed",
       "category": "calendar_architecture",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 33C migrates live callers away from Calendar Verdict Service finalizers",
+      "next_action": "Closed by Patch 33C.1/33C.2 canonical cutover; keep regression guards active.",
       "relevant_patch": "33C"
     },
     {
       "id": "TKT-CALENDAR-API-CUTOVER",
       "title": "Calendar APIs use repository-backed canonical state",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "completed",
       "category": "calendar_architecture",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 33C makes strategy rows, Daily Opportunity, and Open Positions row-store truth paths",
+      "next_action": "Closed by Patch 33C.1/33C.2 canonical cutover; keep regression guards active.",
       "relevant_patch": "33C"
     },
     {
       "id": "TKT-DOUBLE-CALENDAR-CANONICAL-GROUPING",
       "title": "Canonical double-calendar parent grouping from open lifecycle rows",
       "priority": "P1",
-      "status": "in_progress",
+      "status": "completed",
       "category": "open_positions",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 33C adds OpenOptionsPositionReconciliationService child/parent grouping",
+      "next_action": "Canonical open-position grouping path exists; issue #173 tracks parent projection refinements.",
       "relevant_patch": "33C"
     },
     {
       "id": "TKT-CALENDAR-ARCHITECTURAL-GUARDS",
       "title": "Source-scan guards prevent duplicate calendar business owners",
       "priority": "P0",
-      "status": "in_progress",
+      "status": "completed",
       "category": "developer_tooling",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 33C adds architecture tests for API reconstruction and legacy finalizer callers",
+      "next_action": "Closed by Patch 33C.1/33C.2 canonical cutover; keep regression guards active.",
       "relevant_patch": "33C"
     },
     {
@@ -276,7 +282,7 @@
       "category": "developer_tooling",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch metadata updated to 33C",
+      "next_action": "Patch 34A updates roadmap/AGENTS as part of entry checklist.",
       "relevant_patch": "33C"
     },
     {
@@ -300,6 +306,30 @@
       "last_updated": "2026-07-13",
       "next_action": "Add chain provenance fields to strategy rows and UI disclosures",
       "relevant_patch": "33A"
+    },
+    {
+      "id": "TKT-CALENDAR-COVERAGE-EXPANSION",
+      "title": "Calendar coverage expansion and explicit gate accounting",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "calendar",
+      "next_action": "Attach CALENDAR_COVERAGE_FUNNEL to every run and surface pair failure codes."
+    },
+    {
+      "id": "TKT-DECLARATIVE-STRATEGY-SCHEMA",
+      "title": "Trusted declarative strategy definition schema and loader",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "strategy_builder",
+      "next_action": "Validate local JSON definitions against catalog fields and allowlisted calculations."
+    },
+    {
+      "id": "TKT-EXPIRATION-PRIMITIVES",
+      "title": "Reusable expiration and pair enumeration primitives",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "options",
+      "next_action": "Use expiration_enumeration_service as shared primitive for calendar migration and later strategies."
     }
   ],
   "deferred_tickets": [
@@ -379,11 +409,11 @@
     }
   ],
   "validation_status": {
-    "last_run": "2026-07-13",
-    "patch": "33C.1",
+    "last_run": "local",
+    "patch": "34A",
     "result": "local_full_suite_passed",
-    "focused_tests_passed": 419,
-    "full_suite_passed": "3233 passed, 1 skipped, 2 subtests passed"
+    "focused_tests_passed": 17,
+    "full_suite_passed": "3247 passed, 1 skipped, 2 subtests passed"
   },
   "known_data_confidence_issues": [
     "Alpha Vantage CSV endpoint cannot provide earnings session/hour data \u2014 by design, labeled ok_no_session",
@@ -423,5 +453,12 @@
     "Verify legacy summary removal end-to-end",
     "Add chain provenance to all option strategy rows",
     "Backtesting preparation using accumulated history"
+  ],
+  "patch_entry_checklist": [
+    "Update AGENTS.md and config/roadmap.json before PR.",
+    "Audit active/deferred/completed roadmap tickets before implementation.",
+    "Prefer row-store/canonical pipeline sources over legacy report blobs.",
+    "Keep provider-free read-only loaders and validators for strategy definitions.",
+    "No broker writes, trade execution, arbitrary code execution, eval, or exec."
   ]
 }

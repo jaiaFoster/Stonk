@@ -1,0 +1,115 @@
+{
+  "schema_version": "34A.strategy_definition.v1",
+  "strategy_id": "earnings_calendar",
+  "version": "v1",
+  "metadata": {
+    "name": "Earnings Calendar",
+    "owner": "asa_builtin",
+    "status": "trusted_builtin",
+    "description": "Earnings-aware same-strike calendar that sells a pre-event front leg and buys a back leg capturing the event."
+  },
+  "universe": {
+    "asset_types": ["equity", "etf"],
+    "filters": [
+      {"field_id": "market.price.last", "operator": "greater_than_or_equal", "value": 10, "use": "universe_filter"}
+    ]
+  },
+  "data_requirements": {
+    "quote": {"fields": ["market.price.last"], "required": true},
+    "earnings_date": {"fields": ["earnings.date", "earnings.session", "earnings.date_confidence", "earnings.sources"], "required": true},
+    "options_chain": {
+      "fields": [
+        "options.front_expiration",
+        "options.back_expiration",
+        "options.front_dte",
+        "options.back_dte",
+        "options.expiration_gap_days",
+        "options.bid",
+        "options.ask",
+        "options.mid",
+        "options.open_interest",
+        "options.volume",
+        "options.spread_pct"
+      ],
+      "required": true
+    }
+  },
+  "expiration_requirements": {
+    "front": {
+      "role": "front",
+      "min_dte": 7,
+      "max_dte": 21,
+      "relation_to_event": "before",
+      "min_days_before_event": 1,
+      "allow_weekly": true,
+      "allow_monthly": true,
+      "allow_quarterly": true
+    },
+    "back": {
+      "role": "back",
+      "min_dte": 14,
+      "max_dte": 70,
+      "relation_to_event": "after",
+      "min_days_after_event": 1,
+      "allow_weekly": true,
+      "allow_monthly": true,
+      "allow_quarterly": true
+    }
+  },
+  "structures": [
+    {
+      "template_id": "earnings_calendar_same_strike",
+      "structure_type": "calendar",
+      "expiration_pair_rule": {
+        "front_role": "front",
+        "back_role": "back",
+        "min_gap_days": 14,
+        "max_gap_days": 63,
+        "front_must_expire_before_event": true,
+        "back_must_expire_after_event": true,
+        "event_must_be_between": true
+      },
+      "legs": [
+        {
+          "leg_id": "short_front",
+          "role": "front",
+          "option_type": "call",
+          "expiration_role": "front",
+          "position": "short",
+          "quantity": 1,
+          "strike_rule": {"selection_method": "nearest_atm"}
+        },
+        {
+          "leg_id": "long_back",
+          "role": "back",
+          "option_type": "call",
+          "expiration_role": "back",
+          "position": "long",
+          "quantity": 1,
+          "strike_rule": {"selection_method": "same_strike", "same_strike_as": "short_front"}
+        }
+      ],
+      "calculations": ["calendar_debit", "calendar_liquidity", "calendar_assignment_risk", "iv_relationship"]
+    }
+  ],
+  "gates": [
+    {"field_id": "earnings.date_confidence", "operator": "not_equal", "value": "conflict_do_not_trade", "use": "gate"},
+    {"field_id": "options.short_leg_expires_before_earnings", "operator": "is_true", "use": "gate"},
+    {"field_id": "options.short_leg_spans_earnings", "operator": "is_false", "use": "gate"},
+    {"field_id": "options.spread_pct", "operator": "less_than_or_equal", "value": 15, "use": "gate"},
+    {"field_id": "options.open_interest", "operator": "greater_than_or_equal", "value": 50, "use": "gate"},
+    {"field_id": "options.volume", "operator": "greater_than_or_equal", "value": 10, "use": "gate"}
+  ],
+  "ranking": {
+    "rules": [
+      {"field_id": "options.iv_difference", "operator": "greater_than_or_equal", "value": 0, "use": "score"},
+      {"field_id": "options.debit", "operator": "less_than_or_equal", "value": 8, "use": "score"}
+    ]
+  },
+  "runtime_policy": {
+    "read_only": true,
+    "broker_writes_allowed": false,
+    "trade_execution_allowed": false,
+    "provider_calls_at_load": false
+  }
+}

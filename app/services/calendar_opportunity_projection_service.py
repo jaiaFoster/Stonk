@@ -24,6 +24,12 @@ from app.services.calendar_risk_fact_service import evaluate_account_risk
 from app.services.earnings_trust_service import normalize_earnings_trust
 
 
+CALENDAR_STRATEGY_DEFINITION_ID = "earnings_calendar"
+CALENDAR_STRATEGY_DEFINITION_VERSION = "v1"
+CALENDAR_STRUCTURE_TEMPLATE_ID = "earnings_calendar_same_strike"
+CALENDAR_ENUMERATION_POLICY_VERSION = "34A.expiration_enumeration.v1"
+
+
 def build_calendar_canonical_projection(
     *,
     earnings_trade_discovery: dict[str, Any] | None,
@@ -236,6 +242,10 @@ def _build_parent_opportunity_row(
     row = {
         "strategy_id": "earnings_calendar",
         "strategy_label": "Earnings Calendar",
+        "strategy_definition_id": CALENDAR_STRATEGY_DEFINITION_ID,
+        "strategy_definition_version": CALENDAR_STRATEGY_DEFINITION_VERSION,
+        "structure_template_id": CALENDAR_STRUCTURE_TEMPLATE_ID,
+        "enumeration_policy_version": CALENDAR_ENUMERATION_POLICY_VERSION,
         "source": "calendar_canonical_projection_v1",
         "row_model": "OPPORTUNITY_PARENT",
         "row_type": "OPPORTUNITY_PARENT",
@@ -259,6 +269,15 @@ def _build_parent_opportunity_row(
         "quality_precheck": quality_row,
         "possible_spread": possible_spread,
         "requirements": _requirements(event_payload, quality_row, candidate, trust),
+        "coverage_accounting": {
+            "policy_version": "34A.calendar_coverage.v1",
+            "quality_row_present": bool(quality_row),
+            "candidate_row_present": bool(candidate),
+            "strategy_row_present": bool(strategy),
+            "ranking_row_present": bool(ranking),
+            "has_expiration_pair": bool(quality_row.get("expiration_pair") or candidate.get("expiration_pair")),
+            "rejected_expiration_count": len(quality_row.get("rejected_expirations") or []),
+        },
         "reasons": _dedupe([strategy.get("next_check"), candidate.get("next_check"), quality_row.get("entry_window_reason")]),
         "risks": _dedupe([quality_row.get("primary_rejection_reason"), quality_row.get("entry_window_reason"), acct_risk.get("account_risk_warning")]),
         **trust,
@@ -309,6 +328,10 @@ def _build_open_position_rows(open_options: dict[str, Any], lifecycle_checks: di
         rows.append({
             "strategy_id": "earnings_calendar",
             "strategy_label": "Earnings Calendar",
+            "strategy_definition_id": CALENDAR_STRATEGY_DEFINITION_ID,
+            "strategy_definition_version": CALENDAR_STRATEGY_DEFINITION_VERSION,
+            "structure_template_id": CALENDAR_STRUCTURE_TEMPLATE_ID,
+            "enumeration_policy_version": CALENDAR_ENUMERATION_POLICY_VERSION,
             "source": "calendar_lifecycle_v1" if checks else "open_options_detector_v2",
             "row_model": "OPEN_POSITION_CHILD",
             "row_type": "OPEN_POSITION_CHILD",
