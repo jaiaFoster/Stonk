@@ -85,6 +85,7 @@ from app.services.stock_momentum_strategy_service import build_stock_momentum_st
 from app.services.skew_momentum_vertical_service import build_skew_momentum_vertical_strategy
 from app.services.skew_momentum_vertical_cache_service import cache_skew_momentum_vertical_opportunities
 from app.services.forward_factor_service import build_forward_factor_strategy
+from app.services.strategy_definition_loader_service import load_builtin_strategy_definitions
 from app.services.tradier_service import get_tradier_snapshot_for_positions
 from app.services.watchlist_review_service import review_watchlist_candidates
 from app.services.watchlist_service import get_watchlist_candidates, merge_watchlist_universe_positions
@@ -812,6 +813,47 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     ))
     _account_value_estimate = _estimate_account_value(positions)
     _account_value_source_label = _account_value_source(positions)
+    try:
+        _definitions = load_builtin_strategy_definitions()
+        _calendar_definition = _definitions.get("earnings_calendar")
+        if _calendar_definition is None:
+            raise RuntimeError("earnings_calendar definition missing")
+        _raw_definition = _calendar_definition.raw or {}
+        _structures = [item for item in (_raw_definition.get("structures") or []) if isinstance(item, dict)]
+        _roles = sorted((_raw_definition.get("expiration_requirements") or {}).keys())
+        _leg_count = sum(len(item.get("legs") or []) for item in _structures)
+        _strategy_definition_registry = {
+            "strategy_id": _calendar_definition.strategy_id,
+            "definition_version": _calendar_definition.version,
+            "schema_version": _calendar_definition.schema_version,
+            "structure_templates": [item.get("template_id") for item in _structures],
+            "expiration_roles": _roles,
+            "leg_count": _leg_count,
+            "validation": "valid",
+            "source": "repository_controlled",
+        }
+        log_print(
+            "STRATEGY_DEFINITION_REGISTERED "
+            f"strategy_id={_calendar_definition.strategy_id} "
+            f"definition_version={_calendar_definition.version} "
+            f"schema_version={_calendar_definition.schema_version} "
+            f"structure_templates={len(_structures)} "
+            f"expiration_roles={_roles} "
+            f"leg_count={_leg_count} "
+            f"validation=valid source=repository_controlled"
+        )
+    except Exception as _definition_exc:
+        _strategy_definition_registry = {
+            "strategy_id": "earnings_calendar",
+            "validation": "invalid",
+            "error": str(_definition_exc)[:160],
+            "source": "repository_controlled",
+        }
+        log_print(
+            "STRATEGY_DEFINITION_REGISTERED "
+            f"strategy_id=earnings_calendar validation=invalid "
+            f"source=repository_controlled error={str(_definition_exc)[:160]!r}"
+        )
     earnings_discovery_quality = run_optional_step(
         "earnings_quality_filter",
         "Running Earnings Discovery Quality Filter v1...",
@@ -856,6 +898,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     }
     tradier_snapshot["_earnings_trade_discovery"] = earnings_trade_discovery
     tradier_snapshot["_earnings_discovery_quality"] = earnings_discovery_quality
+    tradier_snapshot["_strategy_definition_registry"] = _strategy_definition_registry
 
     # Patch 32B: EARNINGS_PROVIDER_RECONCILIATION log block
     try:
@@ -1116,7 +1159,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
     log_print(format_calendar_coverage_log(calendar_coverage_funnel))
     _calendar_recon = calendar_projection.get("calendar_row_reconciliation") or {}
     log_print(
-        "CALENDAR_ROW_RECONCILIATION "
+        "CALENDAR_PROJECTION_RECONCILIATION "
         f"parent_generated={_calendar_recon.get('parent_generated', _calendar_recon.get('generated_rows', 0))} "
         f"open_parent_generated={_calendar_recon.get('open_parent_generated', 0)} "
         f"open_child_generated={_calendar_recon.get('open_child_generated', 0)} "
@@ -1395,7 +1438,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
         calendar_projection["calendar_row_reconciliation"] = _calendar_recon
         tradier_snapshot["_calendar_row_reconciliation"] = _calendar_recon
         log_print(
-            "CALENDAR_ROW_RECONCILIATION "
+            "CALENDAR_ENDPOINT_RECONCILIATION "
             f"opportunity_parents_generated={_calendar_recon.get('opportunity_parents_generated', _calendar_recon.get('parent_generated', 0))} "
             f"open_position_parents_generated={_calendar_recon.get('open_position_parents_generated', 0)} "
             f"open_position_children_generated={_calendar_recon.get('open_position_children_generated', _calendar_recon.get('open_child_generated', 0))} "
@@ -1417,7 +1460,7 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             f"strategy_dispositions={_calendar_recon.get('excluded_rows_by_reason', {})}"
         )
     except Exception as _recon_exc:
-        log_print(f"CALENDAR_ROW_RECONCILIATION error={_recon_exc}")
+        log_print(f"CALENDAR_ENDPOINT_RECONCILIATION error={_recon_exc}")
 
     begin_step(pipeline_status, "format_payload", "Formatting payload")
     log_print("Formatting payload...")
@@ -1576,21 +1619,76 @@ def run_portfolio_pipeline(run_mode: str = "prod") -> PipelineResult:
             try:
                 from app.api.daily_opportunity_api import build_daily_opportunity_response
                 _daily_endpoint = build_daily_opportunity_response(limit=12, include_exclusions=True)
-                _in_run_daily_actions = len((daily_opportunity_engine or {}).get("actions") or [])
+                def _daily_identity(action: dict[str, Any]) -> str:
+                    if not isinstance(action, dict):
+                        return "invalid"
+                    return str(
+                        action.get("source_row_id")
+                        or action.get("strategy_row_url")
+                        or action.get("row_id")
+                        or action.get("opportunity_id")
+                        or ":".join(str(part or "") for part in (
+                            action.get("source_strategy_id") or action.get("strategy") or action.get("source") or action.get("type"),
+                            action.get("ticker") or action.get("symbol"),
+                            action.get("action_type") or action.get("type"),
+                            action.get("verdict") or action.get("action"),
+                        ))
+                    )
+
+                _in_run_actions = [action for action in ((daily_opportunity_engine or {}).get("actions") or []) if isinstance(action, dict)]
+                _endpoint_actions = [action for action in (_daily_endpoint.get("actions") or []) if isinstance(action, dict)]
+                _in_run_daily_actions = len(_in_run_actions)
                 _endpoint_daily_actions = int(_daily_endpoint.get("action_count") or 0)
+                _in_run_ids = sorted({_daily_identity(action) for action in _in_run_actions})
+                _endpoint_ids = sorted({_daily_identity(action) for action in _endpoint_actions})
+                _only_in_run = sorted(set(_in_run_ids) - set(_endpoint_ids))
+                _only_in_endpoint = sorted(set(_endpoint_ids) - set(_in_run_ids))
+                _daily_reconciled = (
+                    _in_run_daily_actions == _endpoint_daily_actions
+                    and not _only_in_run
+                    and not _only_in_endpoint
+                    and _daily_endpoint.get("source") == "strategy_row_store"
+                    and not bool(_daily_endpoint.get("fallback_used"))
+                )
                 tradier_snapshot["_daily_opportunity_parity"] = {
                     "in_run_daily_actions": _in_run_daily_actions,
                     "endpoint_daily_actions": _endpoint_daily_actions,
-                    "reconciled": _in_run_daily_actions == _endpoint_daily_actions,
+                    "in_run_ids": _in_run_ids,
+                    "endpoint_ids": _endpoint_ids,
+                    "only_in_run": _only_in_run,
+                    "only_in_endpoint": _only_in_endpoint,
+                    "reconciled": _daily_reconciled,
                     "source": _daily_endpoint.get("source"),
+                    "fallback_used": bool(_daily_endpoint.get("fallback_used")),
                 }
                 log_print(
                     "DAILY_OPPORTUNITY_PARITY "
                     f"in_run_daily_actions={_in_run_daily_actions} "
                     f"endpoint_daily_actions={_endpoint_daily_actions} "
+                    f"in_run_ids={_in_run_ids} "
+                    f"endpoint_ids={_endpoint_ids} "
+                    f"only_in_run={_only_in_run} "
+                    f"only_in_endpoint={_only_in_endpoint} "
                     f"source={_daily_endpoint.get('source')} "
-                    f"reconciled={_in_run_daily_actions == _endpoint_daily_actions}"
+                    f"fallback_used={bool(_daily_endpoint.get('fallback_used'))} "
+                    f"reconciled={_daily_reconciled}"
                 )
+                if not _daily_reconciled:
+                    report_quality = "FAILED_VALIDATION"
+                    pipeline_status["report_quality"] = report_quality
+                    pipeline_status["overall_status"] = "failed_validation"
+                    pipeline_status.setdefault("degraded_evidence", {})["daily_opportunity_parity"] = {
+                        "in_run_daily_actions": _in_run_daily_actions,
+                        "endpoint_daily_actions": _endpoint_daily_actions,
+                        "only_in_run": _only_in_run[:20],
+                        "only_in_endpoint": _only_in_endpoint[:20],
+                        "source": _daily_endpoint.get("source"),
+                        "fallback_used": bool(_daily_endpoint.get("fallback_used")),
+                    }
+                    report_summary["report_quality"] = report_quality
+                    snapshot_summary["report_quality"] = report_quality
+                    snapshot_summary["pipeline_status"] = pipeline_status
+                    log_print("report_quality set to FAILED_VALIDATION: Daily Opportunity row-store parity mismatch.")
             except Exception as _daily_parity_exc:
                 log_print(f"DAILY_OPPORTUNITY_PARITY error={_daily_parity_exc}")
 

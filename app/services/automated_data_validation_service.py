@@ -416,14 +416,22 @@ def log_data_confidence_validation(
         not_applicable = int(suite_result.get("not_applicable") or 0)
         expected_missing = int(suite_result.get("expected_missing") or 0)
 
-        failure_codes: list[str] = []
-        for report in (suite_result.get("reports") or [])[:50]:
-            for result in (report.get("results") or []):
-                level = str(result.get("level") or "").lower()
-                if not result.get("passed") and (level == LEVEL_ERROR or (not level and "true_failures" not in suite_result)):
-                    code = str(result.get("rule_id") or "unknown")
-                    if code not in failure_codes:
-                        failure_codes.append(code)
+        failure_codes = list(suite_result.get("failure_codes") or [])
+        if failed and not failure_codes:
+            for record in (suite_result.get("hard_failure_records") or []):
+                code = str(record.get("code") or record.get("rule_id") or "unknown")
+                if code not in failure_codes:
+                    failure_codes.append(code)
+        if failed and not failure_codes and "hard_failure_records" not in suite_result:
+            for report in (suite_result.get("reports") or [])[:50]:
+                for result in (report.get("results") or []):
+                    level = str(result.get("level") or "").lower()
+                    if not result.get("passed") and (level == LEVEL_ERROR or not level):
+                        code = str(result.get("rule_id") or "unknown")
+                        if code not in failure_codes:
+                            failure_codes.append(code)
+        if failed and not failure_codes:
+            failure_codes = ["unclassified_failure"]
 
         line = (
             f"DATA_CONFIDENCE_VALIDATION "
@@ -456,6 +464,28 @@ def run_data_confidence_validation(
     """
     result = run_validation_suite(strategy_rows, strategy_id, earnings_events)
     log_data_confidence_validation(result, log_print=log_print)
+    log = log_print or (lambda message: None)
+    for record in (result.get("hard_failure_records") or [])[:25]:
+        try:
+            log(
+                "DATA_CONFIDENCE_FAILURE "
+                f"strategy_id={record.get('strategy_id')} "
+                f"category={record.get('category')} "
+                f"subject={record.get('subject')} "
+                f"code={record.get('code')} "
+                f"field={record.get('field')} "
+                f"profile={record.get('profile')}"
+            )
+        except TypeError:
+            log(
+                "DATA_CONFIDENCE_FAILURE "
+                f"strategy_id={record.get('strategy_id')} "
+                f"category={record.get('category')} "
+                f"subject={record.get('subject')} "
+                f"code={record.get('code')} "
+                f"field={record.get('field')} "
+                f"profile={record.get('profile')}"
+            )
     return result
 
 
@@ -474,7 +504,10 @@ def run_validation_suite(
     reports: list[ValidationReport] = []
     expected_missing_count = 0
     not_applicable_count = 0
-    true_failure_count = 0
+    hard_failure_records: list[dict[str, Any]] = []
+    warning_records: list[dict[str, Any]] = []
+    expected_missing_records: list[dict[str, Any]] = []
+    not_applicable_records: list[dict[str, Any]] = []
 
     for row in strategy_rows:
         r = validate_strategy_row_schema(row, strategy_id)
@@ -487,11 +520,35 @@ def run_validation_suite(
         for result in r.results:
             if not result.passed and result.level == LEVEL_ERROR:
                 fld = result.field or ""
-                if fld not in expected_missing and fld not in not_applicable:
-                    true_failure_count += 1
+                record = _validation_record(
+                    report=r,
+                    result=result,
+                    strategy_id=strategy_id,
+                    profile=str(getattr(r, "profile", "")),
+                )
+                if fld in expected_missing:
+                    expected_missing_records.append(record)
+                elif fld in not_applicable:
+                    not_applicable_records.append(record)
+                else:
+                    hard_failure_records.append(record)
+            elif not result.passed and result.level == LEVEL_WARNING:
+                warning_records.append(_validation_record(
+                    report=r,
+                    result=result,
+                    strategy_id=strategy_id,
+                    profile=str(getattr(r, "profile", "")),
+                ))
 
     for ticker, event in (earnings_events or {}).items():
-        reports.append(validate_earnings_event(event))
+        report = validate_earnings_event(event)
+        reports.append(report)
+        for result in report.results:
+            record = _validation_record(report=report, result=result, strategy_id=strategy_id, profile="earnings_event")
+            if not result.passed and result.level == LEVEL_ERROR:
+                hard_failure_records.append(record)
+            elif not result.passed and result.level == LEVEL_WARNING:
+                warning_records.append(record)
 
     total = len(reports)
     passed = sum(1 for r in reports if r.passed)
@@ -500,19 +557,46 @@ def run_validation_suite(
 
     return {
         "strategy_id": strategy_id,
-        "validation_passed": true_failure_count == 0,
+        "validation_passed": len(hard_failure_records) == 0,
         "total_reports": total,
         "passed_reports": passed,
         "failed_reports": total - passed,
         "total_errors": errors,
         "total_warnings": warnings,
-        "true_failures": true_failure_count,
+        "true_failures": len(hard_failure_records),
+        "failure_codes": sorted({str(record.get("code") or "unknown") for record in hard_failure_records}),
+        "hard_failure_records": hard_failure_records[:100],
+        "warning_records": warning_records[:100],
+        "expected_missing_records": expected_missing_records[:100],
+        "not_applicable_records": not_applicable_records[:100],
         "expected_missing": expected_missing_count,
         "not_applicable": not_applicable_count,
         "reports": [r.to_dict() for r in reports[:50]],
         "schema_version": PROVENANCE_SCHEMA_VERSION,
         "provider_calls_triggered": False,
         "read_only": True,
+    }
+
+
+def _validation_record(
+    *,
+    report: ValidationReport,
+    result: ValidationResult,
+    strategy_id: str,
+    profile: str = "",
+) -> dict[str, Any]:
+    return {
+        "strategy_id": strategy_id,
+        "category": report.category,
+        "subject": report.subject,
+        "profile": profile,
+        "code": result.rule_id,
+        "rule_id": result.rule_id,
+        "field": result.field,
+        "level": result.level,
+        "message": result.message,
+        "actual": result.actual,
+        "expected": result.expected,
     }
 
 

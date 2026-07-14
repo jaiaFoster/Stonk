@@ -22,6 +22,7 @@ from app.services.calendar_opportunity_lifecycle_adapter import (
 from app.services.calendar_opportunity_state_service import attach_calendar_display_fields
 from app.services.calendar_risk_fact_service import evaluate_account_risk
 from app.services.earnings_trust_service import normalize_earnings_trust
+from app.services.open_options_position_reconciliation_service import reconcile_open_calendar_positions
 
 
 CALENDAR_STRATEGY_DEFINITION_ID = "earnings_calendar"
@@ -119,11 +120,13 @@ def build_calendar_canonical_projection(
         result["errors"].extend(validation["invariant_violations"])
     result["calendar_row_reconciliation"] = build_calendar_row_reconciliation(result)
     audit = _decision_audit(new_rows, open_rows)
+    open_parent_count = sum(1 for row in open_rows if str(row.get("row_model") or row.get("row_type") or "") == "OPEN_POSITION_PARENT")
+    open_child_count = max(0, len(open_rows) - open_parent_count)
     logger(
         "CALENDAR_CANONICAL_PROJECTION "
         f"opportunity_parents={len(new_rows)} "
-        f"open_position_parents=0 "
-        f"open_position_children={len(open_rows)} "
+        f"open_position_parents={open_parent_count} "
+        f"open_position_children={open_child_count} "
         f"diagnostics={sum((row.get('structure_attempt_summary') or {}).get('attempt_count', 0) for row in new_rows)}"
     )
     logger(
@@ -355,7 +358,56 @@ def _build_open_position_rows(open_options: dict[str, Any], lifecycle_checks: di
             "risks": item.get("risks", []) or [],
             "raw": item,
         })
-    return rows
+    if len(rows) < 2:
+        return rows
+    try:
+        reconciled = reconcile_open_calendar_positions(rows)
+        parent_rows = [
+            _parent_open_position_row(parent, reconciled)
+            for parent in (reconciled.get("double_calendar_parents") or [])
+            if isinstance(parent, dict)
+        ]
+        return parent_rows + rows
+    except Exception:
+        return rows
+
+
+def _parent_open_position_row(parent: dict[str, Any], reconciliation: dict[str, Any]) -> dict[str, Any]:
+    ticker = str(parent.get("ticker") or "UNKNOWN").upper()
+    parent_id = str(parent.get("parent_structure_id") or parent.get("position_parent_id") or "")
+    return {
+        "strategy_id": "earnings_calendar",
+        "strategy_label": "Earnings Calendar",
+        "strategy_definition_id": CALENDAR_STRATEGY_DEFINITION_ID,
+        "strategy_definition_version": CALENDAR_STRATEGY_DEFINITION_VERSION,
+        "structure_template_id": "earnings_double_calendar_parent",
+        "enumeration_policy_version": CALENDAR_ENUMERATION_POLICY_VERSION,
+        "source": "calendar_lifecycle_parent_projection_v1",
+        "row_model": "OPEN_POSITION_PARENT",
+        "row_type": "OPEN_POSITION_PARENT",
+        "type": "open_double_calendar",
+        "ticker": ticker,
+        "score": 90.0,
+        "verdict": parent.get("lifecycle_action") or "HOLD / MONITOR",
+        "next_action": "Monitor grouped double-calendar lifecycle and recheck live spread value.",
+        "structure": parent,
+        "structure_summary": parent,
+        "current_structure_id": parent_id,
+        "structure_id": parent_id,
+        "parent_structure_id": parent_id,
+        "front_expiration": parent.get("front_expiration"),
+        "back_expiration": parent.get("back_expiration"),
+        "value": {"current_total_debit": parent.get("current_total_debit")},
+        "reasons": [parent.get("lifecycle_reason") or "Call and put calendar children grouped as one double-calendar parent."],
+        "risks": [],
+        "coverage_accounting": {
+            "policy_version": "34A.1.open_position_parent_projection.v1",
+            "child_calendar_count": int(parent.get("child_count") or 0),
+            "child_structure_ids": parent.get("child_structure_ids") or [],
+            "projection_source": (reconciliation.get("source") or "open_options_position_reconciliation_service"),
+        },
+        "raw": {"parent": parent},
+    }
 
 
 def build_calendar_row_reconciliation(
@@ -369,6 +421,8 @@ def build_calendar_row_reconciliation(
     engine = engine or {}
     parent_rows = [row for row in (engine.get("new_trade_rows") or []) if isinstance(row, dict)]
     open_rows = [row for row in (engine.get("open_trade_rows") or []) if isinstance(row, dict)]
+    open_parent_rows = [row for row in open_rows if str(row.get("row_model") or row.get("row_type") or "") == "OPEN_POSITION_PARENT"]
+    open_child_rows = [row for row in open_rows if str(row.get("row_model") or row.get("row_type") or "") != "OPEN_POSITION_PARENT"]
     blocked_rows = [row for row in (engine.get("blocked_rows") or []) if isinstance(row, dict)]
     generated = len(parent_rows) + len(open_rows) + len(blocked_rows)
     invalid = 0
@@ -393,11 +447,11 @@ def build_calendar_row_reconciliation(
                 daily_visible += 1
     return {
         "opportunity_parents_generated": len(parent_rows),
-        "open_position_parents_generated": 0,
-        "open_position_children_generated": len(open_rows),
+        "open_position_parents_generated": len(open_parent_rows),
+        "open_position_children_generated": len(open_child_rows),
         "parent_generated": len(parent_rows),
-        "open_parent_generated": 0,
-        "open_child_generated": len(open_rows),
+        "open_parent_generated": len(open_parent_rows),
+        "open_child_generated": len(open_child_rows),
         "structure_records": sum(1 for row in parent_rows if row.get("current_structure_id")),
         "diagnostic_records": sum(int((row.get("structure_attempt_summary") or {}).get("attempt_count") or 0) for row in parent_rows),
         "generated_rows": generated,

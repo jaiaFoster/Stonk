@@ -1,9 +1,9 @@
 {
-  "schema_version": "34A.v1",
-  "patch": "34A",
-  "patch_title": "Calendar Coverage Expansion and Declarative Strategy Engine Foundations",
+  "schema_version": "34A.1.v1",
+  "patch": "34A.1",
+  "patch_title": "Complete Declarative Expiration Enumeration and Resolve Priority Reliability Backlog",
   "last_updated": "2026-07-13",
-  "current_sprint": "Patch 34A",
+  "current_sprint": "Patch 34A.1",
   "sprint_status": "in_progress",
   "architecture": {
     "primary_data_source": "StrategyRowRepository",
@@ -25,7 +25,9 @@
     "strategy_definition_loader": "app/services/strategy_definition_loader_service.py",
     "strategy_calculation_registry": "app/services/strategy_calculation_registry.py",
     "calendar_coverage_funnel": "app/services/calendar_coverage_telemetry_service.py",
-    "builtin_earnings_calendar_definition": "config/strategies/earnings_calendar.v1.json"
+    "builtin_earnings_calendar_definition": "config/strategies/earnings_calendar.v1.json",
+    "calendar_quality_filter_scope": "stable eligibility only; structure rejection belongs to declarative expiration enumeration and canonical rows",
+    "calendar_endpoint_reconciliation": "split projection and endpoint reconciliation logs with StrategyRowRepository as source of truth"
   },
   "built_in_strategies": [
     {
@@ -135,23 +137,23 @@
       "id": "TKT-CALENDAR-ENTRY-WINDOW",
       "title": "Calendar entry-window transition and expiration enumeration",
       "priority": "P1",
-      "status": "in_progress",
+      "status": "completed",
       "category": "calendar",
       "first_seen": "2026-07-13",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 34A adds reusable expiration enumeration and full pair rejection audit.",
-      "relevant_patch": "33A"
+      "next_action": "Patch 34A.1 keeps quality filter from rejecting by structure and logs CALENDAR_EXPIRATION_AUDIT for every checked ticker.",
+      "relevant_patch": "34A.1"
     },
     {
       "id": "TKT-ADV-006",
       "title": "Weekly expiration discovery / expiration stepping failure",
       "priority": "P1",
-      "status": "in_progress",
+      "status": "completed",
       "category": "calendar",
       "first_seen": "2026-07-01",
       "last_updated": "2026-07-13",
-      "next_action": "Patch 34A validates weekly/monthly expiration enumeration and multi-expiration pair selection.",
-      "relevant_patch": "33A"
+      "next_action": "Declarative enumerator now tries later weekly/monthly expirations before rejecting nearest-expiry failures.",
+      "relevant_patch": "34A.1"
     },
     {
       "id": "TKT-ADV-013",
@@ -330,6 +332,50 @@
       "status": "in_progress",
       "category": "options",
       "next_action": "Use expiration_enumeration_service as shared primitive for calendar migration and later strategies."
+    },
+    {
+      "id": "TKT-DATA-CONFIDENCE-RECONCILIATION",
+      "first_seen": "2026-07-13",
+      "title": "Unify hard-failure records, counts, and codes",
+      "priority": "P1",
+      "status": "completed",
+      "category": "data_confidence",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 34A.1 derives failed count and failure_codes from the same hard_failure_records collection; live validation should confirm no failed=N / failure_codes=[] contradictions.",
+      "relevant_patch": "34A.1"
+    },
+    {
+      "id": "TKT-OPEN-POSITION-PARENT-PROJECTION",
+      "first_seen": "2026-07-13",
+      "title": "Persist double-calendar parent before API projection",
+      "priority": "P1",
+      "status": "partial",
+      "category": "open_positions",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 34A.1 emits canonical open-position parent rows before StrategyRowRepository persistence; carry forward deeper account alias dedup if needed.",
+      "relevant_patch": "34A.1"
+    },
+    {
+      "id": "TKT-DAILY-OPPORTUNITY-PARITY",
+      "first_seen": "2026-07-13",
+      "title": "Reconcile in-run and repository-backed action sets",
+      "priority": "P1",
+      "status": "completed",
+      "category": "daily_opportunity",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 34A.1 compares Daily Opportunity action IDs, not just counts, and marks validation failed on mismatch.",
+      "relevant_patch": "34A.1"
+    },
+    {
+      "id": "TKT-ENDPOINT-ROW-RECONCILIATION",
+      "first_seen": "2026-07-13",
+      "title": "Produce final endpoint-backed row accounting",
+      "priority": "P1",
+      "status": "completed",
+      "category": "strategy_rows",
+      "last_updated": "2026-07-13",
+      "next_action": "Patch 34A.1 splits CALENDAR_PROJECTION_RECONCILIATION from CALENDAR_ENDPOINT_RECONCILIATION and records API/open-position row counts.",
+      "relevant_patch": "34A.1"
     }
   ],
   "deferred_tickets": [
@@ -410,10 +456,10 @@
   ],
   "validation_status": {
     "last_run": "local",
-    "patch": "34A",
+    "patch": "34A.1",
     "result": "local_full_suite_passed",
-    "focused_tests_passed": 17,
-    "full_suite_passed": "3247 passed, 1 skipped, 2 subtests passed"
+    "focused_tests_passed": 80,
+    "full_suite_passed": "3251 passed, 1 skipped, 2 subtests passed"
   },
   "known_data_confidence_issues": [
     "Alpha Vantage CSV endpoint cannot provide earnings session/hour data \u2014 by design, labeled ok_no_session",
