@@ -238,6 +238,9 @@ EARNINGS_DISCOVERY_ENABLED = _bool_env("EARNINGS_DISCOVERY_ENABLED", True)
 # Patch 33A.1: start=0 (was 4), end=35 (was hardcoded 21).
 EARNINGS_DISCOVERY_START_DAYS = _int_env("EARNINGS_DISCOVERY_START_DAYS", 0)
 EARNINGS_DISCOVERY_END_DAYS = _int_env("EARNINGS_DISCOVERY_END_DAYS", 35)
+# Backward-compatible diagnostic alias (was a separate calculated value in pre-33A.1 code).
+# Now equals the effective value; retained so pipeline_helpers.config_snapshot() doesn't crash.
+EARNINGS_DISCOVERY_END_DAYS_REQUESTED = EARNINGS_DISCOVERY_END_DAYS
 # Alias used by earnings_discovery_quality_service for entry-window gate.
 EARNINGS_DISCOVERY_WINDOW_END_DAYS = EARNINGS_DISCOVERY_END_DAYS
 # Structure-building starts at 24 event DTE; surfacing (API-visible) at 14 event DTE.
