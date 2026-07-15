@@ -3219,6 +3219,48 @@ def api_market_data_providers_test():
         }), 500
 
 
+@app.route("/api/dev/market-data-comparisons")
+def api_market_data_comparisons():
+    """Read-only provider comparison history.
+
+    Returns stored summary records from shadow comparison runs.
+    Does NOT call any provider — reads from the local SQLite comparison table.
+    Query params: ticker, classification, limit (default 50).
+    Requires ENABLE_DEV_DIAGNOSTICS_ENDPOINTS=true.
+    """
+    _require_dev_diagnostics_token()
+    try:
+        from app.db.options_provider_comparison_repository import (
+            get_comparison_stats,
+            get_recent_comparisons,
+        )
+
+        ticker = request.args.get("ticker", "").upper().strip() or None
+        classification = request.args.get("classification", "").strip() or None
+        try:
+            limit = max(1, min(500, int(request.args.get("limit", 50))))
+        except (TypeError, ValueError):
+            limit = 50
+
+        records = get_recent_comparisons(limit=limit, ticker=ticker, classification=classification)
+        stats = get_comparison_stats()
+
+        return jsonify({
+            "status": "ok",
+            "provider_calls_triggered": False,
+            "stats": stats,
+            "records": records,
+            "filters": {"ticker": ticker, "classification": classification, "limit": limit},
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "error": str(exc),
+            "trace": traceback.format_exc(),
+        }), 500
+
+
 def _reconstruct_calendar_lifecycle(ticker: str, engine_row: dict, quality_row: dict) -> dict:
     """Reconstruct per-ticker pipeline stages from stored snapshot data."""
     qp = quality_row or {}

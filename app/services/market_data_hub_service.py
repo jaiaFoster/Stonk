@@ -22,6 +22,7 @@ class MarketDataHub:
         self, context: RunDataContext, repository: MarketDataRepository | None = None,
         provider: TradierProvider | None = None, candle_fetcher: Callable[..., dict[str, Any]] | None = None,
         log_print: Callable[[str], None] | None = None,
+        options_gateway: Any = None,
     ):
         self.context = context
         self.repository = repository or MarketDataRepository()
@@ -29,7 +30,8 @@ class MarketDataHub:
         self.candle_fetcher = candle_fetcher or get_candle_history
         self.log = log_print or (lambda message: None)
         self.budget = ProviderBudget(config.MARKET_DATA_MAX_PROVIDER_FETCHES_PER_RUN)
-        self.log(f"MarketDataHub: initialized; sqlite_cache={'enabled' if self.repository.enabled else 'disabled'}; db={self.repository.db_path}")
+        self.options_gateway = options_gateway
+        self.log(f"MarketDataHub: initialized; sqlite_cache={'enabled' if self.repository.enabled else 'disabled'}; db={self.repository.db_path}; options_gateway={'yes' if options_gateway else 'no'}")
 
     def get_quote(self, ticker: str, *, required: bool = False, strategy_id: str = "", force_refresh: bool = False) -> dict[str, Any] | None:
         return self._get(ticker, "quote", self.context.quotes, config.MARKET_DATA_QUOTE_TTL_SECONDS, lambda: (self.provider.get_quotes([ticker]) or {}).get(ticker), "tradier", required, strategy_id, force_refresh=force_refresh)
@@ -79,6 +81,30 @@ class MarketDataHub:
                 return cached
 
         def fetch() -> dict[str, Any]:
+            if self.options_gateway is not None:
+                # Route through provider-neutral gateway; falls back internally if Tradier fails
+                chain = self.options_gateway.get_chain(symbol)
+                legacy = chain.to_legacy_chain_set()
+                all_listed = [str(e) for e in chain.expirations]
+                eligible = [e for e in all_listed if self._expiration_in_range(e, normalized_min, normalized_max)]
+                retained = self._sample_expirations(eligible, normalized_count)
+                by_exp = legacy.get("chains_by_expiration") or legacy.get("chains") or {}
+                chains_filtered = {e: by_exp.get(e, []) for e in retained}
+                return {
+                    "ticker": symbol,
+                    "data_state": legacy.get("data_state", COMPLETE),
+                    "freshness_state": legacy.get("freshness_state"),
+                    "is_live": legacy.get("is_live", False),
+                    "requested_min_dte": normalized_min,
+                    "requested_max_dte": normalized_max,
+                    "requested_max_expirations": normalized_count,
+                    "listed_expirations": all_listed,
+                    "expirations": retained,
+                    "chains": chains_filtered,
+                    "chains_by_expiration": chains_filtered,
+                    "errors": [],
+                    "request_scope": {"min_dte": normalized_min, "max_dte": normalized_max, "expirations": normalized_count},
+                }
             listed = sorted(self.provider.get_expirations(symbol), key=lambda value: str(value)[:10])
             eligible = [value for value in listed if self._expiration_in_range(value, normalized_min, normalized_max)]
             retained = self._sample_expirations(eligible, normalized_count)

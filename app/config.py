@@ -183,6 +183,27 @@ OPTIONS_ALLOW_DELAYED_ENTRY = _bool_env("OPTIONS_ALLOW_DELAYED_ENTRY", False)
 OPTIONS_CHAIN_CACHE_TTL_SECONDS = _int_env("OPTIONS_CHAIN_CACHE_TTL_SECONDS", 1800)
 OPTIONS_CHAIN_STALE_TTL_SECONDS = _int_env("OPTIONS_CHAIN_STALE_TTL_SECONDS", 86400)
 
+# Shadow comparison: run shadow provider requests in parallel with primary to
+# compare data quality. Shadow results NEVER affect strategy verdicts.
+OPTIONS_PROVIDER_PRIMARY = os.environ.get("OPTIONS_PROVIDER_PRIMARY", "tradier").strip().lower()
+OPTIONS_PROVIDER_FAILOVER_ORDER = [
+    p.strip().lower()
+    for p in os.environ.get("OPTIONS_PROVIDER_FAILOVER_ORDER", "marketdata").split(",")
+    if p.strip()
+]
+OPTIONS_PROVIDER_SHADOW_ENABLED = _bool_env("OPTIONS_PROVIDER_SHADOW_ENABLED", True)
+OPTIONS_PROVIDER_SHADOW_PROVIDERS = [
+    p.strip().lower()
+    for p in os.environ.get("OPTIONS_PROVIDER_SHADOW_PROVIDERS", "marketdata").split(",")
+    if p.strip()
+]
+# Sample rate: 1.0 = always compare, 0.05 = 5% of requests.
+OPTIONS_PROVIDER_SHADOW_DEV_SAMPLE_RATE = _float_env("OPTIONS_PROVIDER_SHADOW_DEV_SAMPLE_RATE", 1.0)
+OPTIONS_PROVIDER_SHADOW_PROD_SAMPLE_RATE = _float_env("OPTIONS_PROVIDER_SHADOW_PROD_SAMPLE_RATE", 0.05)
+OPTIONS_PROVIDER_SHADOW_MAX_TICKERS_PER_RUN = _int_env("OPTIONS_PROVIDER_SHADOW_MAX_TICKERS_PER_RUN", 3)
+OPTIONS_STALE_CACHE_ENABLED = _bool_env("OPTIONS_STALE_CACHE_ENABLED", True)
+OPTIONS_STALE_CACHE_MAX_AGE_SECONDS = _int_env("OPTIONS_STALE_CACHE_MAX_AGE_SECONDS", 86400)
+
 
 # --- Calendar spread screener ---
 # Read-only scanner using Tradier option chains. This does not detect open

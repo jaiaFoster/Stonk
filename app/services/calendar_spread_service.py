@@ -53,6 +53,7 @@ def scan_calendar_spreads_for_positions(
     log_print: LogFn | None = None,
     max_tickers: int | None = None,
     allowed_tickers: list[str] | None = None,
+    options_gateway: Any = None,
 ) -> CalendarCandidates:
     """Scan selected equity tickers for near-ATM call calendar spread candidates."""
     logger = log_print or (lambda msg: print(msg, flush=True))
@@ -182,15 +183,8 @@ def scan_calendar_spreads_for_positions(
 
             ticker_candidates: CalendarCandidates = []
             for front_exp, back_exp in pairs:
-                front_chain = provider.get_option_chain(
-                    ticker,
-                    front_exp,
-                    greeks=bool(config.TRADIER_INCLUDE_GREEKS),
-                )
-                back_chain = provider.get_option_chain(
-                    ticker,
-                    back_exp,
-                    greeks=bool(config.TRADIER_INCLUDE_GREEKS),
+                front_chain, back_chain = _fetch_chains_for_pair(
+                    ticker, front_exp, back_exp, provider, options_gateway, logger
                 )
                 candidate = _build_best_candidate(
                     ticker=ticker,
@@ -227,6 +221,43 @@ def scan_calendar_spreads_for_positions(
         )
     logger(f"Calendar Spread Screener v1 generated {len(candidates)} candidate(s).")
     return candidates
+
+
+def _fetch_chains_for_pair(
+    ticker: str,
+    front_exp: str,
+    back_exp: str,
+    provider: Any,
+    options_gateway: Any,
+    logger: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch front and back chains for a calendar pair, using gateway when available."""
+    if options_gateway is not None:
+        try:
+            from app.models.market_data_contracts import OptionsDataRequirements
+            from datetime import date as _date
+            chain = options_gateway.get_chain(
+                ticker,
+                OptionsDataRequirements(greeks_required=True, bid_ask_required=True),
+                expirations=[front_exp, back_exp],
+            )
+            front_date = _date.fromisoformat(front_exp[:10])
+            back_date = _date.fromisoformat(back_exp[:10])
+            front_contracts = [c.to_compact_dict() for c in chain.contracts_for_expiration(front_date)]
+            back_contracts = [c.to_compact_dict() for c in chain.contracts_for_expiration(back_date)]
+            if front_contracts or back_contracts:
+                return front_contracts, back_contracts
+            logger(f"Calendar {ticker}: gateway returned empty chain for pair {front_exp}/{back_exp}; falling back to direct provider")
+        except Exception as gw_err:
+            logger(f"Calendar {ticker}: gateway error for pair {front_exp}/{back_exp} ({gw_err}); falling back to direct provider")
+
+    front_chain = provider.get_option_chain(
+        ticker, front_exp, greeks=bool(config.TRADIER_INCLUDE_GREEKS)
+    )
+    back_chain = provider.get_option_chain(
+        ticker, back_exp, greeks=bool(config.TRADIER_INCLUDE_GREEKS)
+    )
+    return front_chain, back_chain
 
 
 def _build_best_candidate(
