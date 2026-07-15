@@ -90,6 +90,50 @@
   ],
   "active_tickets": [
     {
+      "id": "TKT-035-OPTIONS-GATEWAY",
+      "title": "Provider-Neutral Market Data Gateway",
+      "priority": "P0",
+      "status": "in_progress",
+      "category": "architecture",
+      "first_seen": "2026-07-15",
+      "last_updated": "2026-07-15",
+      "next_action": "Strategy call-site migration: calendar hub path, skew cleanup",
+      "relevant_patch": "33B/gateway"
+    },
+    {
+      "id": "TKT-035-MARKETDATA-ADAPTER",
+      "title": "MarketData.app provider adapter",
+      "priority": "P0",
+      "status": "completed",
+      "category": "provider",
+      "first_seen": "2026-07-15",
+      "last_updated": "2026-07-15",
+      "next_action": "Done \u2014 MarketDataProvider in app/providers/marketdata_provider.py",
+      "relevant_patch": "33B/gateway"
+    },
+    {
+      "id": "TKT-035-GATEWAY-FAILOVER",
+      "title": "Gateway failover and freshness enforcement",
+      "priority": "P0",
+      "status": "completed",
+      "category": "architecture",
+      "first_seen": "2026-07-15",
+      "last_updated": "2026-07-15",
+      "next_action": "Done \u2014 OptionsMarketDataGateway in app/services/options_market_data_gateway.py",
+      "relevant_patch": "33B/gateway"
+    },
+    {
+      "id": "TKT-035-CALENDAR-HUB-PATH",
+      "title": "Calendar spread service gateway injection",
+      "priority": "P1",
+      "status": "pending",
+      "category": "migration",
+      "first_seen": "2026-07-15",
+      "last_updated": "2026-07-15",
+      "next_action": "Add gateway injection path to calendar_spread_service.py",
+      "relevant_patch": "33B/gateway"
+    },
+    {
       "id": "TKT-STRATEGY-LIFECYCLE-KERNEL",
       "title": "Generic lifecycle kernel \u2014 enums, models, validation service",
       "priority": "P0",
@@ -425,6 +469,14 @@
     }
   ],
   "recently_completed": [
+    {
+      "patch": "33B/gateway",
+      "title": "Provider-Neutral Market Data Gateway + MarketData.app Integration (in_progress — merged via PR #178)"
+    },
+    {
+      "patch": "33A.1.1",
+      "title": "Config Snapshot Compatibility Hotfix — EARNINGS_DISCOVERY_END_DAYS_REQUESTED alias"
+    },
     {
       "patch": "33A.1",
       "title": "Strategy Opportunity Lifecycle Kernel and Earnings Calendar Business Logic Repair"
