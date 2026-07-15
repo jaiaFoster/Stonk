@@ -45,6 +45,15 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/models/calendar_evolution_policy.py` | CalendarEvolutionPolicy — immutable timing thresholds (Patch 33A.1) |
 | `app/services/strategy_opportunity_lifecycle_service.py` | Generic lifecycle invariant validation and canonical construction (Patch 33A.1) |
 | `app/services/calendar_opportunity_lifecycle_adapter.py` | Earnings-calendar lifecycle classifier and opportunity_id builder (Patch 33A.1) |
+| `app/models/market_data_contracts.py` | Provider-neutral options data contracts — FreshnessState, NormalizedOptionsChain, NormalizedOptionContract (Patch 33B/gateway) |
+| `app/models/provider_capabilities.py` | ProviderCapabilities — capability declarations and satisfies() check (Patch 33B/gateway) |
+| `app/providers/options_data_provider.py` | OptionsDataProvider Protocol + provider exception hierarchy (Patch 33B/gateway) |
+| `app/providers/tradier_options_adapter.py` | TradierOptionsAdapter — implements OptionsDataProvider (Patch 33B/gateway) |
+| `app/providers/marketdata_provider.py` | MarketDataProvider — MarketData.app adapter, reads MARKETDATA_KEY (Patch 33B/gateway) |
+| `app/services/market_data_provider_registry.py` | ProviderRegistry — factory-based, no credentials at import time (Patch 33B/gateway) |
+| `app/services/options_market_data_gateway.py` | OptionsMarketDataGateway — controlled failover, freshness enforcement (Patch 33B/gateway) |
+| `app/services/options_chain_validation_service.py` | Chain validation against OptionsDataRequirements (Patch 33B/gateway) |
+| `app/services/options_chain_cache.py` | LastKnownGoodCacheProvider — stale cache fallback (Patch 33B/gateway) |
 | `app/services/calendar_scan_result_service.py` | Run-scoped calendar scan results and scanner status contract (Patch 33B) |
 | `app/services/calendar_decision_service.py` | Sole owner of final calendar decision fields: evaluation state, trade verdict, recommended action, and entry permission (Patch 33C.2) |
 | `app/services/calendar_opportunity_projection_service.py` | Sole calendar row projection path; parent rows own nested structure attempts and pre-persistence invariant validation (Patch 33C.2) |
@@ -55,7 +64,7 @@ exist internally without appearing in the API surface (see Serialization Policy 
 | `app/api/` | Blueprints for advisor, admin, user, knowledge, plaid, auth, telemetry, custom strategy |
 
 Provider call isolation: no `/api/dev/*` endpoint may trigger a live provider call unless
-explicitly documented (e.g., `/api/dev/trigger-run`).
+explicitly documented (e.g., `/api/dev/trigger-run`, `/api/dev/market-data-providers/test`).
 
 ---
 

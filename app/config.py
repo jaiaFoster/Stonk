@@ -158,6 +158,32 @@ TRADIER_MIN_DAYS_TO_EXPIRATION = _int_env("TRADIER_MIN_DAYS_TO_EXPIRATION", 7)
 TRADIER_CHAIN_EXPIRATIONS_PER_TICKER = _int_env("TRADIER_CHAIN_EXPIRATIONS_PER_TICKER", 1)
 
 
+# --- Patch 33B: Provider-neutral options gateway ---
+# MarketData.app secondary provider. Key is already in Railway as MARKETDATA_KEY.
+# Never log this value; never store it in strategy rows, manifests, or DB.
+MARKETDATA_KEY = os.environ.get("MARKETDATA_KEY")
+MARKETDATA_BASE_URL = os.environ.get("MARKETDATA_BASE_URL", "https://api.marketdata.app/v1").rstrip("/")
+MARKETDATA_TIMEOUT_SECONDS = _int_env("MARKETDATA_TIMEOUT_SECONDS", 15)
+MARKETDATA_MAX_RETRIES = _int_env("MARKETDATA_MAX_RETRIES", 1)
+# "live" requests real-time data; "auto" lets the API decide based on subscription.
+MARKETDATA_DEFAULT_MODE = os.environ.get("MARKETDATA_DEFAULT_MODE", "auto").strip().lower()
+
+# Provider order for options chain requests: comma-separated list of provider IDs.
+# Default: tradier first, marketdata as failover, last_known_good_cache as final fallback.
+OPTIONS_PROVIDER_ORDER = [
+    p.strip().lower()
+    for p in os.environ.get("OPTIONS_PROVIDER_ORDER", "tradier,marketdata,last_known_good_cache").split(",")
+    if p.strip()
+]
+OPTIONS_FAILOVER_ENABLED = _bool_env("OPTIONS_FAILOVER_ENABLED", True)
+# Allow delayed data for analysis (scoring/monitoring) but never for new entries.
+OPTIONS_ALLOW_DELAYED_ANALYSIS = _bool_env("OPTIONS_ALLOW_DELAYED_ANALYSIS", True)
+# This must remain False: delayed data must never authorize a new position entry.
+OPTIONS_ALLOW_DELAYED_ENTRY = _bool_env("OPTIONS_ALLOW_DELAYED_ENTRY", False)
+OPTIONS_CHAIN_CACHE_TTL_SECONDS = _int_env("OPTIONS_CHAIN_CACHE_TTL_SECONDS", 1800)
+OPTIONS_CHAIN_STALE_TTL_SECONDS = _int_env("OPTIONS_CHAIN_STALE_TTL_SECONDS", 86400)
+
+
 # --- Calendar spread screener ---
 # Read-only scanner using Tradier option chains. This does not detect open
 # broker positions and does not place orders.

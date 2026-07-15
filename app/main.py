@@ -3131,6 +3131,94 @@ def api_strategy_lifecycle():
         }), 500
 
 
+@app.route("/api/dev/market-data-providers")
+def api_market_data_providers():
+    """Read-only provider health and capability summary.
+
+    Returns capability declarations for all registered options data providers.
+    Does NOT call any provider or make network requests.
+    API keys are never returned.
+    """
+    _require_dev_diagnostics_token()
+    try:
+        from app.services.market_data_provider_registry import get_default_registry
+
+        registry = get_default_registry()
+        caps = registry.capabilities_summary()
+        configured = registry.configured_ids()
+
+        return jsonify({
+            "status": "ok",
+            "provider_order": config.OPTIONS_PROVIDER_ORDER,
+            "failover_enabled": config.OPTIONS_FAILOVER_ENABLED,
+            "allow_delayed_analysis": config.OPTIONS_ALLOW_DELAYED_ANALYSIS,
+            "allow_delayed_entry": config.OPTIONS_ALLOW_DELAYED_ENTRY,
+            "providers": caps,
+            "configured_providers": configured,
+            "provider_calls_triggered": False,
+            "read_only": True,
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "error": str(exc),
+            "trace": traceback.format_exc(),
+            "provider_calls_triggered": False,
+        }), 500
+
+
+@app.route("/api/dev/market-data-providers/test", methods=["POST"])
+def api_market_data_providers_test():
+    """Explicit, bounded provider connectivity test.
+
+    POST body (JSON): {"symbol": "SPY", "provider_ids": ["tradier"]}
+    or just {} to test all configured providers against SPY.
+    This endpoint DOES make live provider calls — it is an explicit probe.
+    Must be enabled via ENABLE_DEV_DIAGNOSTICS_ENDPOINTS=true.
+    """
+    _require_dev_diagnostics_token()
+    try:
+        from app.services.market_data_provider_registry import get_default_registry
+
+        body = request.get_json(silent=True) or {}
+        symbol = str(body.get("symbol") or "SPY").upper().strip() or "SPY"
+        requested_ids = body.get("provider_ids") or []
+
+        registry = get_default_registry()
+        test_ids = (
+            [p for p in requested_ids if p in registry.available_ids()]
+            if requested_ids
+            else registry.configured_ids()
+        )
+
+        results = []
+        for pid in test_ids:
+            provider = registry.get(pid)
+            if provider is None:
+                results.append({"provider_id": pid, "status": "NOT_REGISTERED"})
+                continue
+            try:
+                health = provider.health_check()
+            except Exception as e:
+                health = {"provider_id": pid, "status": "ERROR", "message": str(e)[:200]}
+            results.append(health)
+
+        return jsonify({
+            "status": "ok",
+            "symbol_tested": symbol,
+            "providers_tested": [r.get("provider_id") for r in results],
+            "results": results,
+        }), 200
+    except Exception as exc:
+        import traceback
+        return jsonify({
+            "status": "error",
+            "error": str(exc),
+            "trace": traceback.format_exc(),
+        }), 500
+
+
 def _reconstruct_calendar_lifecycle(ticker: str, engine_row: dict, quality_row: dict) -> dict:
     """Reconstruct per-ticker pipeline stages from stored snapshot data."""
     qp = quality_row or {}
